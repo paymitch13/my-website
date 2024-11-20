@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Contact Me - Payton's Portfolio</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="script.js" defer></script> 
+</head>
+<body>
+    <header>
+        <nav>
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="about.html">About</a></li>
+                <li><a href="contact.html">Contact</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section id="contact">
+            <h1>Contact Me</h1>
+            <p>If you’d like to reach out, feel free to fill out the form below!</p>
+            <form id="contact-form" method="POST" action="/send-email">
+                <label for="name">Name</label>
+                <input type="text" id="name" name="name" placeholder="Your Name" required>
+
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" placeholder="Your Email" required>
+
+                <label for="message">Message</label>
+                <textarea id="message" name="message" rows="5" placeholder="Your Message" required></textarea>
+
+                <button type="submit" class="cta-button">Send Message</button>
+
+                <p id="form-message" style="display: none;"></p>
+            </form>
+        </section>
+    </main>
+
+    <footer>
+        <div class="social-links">
+            <a href="https://www.linkedin.com/in/payton-mitchell-118195251/" target="_blank">
+                <img src="images/linkedin.png" alt="LinkedIn" class="social-icon">
+            </a>
+            <a href="https://github.com/paymitch13" target="_blank">
+                <img src="images/github.png" alt="GitHub" class="social-icon">
+            </a>
+            <a href="docs/RESUME - Payton Mitchell.pdf" download="Payton_Resume.pdf" class="resume-button">
+                <img src="images/resume.png" alt="Download Resume" class="social-icon">
+            </a>
+        </div>
+        <p>© 2024 Payton's Portfolio</p>
+    </footer>
+</body>
+</html>
