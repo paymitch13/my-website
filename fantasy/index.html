@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fantasy Command Center — Payton Mitchell</title>
+    <meta name="description" content="A fantasy football trade calculator and power rankings engine built on your own player rankings, your league's real settings, and a full season simulation.">
+    <link rel="preconnect" href="https://api.sleeper.app">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="../index.html" title="Back to portfolio">
+                <span class="brand-mark">FF</span>
+                <span>Command Center<small>Payton Mitchell</small></span>
+            </a>
+
+            <nav class="tabs" role="tablist" id="tabs">
+                <button class="tab" role="tab" data-view="trade">Trade Calculator</button>
+                <button class="tab" role="tab" data-view="power">Power Rankings</button>
+                <button class="tab" role="tab" data-view="rankings">My Rankings</button>
+                <button class="tab" role="tab" data-view="league">League</button>
+                <button class="tab" role="tab" data-view="news">News &amp; Live</button>
+            </nav>
+
+            <button class="league-chip" id="league-chip" type="button">
+                <span class="dot off"></span>
+                <span id="league-chip-label">Connect Sleeper</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="shell" id="view" aria-live="polite">
+        <div class="page-head">
+            <h1>Loading…</h1>
+        </div>
+        <div class="skeleton" style="height:120px"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+    </main>
+
+    <footer class="app-footer">
+        Built by Payton Mitchell ·
+        <a href="../index.html">Portfolio</a> ·
+        <a href="https://github.com/paymitch13" target="_blank" rel="noopener">GitHub</a>
+        <br>
+        <span class="tiny">Player data, leagues and live scoring from the public Sleeper API. Not affiliated with Sleeper or the NFL.</span>
+    </footer>
+
+    <div class="toasts" id="toasts"></div>
+
+    <script type="module" src="js/app.js"></script>
+    <noscript>
+        <div class="shell"><div class="card" style="margin-top:24px">
+            This app runs entirely in your browser and needs JavaScript enabled.
+        </div></div>
+    </noscript>
+</body>
+</html>
