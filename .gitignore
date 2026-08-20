@@ -1,0 +1,4 @@
+# macOS resource forks and metadata
+._*
+.DS_Store
+node_modules/
