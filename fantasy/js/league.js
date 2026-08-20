@@ -60,10 +60,20 @@ const SCORING_DEFAULTS = {
     fum_lost: -2,
 };
 
+/**
+ * Keep every scoring rule the league defines, not just the ones we thought to
+ * name. Projections are scored by dot-producting these keys against matching
+ * projected stats, so dropping an unrecognized key silently deletes a whole
+ * scoring category -- that is how kicker and defense scoring went missing, and
+ * it would quietly break any league with custom rules (first downs, big-play
+ * bonuses, return yards) too.
+ *
+ * The defaults only fill in offensive keys Sleeper omits when they are zero.
+ */
 export function normalizeScoring(raw = {}) {
     const s = { ...SCORING_DEFAULTS };
-    for (const k of Object.keys(SCORING_DEFAULTS)) {
-        if (typeof raw[k] === 'number') s[k] = raw[k];
+    for (const [k, v] of Object.entries(raw || {})) {
+        if (typeof v === 'number') s[k] = v;
     }
     return s;
 }

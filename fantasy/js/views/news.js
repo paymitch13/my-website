@@ -5,7 +5,7 @@ import { loadScoreboard } from '../data.js';
 import * as store from '../store.js';
 import { openSyncModal } from '../app.js';
 import {
-    el, emptyState, headshot, playerCell, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
+    el, emptyState, headshot, playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 const REFRESH_MS = 45000;
@@ -231,7 +231,7 @@ export default function renderNews(app) {
                     'div',
                     { class: 'row', style: 'gap:8px' },
                     posBadge(i.player.pos),
-                    el('span', { style: 'font-weight:600' }, i.player.name),
+                    el('span', { style: 'font-weight:600' }, playerLink(i.player)),
                     tag(i.status, i.severity >= 4 ? 'bad' : 'warn'),
                     i.bodyPart ? el('span', { class: 'tiny dim' }, i.bodyPart) : null,
                     i.practice ? tag(i.practice, '') : null
@@ -264,7 +264,7 @@ export default function renderNews(app) {
                                       'div',
                                       { class: 'row', style: 'gap:8px' },
                                       posBadge(t.player.pos),
-                                      el('span', { style: 'font-weight:600' }, t.player.name),
+                                      el('span', { style: 'font-weight:600' }, playerLink(t.player)),
                                       el('span', { class: 'tiny dim' }, t.player.team)
                                   ),
                                   el('div', { class: 'tiny muted' }, t.detail)

@@ -572,3 +572,29 @@ input::placeholder { color: var(--text-3); }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- Player links ---------- */
+
+.plink {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    border-bottom: 1px dotted transparent;
+    transition: color 0.12s, border-color 0.12s;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+.plink:hover,
+.plink:focus-visible {
+    color: var(--accent);
+    border-bottom-color: var(--accent-dim);
+    outline: none;
+}

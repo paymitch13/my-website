@@ -14,13 +14,35 @@ import { buildEntries } from './trade.js';
 import { simulateSeason, scheduleStrength } from './sim.js';
 import { clamp, mean, round, sortBy, stdev, sum } from './util.js';
 
-const WEIGHTS = {
-    roster: 0.4,
-    allPlay: 0.2,
-    title: 0.2,
-    form: 0.1,
-    depth: 0.1,
+/**
+ * Weighting presets.
+ *
+ * There is no single correct power ranking, and the disagreements between sites
+ * are mostly disagreements about this table rather than about the data. Most
+ * public power rankings lean hard on record and results; this app's default
+ * leans on roster strength, on the argument that a record is a small sample
+ * with a schedule attached. Both are defensible, so the choice is exposed
+ * instead of hidden.
+ */
+export const WEIGHT_PRESETS = {
+    roster: {
+        label: 'Roster-first',
+        blurb: 'Ranks teams by how good they are on paper, mostly ignoring how the season has gone.',
+        weights: { roster: 0.58, allPlay: 0.1, title: 0.14, form: 0.06, depth: 0.12 },
+    },
+    balanced: {
+        label: 'Balanced',
+        blurb: 'Blends roster strength with a luck-adjusted read on what teams have actually done.',
+        weights: { roster: 0.4, allPlay: 0.2, title: 0.2, form: 0.1, depth: 0.1 },
+    },
+    results: {
+        label: 'Results-first',
+        blurb: 'Weights actual scoring and current standing the way most public power rankings do.',
+        weights: { roster: 0.22, allPlay: 0.36, title: 0.24, form: 0.14, depth: 0.04 },
+    },
 };
+
+const WEIGHTS = WEIGHT_PRESETS.balanced.weights;
 
 /**
  * @param {object}  input
@@ -29,7 +51,12 @@ const WEIGHTS = {
  * @param {Array}   [input.schedule]   remaining schedule for the odds component
  */
 export function computePowerRankings(input) {
-    const { cfg, ctx, teams, rankings, weeklyScores = new Map(), schedule = null, iterations = 2000, week = 1 } = input;
+    const {
+        cfg, ctx, teams, rankings,
+        weeklyScores = new Map(), schedule = null, iterations = 2000, week = 1,
+        preset = 'balanced',
+    } = input;
+    const presetWeights = (WEIGHT_PRESETS[preset] || WEIGHT_PRESETS.balanced).weights;
 
     const rows = teams.map((team) => {
         const entries = buildEntries(team.players, rankings, ctx);
@@ -117,7 +144,9 @@ export function computePowerRankings(input) {
         // If the season has not started there is no performance signal at all,
         // so roster strength has to carry the whole ranking.
         const live = r.games > 0;
-        const w = live ? WEIGHTS : { roster: 0.78, allPlay: 0, title: 0.12, form: 0, depth: 0.1 };
+        // With no games played there is no performance signal at all, so roster
+        // strength has to carry the ranking whatever preset is selected.
+        const w = live ? presetWeights : { roster: 0.78, allPlay: 0, title: 0.12, form: 0, depth: 0.1 };
 
         r.score = Object.entries(w).reduce((acc, [k, weight]) => acc + weight * r.components[k], 0);
     }

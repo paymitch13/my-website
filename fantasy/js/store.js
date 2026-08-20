@@ -6,6 +6,7 @@
 const KEY = 'ffc:state:v1';
 const PLAYERS_KEY = 'ffc:players:v1';
 const SNAPSHOT_KEY = 'ffc:power-snapshots:v1';
+const PROJECTIONS_KEY = 'ffc:projections:v1';
 
 const DEFAULTS = {
     username: '',
@@ -85,6 +86,7 @@ export function resetAll() {
     Object.assign(state, structuredClone(DEFAULTS));
     localStorage.removeItem(PLAYERS_KEY);
     localStorage.removeItem(SNAPSHOT_KEY);
+    localStorage.removeItem(PROJECTIONS_KEY);
     save();
 }
 
@@ -99,6 +101,20 @@ export function loadCachedPlayers(maxAgeMs = 24 * 60 * 60 * 1000) {
 
 export function cachePlayers(players) {
     return write(PLAYERS_KEY, { at: Date.now(), players });
+}
+
+/**
+ * Projections change as news breaks, so they get a much shorter shelf life than
+ * the player database: six hours, versus a day.
+ */
+export function loadCachedProjections(season, maxAgeMs = 6 * 60 * 60 * 1000) {
+    const cached = read(PROJECTIONS_KEY, null);
+    if (!cached || cached.season !== String(season) || !cached.projections) return null;
+    return { projections: cached.projections, stale: Date.now() - cached.at > maxAgeMs, at: cached.at };
+}
+
+export function cacheProjections(season, projections) {
+    return write(PROJECTIONS_KEY, { at: Date.now(), season: String(season), projections });
 }
 
 // --- Power ranking history -------------------------------------------------

@@ -48,11 +48,25 @@ Concretely, the engine derives from the league itself:
 - **Injury designations**, discounted by expected games missed against the weeks remaining —
   the same tag costs more in week 13 than in week 3.
 
+As the season progresses, preseason projections are blended with what players have **actually
+done**. Early on a hot three games is mostly noise so the projection holds; by the back half of
+the year results carry most of the weight, capped so the prior never fully retires.
+
+### Depth is not worthless
+
+A player at replacement level is not worth zero, and a player below it is not worth the same as
+every other player below it. An earlier version clamped the whole sub-replacement tail to a
+single floor, which made a starting running back display the same value as a fourth-string
+handcuff. Value now passes through a softplus: strictly decreasing with rank, positive
+everywhere, and asymptotically equal to points-above-replacement for genuine starters.
+
 ## The pieces
 
 | Module | Job |
 |---|---|
-| `js/valuation.js` | Rank → stat line → league-scored points → value |
+| `js/projections.js` | Sleeper projections + actuals, scored against league rules |
+| `js/valuation.js` | Rank → projection curve → league-scored points → value |
+| `js/odds.js` | Vegas lines → implied team totals (weekly context only) |
 | `js/lineup.js` | Optimal starting lineup solver (FLEX / SUPER_FLEX aware) |
 | `js/sim.js` | Monte Carlo season + bracket simulator → playoff and title odds |
 | `js/trade.js` | The trade engine: value, fit, impact, verdict and written reasoning |
@@ -72,16 +86,21 @@ random weeks**, so the difference between them is the trade rather than sampling
 ## Power rankings
 
 A record is a bad power ranking. Two teams at 4-2 can be completely different teams. The board
-blends what a team *is* with what it has actually *done*, corrected for luck:
+blends what a team *is* with what it has actually *done*, corrected for luck.
 
-- 40% roster strength (optimal lineup under your rankings)
-- 20% all-play record — what your record would be if you played everyone every week, which
-  strips out schedule luck almost entirely
-- 20% simulated title odds
-- 10% recent form
-- 10% injury resilience
+There is no single correct weighting, and most disagreements between power-ranking sites are
+disagreements about this table rather than about the data. Most public rankings lean hard on
+record; this one leans on roster strength. Rather than hide that choice, it is a control:
 
-Before week 1 there is no performance signal, so it falls back to roster strength.
+| Preset | Roster | All-play | Title odds | Form | Depth |
+|---|---|---|---|---|---|
+| Roster-first | 58% | 10% | 14% | 6% | 12% |
+| **Balanced** (default) | 40% | 20% | 20% | 10% | 10% |
+| Results-first | 22% | 36% | 24% | 14% | 4% |
+
+All-play record is what your record would be if you played every team every week, which strips
+out schedule luck almost entirely. Before week 1 there is no performance signal at all, so
+every preset falls back to roster strength.
 
 Each team gets a written blurb that leads with the biggest disconnect between what it is and
 what it has done. Strengths and weaknesses are measured against the rest of *your* league —
@@ -90,11 +109,29 @@ and therefore worth nothing.
 
 ## Data
 
-Everything comes from the public, read-only [Sleeper API](https://docs.sleeper.com/). No key,
+| Source | Used for | Key needed |
+|---|---|---|
+| Sleeper API | Players, leagues, rosters, matchups, live scoring | No |
+| Sleeper projections | Projected stat lines and season-to-date actuals | No |
+| ESPN scoreboard | DraftKings spread / over-under → implied team totals | No |
+
+All three are public, read-only and CORS-open, so the browser talks to them directly. No key,
 no password, no OAuth — a username is enough to find your leagues. Your rankings live in
 `localStorage` and never leave the browser.
 
 The ~14MB player database is fetched once and cached for a day in trimmed form (about 300KB).
+Projections are cached for six hours, since they move as news breaks.
+
+### On Vegas odds
+
+Vegas is excellent at predicting how many points a team scores in a **specific game**, which
+makes it a genuinely useful weekly signal — a back on a 27-point implied team is in a very
+different spot than the same back on a 16-point implied team. It is a poor **season-long**
+signal: this week's spread says nothing about a player's rest-of-season worth, and the season
+projections already price in team quality and offensive environment.
+
+So odds are surfaced as matchup context in the player card and are deliberately **not** folded
+into trade value. Doing otherwise would make trade grades swing on a single week's line.
 
 ## Known limitations
 
@@ -104,8 +141,8 @@ The ~14MB player database is fetched once and cached for a day in trimmed form (
 - **IDP leagues are partially supported.** Rankings cover offense, kickers and team defenses.
   If your league starts IDP slots the app says so and excludes those slots from every
   calculation rather than silently scoring them as zero.
-- **Kicker and defense values** use direct points-per-game curves instead of a modeled stat
-  line, because their scoring is driven by events that barely correlate with a box score.
+- **Kicker and defense** are projected and scored from their real stat lines (field-goal
+  distance buckets, sacks, points-allowed brackets) under the league's own rules.
 - **There is no news wire.** No free, CORS-open NFL wire service exists, so instead of faking
   headlines the feed is built from live signals Sleeper does expose: injury designations,
   waiver-wire momentum, league transactions and in-progress scoring.
@@ -113,7 +150,7 @@ The ~14MB player database is fetched once and cached for a day in trimmed form (
 ## Development
 
 ```bash
-npm test          # 62 engine tests, no dependencies
+npm test          # 85 engine tests, no dependencies
 ```
 
 Everything under `js/` is a plain ES module. `package.json` exists only so Node can run the

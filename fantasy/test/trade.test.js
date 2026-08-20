@@ -201,12 +201,17 @@ test('roster crunch charges the team that has to make cuts', () => {
     });
     const a = res.sides[0];
     assert.equal(a.overflow, 2, '11 - 1 + 3 = 13 against an 11-man roster');
-    // The two players squeezed off are below replacement, so the crunch is free
-    // -- but the manager still has to be told they are making cuts.
-    assert.equal(a.crunchCost, 0);
+    // Depth still carries option value, so a forced cut is never literally
+    // free -- but squeezing off two bench bodies must stay a minor cost next
+    // to the players actually changing hands.
+    assert.ok(a.crunchCost > 0, 'bench depth is worth something');
+    assert.ok(
+        a.crunchCost < Math.abs(a.valueIn) * 0.5,
+        `crunch (${a.crunchCost}) must be small beside the incoming value (${a.valueIn})`
+    );
     const cut = res.reasons.find((r) => /has to cut 2 players/.test(r.title));
-    assert.ok(cut, 'roster crunch must be reported even when it costs nothing');
-    assert.match(cut.detail, /below replacement level/);
+    assert.ok(cut, 'roster crunch must be reported');
+    assert.match(cut.detail, /deep bench pieces/);
 });
 
 test('full mode reports playoff and title odds deltas', () => {

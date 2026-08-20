@@ -11,8 +11,9 @@
 // different values, because the scoring settings are applied to the estimated
 // production instead of being bolted on as a fudge factor afterwards.
 
-import { clamp } from './util.js';
+import { clamp, sortBy } from './util.js';
 import { ALL_POS, replacementRanks } from './league.js';
+import { blendedPpg, projectedPpg } from './projections.js';
 
 /**
  * Least-squares fit of value = a + b*ln(rank + c) through the anchor points,
@@ -179,14 +180,98 @@ export function ageFactor(pos, age) {
 }
 
 /**
+ * Points-per-game by positional rank, taken from where real projections
+ * actually land rather than from a fitted shape.
+ *
+ * The curve is the sorted list of projected per-game points at a position under
+ * this league's scoring. Rank 1 is the best projection, rank 2 the second, and
+ * so on. This is what gives the gaps between ranks their true size: the drop
+ * from QB1 to QB2 and the drop from RB1 to RB2 are different shapes in reality,
+ * and no single formula captures both.
+ */
+function buildCurves({ cfg, projections, actuals, week }) {
+    if (!projections) return null;
+    const buckets = {};
+    for (const pos of ALL_POS) buckets[pos] = [];
+
+    for (const [id, proj] of Object.entries(projections)) {
+        if (!buckets[proj.pos]) continue;
+        const ppg = blendedPpg({
+            projection: proj,
+            actual: actuals?.[id] || null,
+            scoring: cfg.scoring,
+            week,
+        });
+        if (ppg === null || !Number.isFinite(ppg)) continue;
+        buckets[proj.pos].push(ppg);
+    }
+
+    const curves = {};
+    let any = false;
+    for (const pos of ALL_POS) {
+        const list = buckets[pos].sort((a, b) => b - a);
+        if (list.length >= 8) {
+            curves[pos] = list;
+            any = true;
+        }
+    }
+    return any ? curves : null;
+}
+
+/**
+ * Per-game points for the Nth-ranked player at a position.
+ *
+ * Beyond the end of the projected pool the curve is continued by decaying the
+ * last real value, so a deep-bench rank still gets a distinct, sensible number
+ * instead of falling off a cliff or colliding with its neighbours.
+ */
+function curveLookup(curve, rank, fallback) {
+    if (!curve || !curve.length) return fallback();
+    const i = Math.max(1, Math.round(rank)) - 1;
+    if (i < curve.length) return curve[i];
+    const last = curve[curve.length - 1];
+    const overshoot = i - curve.length + 1;
+    return last * Math.exp(-0.05 * overshoot);
+}
+
+/**
+ * A below-replacement player is not worthless, and a player sitting exactly at
+ * replacement is not worth zero. He is a bye-week fill-in, injury insurance and
+ * trade filler, and a hard floor at zero erases the ordering among every depth
+ * piece in the league -- which is how a real starting running back ended up
+ * displaying the same value as a fourth-string handcuff.
+ *
+ * Softplus keeps the number strictly decreasing with rank, positive everywhere,
+ * and asymptotically equal to points-above-replacement for players who are
+ * actually starters.
+ */
+export function softplusPar(par, k = 1.25) {
+    const x = par / k;
+    // log1p(exp(x)) computed stably for large |x|.
+    return k * (x > 30 ? x : Math.log1p(Math.exp(x)));
+}
+
+/**
  * Build a valuation context once per (league, rankings, week) and reuse it for
  * every player lookup. Recomputing replacement levels per player would be the
  * single hottest line in the simulator otherwise.
  */
-export function createValuationContext(cfg, { week = 1, weeksLeft = 14, horizonYears = 4, discount = 0.85 } = {}) {
+export function createValuationContext(cfg, {
+    week = 1,
+    weeksLeft = 14,
+    horizonYears = 4,
+    discount = 0.85,
+    projections = null,
+    actuals = null,
+} = {}) {
     const replacement = replacementRanks(cfg);
+    const curves = buildCurves({ cfg, projections, actuals, week });
+
+    const ppgAtRank = (pos, rank) =>
+        curveLookup(curves?.[pos], rank, () => ppgFor(pos, rank, cfg.scoring));
+
     const replacementPpg = {};
-    for (const pos of ALL_POS) replacementPpg[pos] = ppgFor(pos, replacement[pos], cfg.scoring);
+    for (const pos of ALL_POS) replacementPpg[pos] = ppgAtRank(pos, replacement[pos]);
 
     return {
         cfg,
@@ -194,6 +279,14 @@ export function createValuationContext(cfg, { week = 1, weeksLeft = 14, horizonY
         weeksLeft,
         replacement,
         replacementPpg,
+        curves,
+        projections,
+        actuals,
+        ppgAtRank,
+        // True when values are grounded in real projections rather than the
+        // fallback model. Surfaced in the UI so the numbers are never
+        // silently synthetic.
+        projected: !!curves,
         horizonYears: cfg.format === 'redraft' ? 1 : horizonYears,
         discount,
         dynasty: cfg.format !== 'redraft',
@@ -203,48 +296,69 @@ export function createValuationContext(cfg, { week = 1, weeksLeft = 14, horizonY
 /**
  * Everything the rest of the app needs to know about one player's worth.
  *
+ * Value follows the user's ranking, not the projection: if you have Pollard as
+ * your RB20, he is worth what an RB20 is worth. The projection sets the scale
+ * of the curve; your board decides where each player sits on it. Both numbers
+ * are returned so the UI can show where you disagree with the projection.
+ *
  * @param {object} player  trimmed Sleeper player record
  * @param {number} posRank the user's positional rank for this player
  * @param {object} ctx     from createValuationContext
  */
 export function valuePlayer(player, posRank, ctx) {
     const pos = player.pos;
-    const ppg = ppgFor(pos, posRank, ctx.cfg.scoring);
+    const ppg = ctx.ppgAtRank ? ctx.ppgAtRank(pos, posRank) : ppgFor(pos, posRank, ctx.cfg.scoring);
     const repl = ctx.replacementPpg[pos] ?? 0;
     const avail = availability(player, ctx.weeksLeft);
 
-    // Weekly points above replacement, adjusted for expected availability.
     const parPerGame = ppg - repl;
-    const healthyPpg = ppg;
+    // Depth still counts for something; see softplusPar.
+    const effectivePar = softplusPar(parPerGame);
 
-    // Rest-of-season: what this player is worth for the remainder of THIS year.
-    const ros = parPerGame * ctx.weeksLeft * avail;
+    const ros = effectivePar * ctx.weeksLeft * avail;
 
     let value = ros;
     if (ctx.dynasty) {
-        // Future seasons are worth their aged-down production, discounted.
         const af = ageFactor(pos, player.age);
         const seasonLength = 14;
         for (let y = 1; y < ctx.horizonYears; y++) {
             const future = ageFactor(pos, (player.age ?? 26) + y) / (af || 1);
-            value += parPerGame * seasonLength * future * ctx.discount ** y;
+            value += effectivePar * seasonLength * future * ctx.discount ** y;
         }
     }
 
-    // Below-replacement players still occupy a roster spot with option value;
-    // without a floor, a 2-for-1 dumping two bench bodies would look free.
-    const floor = Math.max(0, 0.35 * ctx.weeksLeft * 0.15);
+    const own = ctx.projections?.[player.id] || null;
+    const ownPpg = own ? projectedPpg(own, ctx.cfg.scoring) : null;
+
     return {
         player,
         posRank,
-        ppg: healthyPpg,
-        effectivePpg: healthyPpg * avail,
+        ppg,
+        effectivePpg: ppg * avail,
         parPerGame,
         availability: avail,
         ros,
-        value: Math.max(value, parPerGame >= 0 ? value : -floor),
+        value,
         replacementPpg: repl,
+        // The player's own projection, independent of where he is ranked.
+        projection: own,
+        projectedPpg: ownPpg,
+        projectedRank: ownPpg !== null ? projectedRankOf(ctx, pos, ownPpg) : null,
     };
+}
+
+/** Where a per-game number would land on the position's projected curve. */
+function projectedRankOf(ctx, pos, ppg) {
+    const curve = ctx.curves?.[pos];
+    if (!curve) return null;
+    let lo = 0;
+    let hi = curve.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (curve[mid] > ppg) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo + 1;
 }
 
 /**

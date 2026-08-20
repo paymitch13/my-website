@@ -6,6 +6,7 @@
 // that is the user's.
 
 import { sortBy } from './util.js';
+import { projectedPpg } from './projections.js';
 
 export const RANKABLE = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 
@@ -13,11 +14,46 @@ export const RANKABLE = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 const DEPTH = { QB: 40, RB: 75, WR: 90, TE: 40, K: 32, DEF: 32 };
 
 /**
- * Starting order straight from Sleeper's search_rank. This is explicitly a
- * seed, not an opinion -- the whole point of the app is that the user replaces
- * it with theirs.
+ * Sort key for the starting board: lower is better.
+ *
+ * Projected points under the league's own scoring, when we have a projection.
+ * Sleeper's `search_rank` is the fallback, and it is only a fallback -- it is a
+ * popularity/ADP ordering, not a forecast, and seeding the board from it was
+ * why roster strength and power rankings disagreed with sites that use real
+ * projections.
  */
-export function seedOrder(players) {
+export function buildSeedKeys(players, { projections = null, scoring = null } = {}) {
+    const keys = new Map();
+    const projected = new Map();
+
+    if (projections && scoring) {
+        for (const p of Object.values(players)) {
+            const proj = projections[p.id];
+            if (!proj) continue;
+            const ppg = projectedPpg(proj, scoring);
+            if (ppg !== null && Number.isFinite(ppg)) projected.set(p.id, ppg);
+        }
+    }
+
+    for (const p of Object.values(players)) {
+        if (projected.has(p.id)) {
+            // Negative so that "higher projection" sorts first, and offset well
+            // below any search_rank so projected players always outrank
+            // unprojected ones.
+            keys.set(p.id, -1e6 + -projected.get(p.id));
+        } else {
+            keys.set(p.id, p.searchRank ?? 99999);
+        }
+    }
+    return keys;
+}
+
+/**
+ * Starting order for the board. Seeded from projections where available; the
+ * user then overrides it, and their overrides always win.
+ */
+export function seedOrder(players, opts = {}) {
+    const keys = opts.seedKeys || buildSeedKeys(players, opts);
     const byPos = {};
     for (const pos of RANKABLE) byPos[pos] = [];
     for (const p of Object.values(players)) {
@@ -25,7 +61,7 @@ export function seedOrder(players) {
     }
     const out = {};
     for (const pos of RANKABLE) {
-        out[pos] = sortBy(byPos[pos], (p) => p.searchRank)
+        out[pos] = sortBy(byPos[pos], (p) => keys.get(p.id) ?? 99999)
             .slice(0, DEPTH[pos])
             .map((p) => p.id);
     }
@@ -37,12 +73,14 @@ export function seedOrder(players) {
  *
  * Players who retired or changed names drop out; players who did not exist when
  * the board was saved (rookies, waiver risers) get slotted in at roughly where
- * Sleeper ranks them rather than dumped at the bottom, so a board saved in
+ * the seed rates them rather than dumped at the bottom, so a board saved in
  * August is still coherent in November.
  */
-export function mergeOrder(savedOrder, players) {
-    const seeded = seedOrder(players);
+export function mergeOrder(savedOrder, players, opts = {}) {
+    const keys = opts.seedKeys || buildSeedKeys(players, opts);
+    const seeded = seedOrder(players, { seedKeys: keys });
     const merged = {};
+    const keyOf = (id) => keys.get(id) ?? 1e9;
 
     for (const pos of RANKABLE) {
         const saved = (savedOrder?.[pos] || []).filter((id) => players[id] && players[id].pos === pos);
@@ -50,16 +88,16 @@ export function mergeOrder(savedOrder, players) {
         const missing = seeded[pos].filter((id) => !present.has(id));
 
         const list = saved.slice();
-        for (const id of sortBy(missing, (id) => players[id].searchRank)) {
-            const rank = players[id].searchRank;
-            // Place the newcomer after the last player Sleeper rates ahead of
+        for (const id of sortBy(missing, keyOf)) {
+            const key = keyOf(id);
+            // Place the newcomer after the last player the seed rates ahead of
             // him. Scanning from the bottom rather than the top is deliberate:
             // a player the user never saw must never leapfrog one the user
             // deliberately ranked, so an August board that has been hand-sorted
             // survives a November merge intact.
             let at = list.length;
             for (let i = list.length - 1; i >= 0; i--) {
-                if ((players[list[i]]?.searchRank ?? 1e9) < rank) {
+                if (keyOf(list[i]) < key) {
                     at = i + 1;
                     break;
                 }

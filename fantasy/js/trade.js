@@ -385,14 +385,18 @@ function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000) {
 
         if (s.overflow > 0) {
             const names = s.crunchCuts.map((c) => c.player.name).join(', ');
+            // Judge the cut against the size of the deal, not in the abstract:
+            // losing a deep bench body out of a blockbuster is noise, the same
+            // loss in a swap of spare parts is most of the trade.
+            const dealSize = Math.max(1, Math.abs(s.valueIn) + Math.abs(s.valueOut));
+            const material = s.crunchCost / dealSize > 0.08;
             reasons.push({
-                kind: s.crunchCost > 0 ? 'warn' : 'neutral',
+                kind: material ? 'warn' : 'neutral',
                 team: s.team.rosterId,
                 title: `${name} has to cut ${s.overflow} player${s.overflow === 1 ? '' : 's'}`,
-                detail:
-                    s.crunchCost > 0
-                        ? `The roster only holds ${cfg.rosterSize}. Dropping ${names} is a real cost of this deal.`
-                        : `The roster only holds ${cfg.rosterSize}, but the players who go (${names}) are already below replacement level. The crunch is free.`,
+                detail: material
+                    ? `The roster only holds ${cfg.rosterSize}. Dropping ${names} costs real value and is part of the price of this deal.`
+                    : `The roster only holds ${cfg.rosterSize}, so ${names} would go. They are deep bench pieces — a minor cost next to the rest of the trade.`,
             });
         }
 

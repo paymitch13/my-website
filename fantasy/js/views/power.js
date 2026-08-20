@@ -1,12 +1,20 @@
 // Payton Mitchell Power Rankings.
 
-import { computePowerRankings, applyMovement, toSnapshot, toShareText } from '../power.js';
+import { computePowerRankings, applyMovement, toSnapshot, toShareText, WEIGHT_PRESETS } from '../power.js';
 import * as store from '../store.js';
 import { openSyncModal } from '../app.js';
 import {
     componentBar, copyToClipboard, el, emptyState, fmtPct, playerCell, posBadge,
     round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
+
+const LABELS = {
+    roster: 'roster strength',
+    allPlay: 'all-play record',
+    title: 'simulated title odds',
+    form: 'recent form',
+    depth: 'injury resilience',
+};
 
 export default function renderPower(app) {
     const root = el('div', {});
@@ -37,23 +45,66 @@ export default function renderPower(app) {
         return root;
     }
 
+    let preset = store.state.settings.powerPreset || 'balanced';
+
+    const presetSeg = el(
+        'div',
+        { class: 'seg' },
+        ...Object.entries(WEIGHT_PRESETS).map(([key, cfg]) =>
+            el(
+                'button',
+                {
+                    type: 'button',
+                    'aria-pressed': String(key === preset),
+                    class: key === preset ? 'accent' : '',
+                    title: cfg.blurb,
+                    onclick: () => {
+                        preset = key;
+                        store.state.settings.powerPreset = key;
+                        store.save();
+                        for (const b of presetSeg.children) {
+                            const on = b.textContent === WEIGHT_PRESETS[key].label;
+                            b.setAttribute('aria-pressed', String(on));
+                            b.className = on ? 'accent' : '';
+                        }
+                        render();
+                    },
+                },
+                cfg.label
+            )
+        )
+    );
+
+    const blurbLine = el('span', { class: 'hint' });
+    root.append(
+        el(
+            'div',
+            { class: 'card card-tight' },
+            el('div', { class: 'row' }, el('span', { class: 'tiny dim' }, 'WEIGHTING'), presetSeg, blurbLine)
+        )
+    );
+
     const host = el('div', {});
     root.append(host);
-    host.append(el('div', { class: 'card' }, spinnerRow('Simulating the rest of the season…')));
 
-    setTimeout(() => {
-        try {
-            host.replaceChildren(build(app));
-        } catch (err) {
-            console.error(err);
-            host.replaceChildren(emptyState('⚠️', 'Could not build the rankings', err.message));
-        }
-    }, 30);
+    function render() {
+        blurbLine.textContent = WEIGHT_PRESETS[preset].blurb;
+        host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Simulating the rest of the season…')));
+        setTimeout(() => {
+            try {
+                host.replaceChildren(build(app, preset));
+            } catch (err) {
+                console.error(err);
+                host.replaceChildren(emptyState('⚠️', 'Could not build the rankings', err.message));
+            }
+        }, 30);
+    }
 
+    render();
     return root;
 }
 
-function build(app) {
+function build(app, preset = 'balanced') {
     const { league } = app;
     const week = league.currentWeek;
 
@@ -66,6 +117,7 @@ function build(app) {
         schedule: league.schedule,
         iterations: store.state.settings.simIterations || 2000,
         week,
+        preset,
     });
 
     const prev = store.previousSnapshot(league.cfg.id, week);

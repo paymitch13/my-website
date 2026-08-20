@@ -7,7 +7,9 @@ import { normalizeLeague, weeksRemaining } from './league.js';
 import { buildSchedule, syntheticSchedule } from './sim.js';
 import { createValuationContext } from './valuation.js';
 import * as store from './store.js';
-import { mergeOrder, seedOrder, toRankMap } from './rankings.js';
+import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
+import { fetchProjections, fetchSeasonStats } from './projections.js';
+import { fetchOdds } from './odds.js';
 
 /**
  * The player database is the one heavy fetch. Serve it from cache when it is
@@ -28,6 +30,43 @@ export async function loadPlayers({ force = false, onProgress = () => {} } = {})
     const players = await api.fetchPlayers();
     store.cachePlayers(players);
     return { players, from: 'network', at: Date.now() };
+}
+
+/**
+ * Projections are the backbone of every value in the app, so a failure here is
+ * reported rather than swallowed -- the UI falls back to the modeled curve and
+ * says so, instead of quietly showing worse numbers that look identical.
+ */
+export async function loadProjections(season, { onProgress = () => {} } = {}) {
+    onProgress('Loading season projections…');
+    const cached = store.loadCachedProjections(season);
+    if (cached && !cached.stale) return { projections: cached.projections, from: 'cache' };
+    try {
+        const projections = await fetchProjections(season);
+        store.cacheProjections(season, projections);
+        return { projections, from: 'network' };
+    } catch (err) {
+        if (cached) return { projections: cached.projections, from: 'stale-cache', error: err };
+        return { projections: null, error: err };
+    }
+}
+
+/** Season-to-date actuals, blended into the outlook once games have been played. */
+export async function loadSeasonStats(season) {
+    try {
+        return await fetchSeasonStats(season);
+    } catch {
+        return null;
+    }
+}
+
+/** Current-week Vegas lines. Optional context -- never blocks the app. */
+export async function loadOdds(week, season) {
+    try {
+        return await fetchOdds({ week, season });
+    } catch {
+        return null;
+    }
 }
 
 function refreshPlayersInBackground() {
@@ -162,14 +201,17 @@ function buildRemainingSchedule(cfg, matchupsByWeek, currentWeek, teams) {
  * Assemble the rankings + valuation context for a loaded league. Called
  * whenever the board changes, so it must stay cheap.
  */
-export function buildAnalysisContext(league, players) {
+export function buildAnalysisContext(league, players, { projections = null, actuals = null } = {}) {
+    const seedKeys = buildSeedKeys(players, { projections, scoring: league.cfg.scoring });
     const order = Object.keys(store.state.order || {}).length
-        ? mergeOrder(store.state.order, players)
-        : seedOrder(players);
+        ? mergeOrder(store.state.order, players, { seedKeys })
+        : seedOrder(players, { seedKeys });
     const rankings = toRankMap(order);
     const ctx = createValuationContext(league.cfg, {
         week: league.currentWeek,
         weeksLeft: Math.max(1, league.weeksLeft),
+        projections,
+        actuals,
     });
     return { order, rankings, ctx };
 }

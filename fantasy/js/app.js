@@ -5,8 +5,9 @@ import * as data from './data.js';
 import * as api from './sleeper.js';
 import { normalizeLeague, defaultRosterPositions, scoringLabel } from './league.js';
 import { createValuationContext } from './valuation.js';
-import { mergeOrder, seedOrder, toRankMap } from './rankings.js';
-import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, tag } from './ui.js';
+import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
+import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, tag, onPlayerClick } from './ui.js';
+import { openPlayerCard } from './views/player.js';
 
 import renderTrade from './views/trade.js';
 import renderPower from './views/power.js';
@@ -26,6 +27,10 @@ const VIEWS = {
 export const app = {
     players: null,
     playersAt: null,
+    projections: null,
+    actuals: null,
+    odds: null,
+    season: null,
     league: null,
     order: {},
     rankings: new Map(),
@@ -39,15 +44,25 @@ export const app = {
      */
     rebuild() {
         if (!this.players) return;
+        const cfg = this.league?.cfg || normalizeLeague(null, { rosterPositions: defaultRosterPositions() });
+
+        // The seed order depends on league scoring, so it has to be rebuilt
+        // whenever the league changes -- a player's projected rank is not the
+        // same in half PPR as it is in superflex.
+        const seedKeys = buildSeedKeys(this.players, {
+            projections: this.projections,
+            scoring: cfg.scoring,
+        });
         this.order = Object.keys(store.state.order || {}).length
-            ? mergeOrder(store.state.order, this.players)
-            : seedOrder(this.players);
+            ? mergeOrder(store.state.order, this.players, { seedKeys })
+            : seedOrder(this.players, { seedKeys });
         this.rankings = toRankMap(this.order);
 
-        const cfg = this.league?.cfg || normalizeLeague(null, { rosterPositions: defaultRosterPositions() });
         this.ctx = createValuationContext(cfg, {
             week: this.league?.currentWeek || 1,
             weeksLeft: Math.max(1, this.league?.weeksLeft ?? 14),
+            projections: this.projections,
+            actuals: this.actuals,
         });
         this.cfg = cfg;
     },
@@ -116,6 +131,17 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
             onProgress: (msg) => !silent && host.querySelector('h1') && (host.querySelector('h1').textContent = msg),
         });
         store.update({ leagueId, season: app.league.raw.season });
+
+        // Once a real league is attached we know the season and the week, so we
+        // can blend in what players have actually done and pull this week's
+        // game lines.
+        const [actuals, odds] = await Promise.all([
+            app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
+            data.loadOdds(app.league.currentWeek, app.league.raw.season),
+        ]);
+        app.actuals = actuals;
+        app.odds = odds;
+
         app.rebuild();
         updateChip();
         if (!silent) toast(`Synced ${app.league.cfg.name}`, 'good');
@@ -263,9 +289,14 @@ async function boot() {
         location.hash = `#/${btn.dataset.view}`;
     });
     document.getElementById('league-chip').addEventListener('click', openSyncModal);
+    onPlayerClick((player) => openPlayerCard(app, player));
     window.addEventListener('hashchange', () => renderView(currentViewFromHash()));
 
     try {
+        const nflState = await api.getState().catch(() => null);
+        app.season = nflState?.season || String(new Date().getFullYear());
+        app.nflState = nflState;
+
         const loaded = await data.loadPlayers({
             onProgress: (msg) => {
                 const h = host.querySelector('h1');
@@ -285,6 +316,21 @@ async function boot() {
             )
         );
         return;
+    }
+
+    // Projections drive every value in the app; load them before first paint so
+    // nothing is ever rendered from the fallback model and then silently
+    // replaced a second later.
+    const season = String(app.season || new Date().getFullYear());
+    const projResult = await data.loadProjections(season, {
+        onProgress: (msg) => {
+            const h = host.querySelector('h1');
+            if (h) h.textContent = msg;
+        },
+    });
+    app.projections = projResult.projections;
+    if (!app.projections) {
+        console.warn('Projections unavailable, falling back to the modeled curve', projResult.error);
     }
 
     app.rebuild();

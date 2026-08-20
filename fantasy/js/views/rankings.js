@@ -49,6 +49,16 @@ export default function renderRankings(app) {
         );
     }
 
+    // Never let the numbers be silently synthetic.
+    if (!app.ctx.projected) {
+        root.append(
+            banner(
+                'Season projections could not be loaded, so values are coming from the fallback rank model instead of real projected stat lines. Reload to try again.',
+                'warn'
+            )
+        );
+    }
+
     // ---- Controls ---------------------------------------------------------
 
     const posSeg = el(
@@ -176,8 +186,23 @@ export default function renderRankings(app) {
             playerCell(player, { showTeam: true }),
             el(
                 'span',
-                { class: 'val', title: 'Rest-of-season points above replacement in this league' },
-                val ? round(val.value, 0) : '—'
+                {
+                    class: 'val',
+                    title: val?.projectedRank
+                        ? `Rest-of-season value. Projection has him ${POS_LABEL[pos]}${val.projectedRank}.`
+                        : 'Rest-of-season value in this league',
+                },
+                val ? round(val.value, 0) : '—',
+                val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
+                    ? el(
+                          'span',
+                          {
+                              class: 'tiny dim',
+                              style: 'margin-left:6px',
+                          },
+                          `proj ${val.projectedRank}`
+                      )
+                    : null
             ),
             el(
                 'span',

@@ -3,6 +3,32 @@
 import { el, escapeHtml, round, sortBy } from './util.js';
 import { headshotUrl } from './sleeper.js';
 
+// Set once at boot by app.js. Kept as a hook rather than an import so the
+// shared primitives never have to reach back into the app module.
+let playerClickHandler = null;
+export function onPlayerClick(fn) {
+    playerClickHandler = fn;
+}
+
+/** Wrap a player's name so clicking it opens the profile card. */
+export function playerLink(player, text = player.name) {
+    if (!playerClickHandler) return el('span', {}, text);
+    return el(
+        'button',
+        {
+            type: 'button',
+            class: 'plink',
+            title: `Profile: ${player.name}`,
+            onclick: (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                playerClickHandler(player);
+            },
+        },
+        text
+    );
+}
+
 export function toast(message, kind = '') {
     const host = document.getElementById('toasts');
     if (!host) return;
@@ -81,7 +107,7 @@ export function playerCell(player, { rank = null, showTeam = true } = {}) {
             el(
                 'div',
                 { class: 'pname', style: 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis' },
-                player.name,
+                playerLink(player),
                 player.injury ? el('span', { class: 'tag tag-bad', style: 'margin-left:6px' }, player.injury) : null
             ),
             el('div', { class: 'pmeta' }, bits.join(' · '))

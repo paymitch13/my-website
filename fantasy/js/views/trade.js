@@ -12,7 +12,7 @@ import { optimizeLineup } from '../lineup.js';
 import { openSyncModal } from '../app.js';
 import {
     banner, componentBar, el, emptyState, fmtDelta, fmtPct, fmtPctDelta, gradeClass,
-    pickPlayer, playerCell, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
+    pickPlayer, playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 export default function renderTrade(app) {
@@ -121,7 +121,7 @@ export default function renderTrade(app) {
                         'div',
                         { class: 'chip' },
                         posBadge(p.pos),
-                        el('span', { class: 'grow', style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, p.name),
+                        el('span', { class: 'grow', style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, playerLink(p)),
                         el('span', { class: 'num tiny', style: 'color:var(--accent)' }, round(v.value, 0)),
                         el(
                             'button',
@@ -433,7 +433,7 @@ function lineupCard(app, side) {
                           'div',
                           { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
                           posBadge(p.pos),
-                          el('span', { style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, p.name),
+                          el('span', { style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, playerLink(p)),
                           changed ? tag('new', 'accent') : null
                       )
                     : el('span', { class: 'dim' }, 'empty')
@@ -515,7 +515,7 @@ function quickMode(app) {
                     'div',
                     { class: 'chip' },
                     posBadge(e.player.pos),
-                    el('span', { class: 'grow' }, e.player.name),
+                    el('span', { class: 'grow' }, playerLink(e.player)),
                     el('span', { class: 'num tiny', style: 'color:var(--accent)' }, round(e.value, 0)),
                     el(
                         'button',

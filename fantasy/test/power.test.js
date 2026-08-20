@@ -215,3 +215,40 @@ test('snapshots round-trip through movement', () => {
     applyMovement(ranked, { week: 7, ranking: snap });
     assert.ok(ranked.every((r) => r.movement === 0), 'same ranking means no movement');
 });
+
+test('weighting presets actually change the ordering', () => {
+    // A weak roster that has been scoring well vs a strong roster that has not.
+    const { rankings, teams } = buildLeague({
+        8: { wins: 6, losses: 1, ties: 0, pointsFor: 1000 },
+        1: { wins: 1, losses: 6, ties: 0, pointsFor: 600 },
+    });
+    const scores = weeklyScores(teams, (t) => (t.rosterId === 8 ? 145 : t.rosterId === 1 ? 80 : 105));
+    const base = {
+        cfg, ctx, teams, rankings, week: 8, iterations: 400,
+        weeklyScores: scores,
+        schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
+    };
+    const rosterFirst = computePowerRankings({ ...base, preset: 'roster' });
+    const resultsFirst = computePowerRankings({ ...base, preset: 'results' });
+
+    const rankOf = (list, id) => list.find((r) => r.rosterId === id).rank;
+    // Team 1 has the best roster; team 8 has the best results.
+    assert.ok(
+        rankOf(rosterFirst, 1) < rankOf(resultsFirst, 1),
+        'the strong-but-losing roster should rank better under roster-first'
+    );
+    assert.ok(
+        rankOf(resultsFirst, 8) < rankOf(rosterFirst, 8),
+        'the weak-but-winning team should rank better under results-first'
+    );
+});
+
+test('an unknown preset falls back to balanced rather than throwing', () => {
+    const { rankings, teams } = buildLeague();
+    const ranked = computePowerRankings({
+        cfg, ctx, teams, rankings, week: 8, iterations: 200, preset: 'nonsense',
+        weeklyScores: weeklyScores(teams, () => 110),
+        schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
+    });
+    assert.equal(ranked.length, teams.length);
+});
