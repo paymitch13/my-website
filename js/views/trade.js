@@ -10,6 +10,7 @@ import { valuePlayer } from '../valuation.js';
 import { slotLabel, scoringLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import * as store from '../store.js';
+import { byeConflicts } from '../schedule.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
     playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -54,6 +55,21 @@ export default function renderTrade(app) {
     const mine = teams.find((t) => t.ownerId && t.ownerId === app.userId);
     const stateA = { team: mine || teams[0], sending: [] };
     const stateB = { team: teams.find((t) => t.rosterId !== stateA.team.rosterId) || teams[0], sending: [] };
+
+    // A link from the finder, or pasted from a league chat, pre-fills the deal.
+    const shared = app.pendingOffer;
+    if (shared) {
+        const a = teams.find((t) => t.rosterId === shared.aRoster);
+        const b = teams.find((t) => t.rosterId === shared.bRoster);
+        if (a && b) {
+            const owned = (team, ids) => ids.filter((id) => team.players.some((p) => p.id === id));
+            stateA.team = a;
+            stateA.sending = owned(a, shared.aSend);
+            stateB.team = b;
+            stateB.sending = owned(b, shared.bSend);
+        }
+        app.pendingOffer = null;
+    }
 
     const resultHost = el('div', { style: 'margin-top:24px' });
     const panelA = el('div', { class: 'side-panel' });
@@ -241,6 +257,8 @@ export default function renderTrade(app) {
     }
 
     paintPanels();
+    // A pre-filled deal should show its verdict without another click.
+    if (stateA.sending.length && stateB.sending.length) setTimeout(evaluate, 0);
     return root;
 }
 
@@ -326,6 +344,27 @@ function renderResult(app, result, repaint) {
         }
     }
     wrap.append(tiles);
+
+    // Bye stacking is invisible in a value ledger and decides real weeks.
+    for (const side of result.sides) {
+        const after = side.after.map((e) => e.player);
+        const before = side.before.map((e) => e.player);
+        const week = app.league.currentWeek;
+        const newTrouble = byeConflicts(after, app.byeWeeks, { fromWeek: week, minPlayers: 3 })
+            .filter((c) => {
+                const had = byeConflicts(before, app.byeWeeks, { fromWeek: week, minPlayers: 3 })
+                    .find((x) => x.week === c.week);
+                return !had || c.players.length > had.players.length;
+            });
+        for (const c of newTrouble.slice(0, 2)) {
+            wrap.append(
+                banner(
+                    `${side.team.name} would have ${c.players.length} players on bye in week ${c.week} after this trade: ${c.players.map((p) => p.name).join(', ')}.`,
+                    'warn'
+                )
+            );
+        }
+    }
 
     // Why
     wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Why'), el('span', { class: 'hint' }, 'ranked by how much it matters')));

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12161f"/>
+      <stop offset="1" stop-color="#1e2533"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4fd1c5"/>
+      <stop offset="1" stop-color="#4c9aff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1040" cy="120" r="260" fill="#4fd1c5" opacity="0.07"/>
+  <circle cx="150" cy="560" r="220" fill="#4c9aff" opacity="0.06"/>
+
+  <rect x="90" y="96" width="84" height="84" rx="20" fill="url(#mark)"/>
+  <ellipse cx="132" cy="138" rx="23" ry="15" fill="#12161f"/>
+  <path d="M119 138h26M126 131v14M132 130v16M138 131v14" stroke="#4fd1c5" stroke-width="3" stroke-linecap="round"/>
+
+  <text x="196" y="130" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="30" fill="#a3b0c4" letter-spacing="3">PAYTON MITCHELL</text>
+  <text x="196" y="176" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="30" fill="#6b7891">paymitch13.github.io</text>
+
+  <text x="90" y="320" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="78" font-weight="700" fill="#e8edf5">Fantasy Command Center</text>
+  <text x="90" y="392" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="34" fill="#a3b0c4">Trade calculator · Start/Sit · Power rankings</text>
+
+  <g font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif">
+    <rect x="90" y="452" width="330" height="96" rx="16" fill="#1e2533" stroke="#303a4d"/>
+    <text x="112" y="492" font-size="22" fill="#6b7891">BUILT ON</text>
+    <text x="112" y="527" font-size="27" fill="#4fd1c5">Your own rankings</text>
+
+    <rect x="440" y="452" width="330" height="96" rx="16" fill="#1e2533" stroke="#303a4d"/>
+    <text x="462" y="492" font-size="22" fill="#6b7891">SCORED BY</text>
+    <text x="462" y="527" font-size="27" fill="#4fd1c5">Your league's rules</text>
+
+    <rect x="790" y="452" width="320" height="96" rx="16" fill="#1e2533" stroke="#303a4d"/>
+    <text x="812" y="492" font-size="22" fill="#6b7891">RANKED BY</text>
+    <text x="812" y="527" font-size="27" fill="#4fd1c5">Title odds delta</text>
+  </g>
+</svg>

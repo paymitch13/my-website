@@ -16,9 +16,13 @@ import renderRankings from './views/rankings.js';
 import renderLeague from './views/league.js';
 import renderNews from './views/news.js';
 import renderStartSit from './views/startsit.js';
+import renderFinder from './views/finder.js';
+import { decodeOffer } from './share.js';
+import { fetchByeWeeks } from './schedule.js';
 
 const VIEWS = {
     trade: { render: renderTrade, title: 'Trade Calculator' },
+    finder: { render: renderFinder, title: 'Trade Finder' },
     startsit: { render: renderStartSit, title: 'Start/Sit' },
     power: { render: renderPower, title: 'Power Rankings' },
     rankings: { render: renderRankings, title: 'My Rankings' },
@@ -34,6 +38,9 @@ export const app = {
     projections: null,
     actuals: null,
     odds: null,
+    byeWeeks: new Map(),
+    powerOdds: null,
+    pendingOffer: null,
     transactions: [],
     season: null,
     league: null,
@@ -88,7 +95,11 @@ export const app = {
 // --- Routing ---------------------------------------------------------------
 
 function currentViewFromHash() {
-    const key = (location.hash || '').replace(/^#\/?/, '');
+    const raw = (location.hash || '').replace(/^#\/?/, '');
+    const key = raw.split('?')[0];
+    // A shared trade link carries the offer in the hash; stash it for the view.
+    const offer = decodeOffer(location.hash || '');
+    app.pendingOffer = offer;
     return VIEWS[key] ? key : 'trade';
 }
 
@@ -144,14 +155,16 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         // can blend in what players have actually done and pull this week's
         // game lines.
         const teamsById = new Map(app.league.teams.map((t) => [t.rosterId, t]));
-        const [actuals, odds, transactions] = await Promise.all([
+        const [actuals, odds, transactions, byeWeeks] = await Promise.all([
             app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
             data.loadOdds(app.league.currentWeek, app.league.raw.season),
             loadSeasonTransactions(leagueId, app.league.currentWeek, { teamsById, players: app.players }).catch(() => []),
+            fetchByeWeeks(app.league.raw.season).catch(() => new Map()),
         ]);
         app.actuals = actuals;
         app.odds = odds;
         app.transactions = transactions;
+        app.byeWeeks = byeWeeks;
 
         app.rebuild();
         updateChip();
@@ -195,8 +208,11 @@ export function watchForTrades() {
                 for (const t of added) {
                     toast(`New trade: ${t.sides.map((s) => s.name).join(' ↔ ')}`, 'good');
                 }
-                // Rosters have changed, so anything derived from them is stale.
+                // Rosters have changed, so anything derived from them is stale:
+                // power snapshots, finder results and the open view alike.
+                app.powerOdds = null;
                 await connectLeague(app.league.cfg.id, { silent: true });
+                app.render();
             }
         } catch {
             /* polling is best-effort */

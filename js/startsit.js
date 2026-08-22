@@ -80,7 +80,7 @@ export function defenseVegasImpact(opponentImplied, neutral = FALLBACK_IMPLIED) 
 export function evaluatePlayerWeek(input) {
     const {
         player, weekly, scoring, oddsByTeam, weatherByHome, defenseProfiles,
-        defenseRanks, weeksLeft = 1, neutralImplied = null,
+        defenseRanks, weeksLeft = 1, neutralImplied = null, onBye = false,
     } = input;
     const neutral = neutralImplied ?? slateAverage(oddsByTeam);
 
@@ -156,14 +156,15 @@ export function evaluatePlayerWeek(input) {
     }
 
     // A player who is not playing cannot be started, exactly like a bye.
-    const hasGame = !!weekly && !!opponent && !ruledOut;
-    const adjusted = base === null || ruledOut ? null : base * multiplier;
+    const hasGame = !!weekly && !!opponent && !ruledOut && !onBye;
+    const adjusted = base === null || ruledOut || onBye ? null : base * multiplier;
 
     return {
         player,
         opponent,
         hasGame,
         ruledOut,
+        onBye,
         playProbability,
         baseProjection: base,
         adjusted,

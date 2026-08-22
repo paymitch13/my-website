@@ -392,6 +392,8 @@ export function valuePlayer(player, posRank, ctx) {
 
     const own = ctx.projections?.[player.id] || null;
     const ownPpg = own ? projectedPpg(own, ctx.cfg.scoring) : null;
+    // Blend in actuals the same way the curve does, so a player's projected
+    // rank is measured on the same scale as the curve he is ranked against.
 
     return {
         player,

@@ -4,6 +4,7 @@ import { buildStartSitReport, evaluatePlayerWeek, lineupChanges, slateAverage } 
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
 import { fetchWeatherForGames } from '../weather.js';
 import { loadWeekContext, loadOdds } from '../data.js';
+import { isOnBye } from '../schedule.js';
 import { slotLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
@@ -126,6 +127,7 @@ async function build(app, team) {
             defenseProfiles,
             defenseRanks,
             weeksLeft: Math.max(1, app.league.weeksLeft),
+            onBye: isOnBye(app.byeWeeks, player.team, currentWeek),
         })
     );
 

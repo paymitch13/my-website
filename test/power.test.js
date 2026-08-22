@@ -47,7 +47,7 @@ function weeklyScores(teams, scoreFor) {
     return m;
 }
 
-test('all-play strips schedule luck out of a record', () => {
+test('all-play strips schedule luck out of a record', async () => {
     const teams = [1, 2, 3, 4].map((rosterId) => ({ rosterId }));
     // Team 1 scores the most every single week.
     const scores = new Map([
@@ -62,15 +62,15 @@ test('all-play strips schedule luck out of a record', () => {
     assert.equal(ap.get(1).expectedWins, 2);
 });
 
-test('all-play splits ties evenly', () => {
+test('all-play splits ties evenly', async () => {
     const teams = [1, 2].map((rosterId) => ({ rosterId }));
     const scores = new Map([[1, [{ week: 1, points: 100 }]], [2, [{ week: 1, points: 100 }]]]);
     assert.equal(computeAllPlay(teams, scores).get(1).winPct, 0.5);
 });
 
-test('better rosters rank higher when records are identical', () => {
+test('better rosters rank higher when records are identical', async () => {
     const { rankings, teams } = buildLeague();
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 400,
         weeklyScores: weeklyScores(teams, () => 110),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -81,12 +81,12 @@ test('better rosters rank higher when records are identical', () => {
     ranked.forEach((r, i) => assert.equal(r.rank, i + 1));
 });
 
-test('an unlucky team is ranked above its record and called out', () => {
+test('an unlucky team is ranked above its record and called out', async () => {
     // Team 3 has a strong roster and scores well but is only 1-6.
     const { rankings, teams } = buildLeague({
         3: { wins: 1, losses: 6, ties: 0, pointsFor: 980 },
     });
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 400,
         weeklyScores: weeklyScores(teams, (t) => (t.rosterId === 3 ? 140 : 100)),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -98,11 +98,11 @@ test('an unlucky team is ranked above its record and called out', () => {
     assert.match(t3.blurb, /unlucky/i);
 });
 
-test('a lucky team with a bad roster is called out for it', () => {
+test('a lucky team with a bad roster is called out for it', async () => {
     const { rankings, teams } = buildLeague({
         9: { wins: 7, losses: 0, ties: 0, pointsFor: 560 },
     });
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 400,
         weeklyScores: weeklyScores(teams, (t) => (t.rosterId === 9 ? 70 : 110)),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -113,14 +113,14 @@ test('a lucky team with a bad roster is called out for it', () => {
     assert.match(t9.blurb, /did not earn/i);
 });
 
-test('luck superlatives are only ever handed to one team', () => {
+test('luck superlatives are only ever handed to one team', async () => {
     // Three teams all badly unlucky: only the worst may claim the superlative.
     const { rankings, teams } = buildLeague({
         1: { wins: 0, losses: 7, ties: 0, pointsFor: 1000 },
         2: { wins: 1, losses: 6, ties: 0, pointsFor: 980 },
         3: { wins: 1, losses: 6, ties: 0, pointsFor: 960 },
     });
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 300,
         weeklyScores: weeklyScores(teams, (t) => (t.rosterId <= 3 ? 145 : 95)),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -129,11 +129,11 @@ test('luck superlatives are only ever handed to one team', () => {
     assert.equal(claims.length, 1, `expected exactly one "most unlucky", got ${claims.length}`);
 });
 
-test('weak spots are league-relative, not just the lowest-scoring position', () => {
+test('weak spots are league-relative, not just the lowest-scoring position', async () => {
     // Every roster in every league starts fewer points at TE than at RB, so a
     // blurb that flags TE for everyone is saying nothing at all.
     const { rankings, teams } = buildLeague();
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 300,
         weeklyScores: weeklyScores(teams, () => 110),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -146,9 +146,9 @@ test('weak spots are league-relative, not just the lowest-scoring position', () 
     assert.ok(!/is a real hole/.test(top.blurb) || top.rank > 1, 'the best team should not read as full of holes');
 });
 
-test('preseason rankings fall back to roster strength alone', () => {
+test('preseason rankings fall back to roster strength alone', async () => {
     const { rankings, teams } = buildLeague();
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 1, iterations: 300,
         weeklyScores: new Map(),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 1, 14),
@@ -158,9 +158,9 @@ test('preseason rankings fall back to roster strength alone', () => {
     assert.equal(ranked[0].components.allPlay, 0, 'no games means no performance signal');
 });
 
-test('every team gets a tier and a non-empty blurb', () => {
+test('every team gets a tier and a non-empty blurb', async () => {
     const { rankings, teams } = buildLeague();
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 300,
         weeklyScores: weeklyScores(teams, () => 110),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -173,7 +173,7 @@ test('every team gets a tier and a non-empty blurb', () => {
     assert.ok(new Set(ranked.map((r) => r.tierName)).size > 1, 'tiers should actually separate teams');
 });
 
-test('movement is computed against a stored snapshot', () => {
+test('movement is computed against a stored snapshot', async () => {
     const ranked = [
         { rosterId: 1, rank: 1, rating: 80, team: { name: 'A', wins: 5, losses: 1 }, blurb: 'x', movement: 0 },
         { rosterId: 2, rank: 2, rating: 70, team: { name: 'B', wins: 4, losses: 2 }, blurb: 'y', movement: 0 },
@@ -184,14 +184,14 @@ test('movement is computed against a stored snapshot', () => {
     assert.equal(ranked[0].previousRank, 4);
 });
 
-test('teams absent from the snapshot show no movement', () => {
+test('teams absent from the snapshot show no movement', async () => {
     const ranked = [{ rosterId: 5, rank: 1, team: { name: 'New' } }];
     applyMovement(ranked, { week: 3, ranking: [] });
     assert.equal(ranked[0].movement, 0);
     assert.equal(ranked[0].previousRank, null);
 });
 
-test('share text is paste-ready and includes movement arrows', () => {
+test('share text is paste-ready and includes movement arrows', async () => {
     const ranked = [
         { rosterId: 1, rank: 1, rating: 82, movement: 2, team: { name: 'Alpha', wins: 5, losses: 1 }, blurb: 'Rolling.' },
         { rosterId: 2, rank: 2, rating: 61, movement: -1, team: { name: 'Beta', wins: 3, losses: 3 }, blurb: 'Fading.' },
@@ -203,9 +203,9 @@ test('share text is paste-ready and includes movement arrows', () => {
     assert.match(txt, /Rolling\./);
 });
 
-test('snapshots round-trip through movement', () => {
+test('snapshots round-trip through movement', async () => {
     const { rankings, teams } = buildLeague();
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 250,
         weeklyScores: weeklyScores(teams, () => 110),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
@@ -216,7 +216,7 @@ test('snapshots round-trip through movement', () => {
     assert.ok(ranked.every((r) => r.movement === 0), 'same ranking means no movement');
 });
 
-test('weighting presets actually change the ordering', () => {
+test('weighting presets actually change the ordering', async () => {
     // A weak roster that has been scoring well vs a strong roster that has not.
     const { rankings, teams } = buildLeague({
         8: { wins: 6, losses: 1, ties: 0, pointsFor: 1000 },
@@ -228,8 +228,8 @@ test('weighting presets actually change the ordering', () => {
         weeklyScores: scores,
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),
     };
-    const rosterFirst = computePowerRankings({ ...base, preset: 'roster' });
-    const resultsFirst = computePowerRankings({ ...base, preset: 'results' });
+    const rosterFirst = await computePowerRankings({ ...base, preset: 'roster' });
+    const resultsFirst = await computePowerRankings({ ...base, preset: 'results' });
 
     const rankOf = (list, id) => list.find((r) => r.rosterId === id).rank;
     // Team 1 has the best roster; team 8 has the best results.
@@ -243,9 +243,9 @@ test('weighting presets actually change the ordering', () => {
     );
 });
 
-test('an unknown preset falls back to balanced rather than throwing', () => {
+test('an unknown preset falls back to balanced rather than throwing', async () => {
     const { rankings, teams } = buildLeague();
-    const ranked = computePowerRankings({
+    const ranked = await computePowerRankings({
         cfg, ctx, teams, rankings, week: 8, iterations: 200, preset: 'nonsense',
         weeklyScores: weeklyScores(teams, () => 110),
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 8, 14),

@@ -35,6 +35,10 @@ export function impliedTotals(overUnder, spread) {
 
 export function parseScoreboard(payload) {
     const games = [];
+    // payload.week.teamsOnBye was being downloaded and discarded.
+    const teamsOnBye = (payload?.week?.teamsOnBye || [])
+        .map((t) => normalizeTeam(t?.abbreviation))
+        .filter(Boolean);
     for (const event of payload?.events || []) {
         const comp = event?.competitions?.[0];
         if (!comp) continue;
@@ -84,6 +88,7 @@ export function parseScoreboard(payload) {
             implied,
         });
     }
+    games.teamsOnBye = teamsOnBye;
     return games;
 }
 
@@ -131,7 +136,7 @@ export async function fetchOdds({ week, season, seasonType = 2 } = {}) {
     const res = await fetch(`${SCOREBOARD}?${params}`);
     if (!res.ok) throw new Error(`Odds fetch failed (${res.status})`);
     const games = parseScoreboard(await res.json());
-    return { games, byTeam: buildTeamContext(games) };
+    return { games, byTeam: buildTeamContext(games), teamsOnBye: games.teamsOnBye || [] };
 }
 
 /** Plain-language read on a team's week: "shootout", "buried", etc. */

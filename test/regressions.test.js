@@ -11,6 +11,8 @@ import { buildDefenseProfiles } from '../js/matchup.js';
 import { buildStartSitReport } from '../js/startsit.js';
 import { simulateSeason, syntheticSchedule, DEFAULT_SIM_SEED } from '../js/sim.js';
 import { fromCsv } from '../js/rankings.js';
+import { evaluateRosterEntry, neutralEntry } from '../js/trade.js';
+import { createValuationContext } from '../js/valuation.js';
 
 const cfg = normalizeLeague({
     settings: { num_teams: 12 }, scoring_settings: { rec: 0.5 },
@@ -182,4 +184,45 @@ test('BUG: a ragged CSV row crashed the importer', () => {
     const parsed = fromCsv(csv, players);
     assert.equal(parsed.matched, 0, 'an ambiguous name with no position is unmatched, not a crash');
     assert.deepEqual(parsed.unmatched, ['Same Name']);
+});
+
+// --- Neutral counterparty valuation ---------------------------------------
+
+test('the other manager does not share your board', () => {
+    // You are personally low on a stud: you have him RB40, projections have him
+    // near the top. Valuing HIS roster with YOUR board would claim his manager
+    // will happily give him away.
+    const projections = {};
+    for (let i = 0; i < 40; i++) {
+        projections[`rb${i}`] = {
+            id: `rb${i}`, pos: 'RB', games: 17,
+            stats: { rush_yd: (18 - 0.35 * i) * 170 }, ptsHalfPpr: 1,
+        };
+    }
+    const league = normalizeLeague({
+        settings: { num_teams: 12 }, scoring_settings: { rush_yd: 0.1 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const ctx = createValuationContext(league, { week: 5, weeksLeft: 10, projections });
+
+    const stud = { id: 'rb1', name: 'Stud', pos: 'RB', age: 25, injury: null };
+    const myRankings = new Map([['rb1', 40]]);
+
+    const mine = evaluateRosterEntry(stud, myRankings, ctx);
+    const theirs = neutralEntry(stud, ctx);
+
+    assert.ok(theirs.value > mine.value * 2,
+        `neutral value ${theirs.value} must far exceed my low ranking ${mine.value}`);
+    assert.equal(theirs.posRank, 2, 'neutral rank comes from the projection curve');
+    assert.equal(theirs.neutral, true);
+});
+
+test('neutral valuation falls back gracefully with no projection', () => {
+    const league = normalizeLeague({
+        settings: { num_teams: 12 }, scoring_settings: { rec: 0.5 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const ctx = createValuationContext(league, { week: 5, weeksLeft: 10 });
+    const e = neutralEntry({ id: 'ghost', name: 'Ghost', pos: 'WR', age: 26 }, ctx);
+    assert.ok(Number.isFinite(e.value));
 });

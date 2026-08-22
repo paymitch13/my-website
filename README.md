@@ -81,6 +81,11 @@ everywhere, and asymptotically equal to points-above-replacement for genuine sta
 | `js/matchup.js` | Defense-vs-position difficulty, computed from weekly results |
 | `js/weather.js` | Stadium forecasts and position-weighted weather impact |
 | `js/transactions.js` | League transaction history, trade log, per-player history |
+| `js/finder.js` | Three-stage trade search across the whole league |
+| `js/needs.js` | Per-roster need and surplus by position |
+| `js/usage.js` | Usage trends and touchdown dependence |
+| `js/schedule.js` | Bye weeks |
+| `js/simclient.js` | Simulation worker client, with a synchronous fallback |
 
 The lineup solver places players best-first into the most restrictive slot they qualify for.
 For the usual slot set the eligibility sets are nested, and greedy is provably optimal on a
@@ -113,6 +118,54 @@ the close calls — decisions within 2.5 points, which are the only ones actuall
 
 Individual player props would be a natural fifth input, but no free, CORS-open source for them
 exists, so they are not part of this rather than being faked.
+
+## Trade Finder
+
+A twelve-team league is roughly 16 of your players against 176 of theirs. One-for-one alone is
+~2,800 combinations, and a 2,000-iteration double simulation on each is impossible. So the cost
+of evaluation is matched to how many candidates survive:
+
+| Stage | Work | Cost | Candidates |
+|---|---|---|---|
+| 1 | Need / surplus filter | microseconds | ~2,800 → ~200 |
+| 2 | Lineup solve, both directions | milliseconds | ~200 → ~40 |
+| 3 | Full evaluation with odds simulation | seconds | ~40 → ~8 |
+
+Surplus is measured as bench depth relative to positional dropoff, not as low starting points: a
+team with three startable backs and one flex spot has surplus at running back even when its
+starting production looks fine.
+
+### They do not share your board
+
+This is what makes or breaks a recommender. `evaluateTrade` values both rosters with *your*
+rankings, which is correct for deciding whether **you** want a deal and wrong for predicting
+whether **they** accept one. If you are low on a player, valuing his own roster with your board
+decides his manager is low on him too, and confidently reports he is available. He is not.
+
+So the counterparty's roster is valued on a **neutral board** — each player's projected rank,
+independent of your ordering. Every suggestion reports two numbers:
+
+- **Your gain**, from your board.
+- **Their likely answer**, from the neutral board: what they gain in lineup points and playoff
+  odds, which is the sentence that decides whether an offer is worth sending.
+
+A trade that lowers your own playoff or title odds is dropped regardless of how much the other
+side likes it.
+
+### Buy low and sell high
+
+Every completed week's full stat lines are already downloaded for the matchup profiles. Those
+rows carry snap counts, targets, air yards and red-zone volume, which is everything needed for
+the two calls people actually want:
+
+- **Buy low** — snap and target share rising while fantasy points stay flat or fall. The role is
+  growing and the box score has not caught up.
+- **Sell high** — the fraction of a player's points coming from touchdowns. Touchdown rate is
+  the least sticky thing in fantasy; a receiver whose usage says WR30 and whose points say WR8
+  because of four scores is the textbook sell.
+
+Counterparties are also labelled **buying**, **selling** or **on the bubble** from their
+simulated playoff odds, because an 8% team and a 90% team want opposite things.
 
 ## Trades that actually get accepted
 
@@ -171,6 +224,7 @@ and therefore worth nothing.
 | Sleeper projections | Projected stat lines and season-to-date actuals | No |
 | ESPN scoreboard | DraftKings spread / over-under → implied team totals | No |
 | Open-Meteo | Stadium weather at kickoff for outdoor venues | No |
+| ESPN scoreboard | `week.teamsOnBye` → bye weeks for every team | No |
 
 All three are public, read-only and CORS-open, so the browser talks to them directly. No key,
 no password, no OAuth — a username is enough to find your leagues. Your rankings live in
@@ -195,13 +249,12 @@ into trade value. Doing otherwise would make trade grades swing on a single week
 - **Player props** — every source needs a paid key, and a key in a static site is a public key.
 - **Divisions in playoff seeding** — Sleeper exposes them, the simulator seeds purely on record
   and points for. Correct for most leagues, wrong for divisional ones.
+- **Draft picks in offers** — picks are parsed and shown in the trade log, but cannot yet be put
+  into a proposed trade. In dynasty leagues that is a real gap.
 - **Manual tiering** — tiers are derived from gaps in projected value, not hand-drawn.
 
 ## Known limitations
 
-- **Bye weeks are not modeled.** Sleeper does not publish them and there is no CORS-open NFL
-  schedule source, so rather than guess, the app leaves them out. A trade that stacks two
-  players on the same bye will not be flagged for it.
 - **IDP leagues are partially supported.** Rankings cover offense, kickers and team defenses.
   If your league starts IDP slots the app says so and excludes those slots from every
   calculation rather than silently scoring them as zero.
@@ -214,7 +267,7 @@ into trade value. Doing otherwise would make trade grades swing on a single week
 ## Development
 
 ```bash
-npm test          # 146 engine tests, no dependencies
+npm test          # 179 engine tests, no dependencies
 ```
 
 Everything under `js/` is a plain ES module. `package.json` exists only so Node can run the

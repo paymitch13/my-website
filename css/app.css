@@ -5,6 +5,10 @@
    ========================================================================== */
 
 :root {
+    /* Native selects, scrollbars and form controls follow this; without it they
+       render light against the dark UI. */
+    color-scheme: dark;
+
     --bg: #12161f;
     --bg-2: #171d29;
     --surface: #1e2533;
@@ -745,4 +749,34 @@ input::placeholder { color: var(--text-3); }
 
 @media (max-width: 640px) {
     .tabs-wrap { order: 3; width: 100%; flex-basis: 100%; }
+}
+
+/* ---------- Trade Finder ---------- */
+
+.finder-card { margin-bottom: var(--sp-3); }
+
+.finder-head {
+    display: flex; align-items: flex-start; gap: var(--sp-4);
+    flex-wrap: wrap;
+}
+.finder-legs {
+    display: grid; grid-template-columns: 1fr 30px 1fr;
+    gap: var(--sp-3); align-items: center; flex: 1; min-width: 0;
+}
+.finder-leg { min-width: 0; }
+.finder-arrow { text-align: center; color: var(--text-3); font-size: 17px; }
+.finder-partner { text-align: right; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+
+.finder-numbers {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: var(--sp-3); margin-top: var(--sp-4);
+    padding-top: var(--sp-3); border-top: 1px solid var(--line-soft);
+}
+.fn .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); font-weight: 650; }
+.fn .v { font-size: 17px; font-weight: 700; margin-top: 2px; }
+
+@media (max-width: 640px) {
+    .finder-legs { grid-template-columns: 1fr; }
+    .finder-arrow { display: none; }
+    .finder-partner { text-align: left; align-items: flex-start; }
 }

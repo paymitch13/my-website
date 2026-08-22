@@ -11,7 +11,9 @@
 
 import { optimizeLineup, positionalReport, teamScoringProfile } from './lineup.js';
 import { buildEntries } from './trade.js';
-import { simulateSeason, scheduleStrength, DEFAULT_SIM_SEED } from './sim.js';
+import { leagueAverages, NEED_POSITIONS } from './needs.js';
+import { scheduleStrength, DEFAULT_SIM_SEED } from './sim.js';
+import { runSimulation } from './simclient.js';
 import { clamp, mean, ordinal, round, sortBy, stdev, sum } from './util.js';
 
 /**
@@ -53,7 +55,7 @@ export const PRESEASON_WEIGHTS = { roster: 0.78, allPlay: 0, title: 0.12, form: 
  * @param {Map}     input.weeklyScores rosterId -> [{week, points}]
  * @param {Array}   [input.schedule]   remaining schedule for the odds component
  */
-export function computePowerRankings(input) {
+export async function computePowerRankings(input) {
     const {
         cfg, ctx, teams, rankings,
         weeklyScores = new Map(), schedule = null, iterations = 2000, week = 1,
@@ -107,7 +109,7 @@ export function computePowerRankings(input) {
             mu: r.mu,
             sigma: r.sigma,
         }));
-        const sim = simulateSeason(simTeams, schedule, {
+        const sim = await runSimulation(simTeams, schedule, {
             iterations,
             playoffTeams: cfg.playoffTeams,
             medianScoring: cfg.medianScoring,
@@ -287,11 +289,8 @@ function assignTiers(ranked) {
  * superlatives. Computed once for the whole board.
  */
 function leagueContext(ranked) {
-    const positions = ['QB', 'RB', 'WR', 'TE'];
-    const avgByPos = {};
-    for (const pos of positions) {
-        avgByPos[pos] = mean(ranked.map((r) => r.report.byPosition[pos]?.startingPoints ?? 0));
-    }
+    const positions = NEED_POSITIONS;
+    const avgByPos = leagueAverages(ranked, positions);
     const played = ranked.filter((r) => r.games >= 3);
     const rosterOrder = sortBy(ranked, (x) => x.mu, -1).map((x) => x.rosterId);
     return {
