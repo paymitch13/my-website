@@ -5,9 +5,7 @@
 import * as api from './sleeper.js';
 import { normalizeLeague, weeksRemaining } from './league.js';
 import { buildSchedule, syntheticSchedule } from './sim.js';
-import { createValuationContext } from './valuation.js';
 import * as store from './store.js';
-import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
 import { fetchProjections, fetchSeasonStats, fetchWeeklyProjections, fetchWeeklyStats } from './projections.js';
 import { fetchOdds } from './odds.js';
 
@@ -26,7 +24,7 @@ export async function loadPlayers({ force = false, onProgress = () => {} } = {})
             return { players: cached.players, from: 'stale-cache', at: cached.at };
         }
     }
-    onProgress('Downloading the NFL player database (one time, ~5MB)…');
+    onProgress('Downloading the NFL player database (one time, about 14MB)…');
     const players = await api.fetchPlayers();
     store.cachePlayers(players);
     return { players, from: 'network', at: Date.now() };
@@ -68,7 +66,25 @@ export async function loadSeasonStats(season) {
  * The per-week stat fetches run in parallel and failures are tolerated -- a
  * missing week costs a little matchup precision, not the whole view.
  */
+/**
+ * Week context is expensive -- up to eighteen weekly stat dumps plus the weekly
+ * projections -- and it does not depend on which team you are looking at.
+ * Without this cache, switching between twelve rosters refetched everything
+ * twelve times.
+ */
+const weekContextCache = new Map();
+
 export async function loadWeekContext(season, week, lastPlayed) {
+    const key = `${season}:${week}:${lastPlayed}`;
+    if (weekContextCache.has(key)) return weekContextCache.get(key);
+    const promise = loadWeekContextUncached(season, week, lastPlayed);
+    // Cache the promise, not the result, so concurrent callers share one fetch.
+    weekContextCache.set(key, promise);
+    promise.catch(() => weekContextCache.delete(key));
+    return promise;
+}
+
+async function loadWeekContextUncached(season, week, lastPlayed) {
     const weeks = [];
     for (let w = 1; w <= Math.min(lastPlayed, 18); w++) weeks.push(w);
 
@@ -221,28 +237,9 @@ function buildRemainingSchedule(cfg, matchupsByWeek, currentWeek, teams) {
     return syntheticSchedule(teams.map((t) => t.rosterId), currentWeek, lastRegular);
 }
 
-/**
- * Assemble the rankings + valuation context for a loaded league. Called
- * whenever the board changes, so it must stay cheap.
- */
-export function buildAnalysisContext(league, players, { projections = null, actuals = null } = {}) {
-    const seedKeys = buildSeedKeys(players, { projections, scoring: league.cfg.scoring });
-    const order = Object.keys(store.state.order || {}).length
-        ? mergeOrder(store.state.order, players, { seedKeys })
-        : seedOrder(players, { seedKeys });
-    const rankings = toRankMap(order);
-    const ctx = createValuationContext(league.cfg, {
-        week: league.currentWeek,
-        weeksLeft: Math.max(1, league.weeksLeft),
-        projections,
-        actuals,
-    });
-    return { order, rankings, ctx };
-}
-
 /** Live scoreboard for the current week, joined to team names. */
-export async function loadScoreboard(leagueId, week, teams, players) {
-    const raw = await api.getMatchups(leagueId, week);
+export async function loadScoreboard(leagueId, week, teams, players, { force = false } = {}) {
+    const raw = await api.getMatchups(leagueId, week, { force });
     const byRoster = new Map(teams.map((t) => [t.rosterId, t]));
     const byMatchup = new Map();
 

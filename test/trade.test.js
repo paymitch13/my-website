@@ -47,13 +47,13 @@ const BALANCED = [
     ['TE', 10], ['K', 10], ['DEF', 10], ['RB', 40], ['WR', 45], ['TE', 20],
 ];
 
-test('value ledger is zero sum between two sides', () => {
+test('value ledger is zero sum between two sides', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['RB', 2], ...BALANCED] },
         { name: 'B', players: [['WR', 3], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id] },
@@ -66,13 +66,13 @@ test('value ledger is zero sum between two sides', () => {
     assert.equal(a.valueIn, b.valueOut);
 });
 
-test('a clearly lopsided offer is called lopsided', () => {
+test('a clearly lopsided offer is called lopsided', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'Fleecer', players: [['RB', 55], ...BALANCED] },
         { name: 'Victim', players: [['RB', 1], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id] },
@@ -84,13 +84,13 @@ test('a clearly lopsided offer is called lopsided', () => {
     assert.ok(/Fleecer/.test(res.verdict.label));
 });
 
-test('an even swap of equals reads as even', () => {
+test('an even swap of equals reads as even', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['WR', 9], ...BALANCED] },
         { name: 'B', players: [['WR', 9], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id] },
@@ -101,7 +101,7 @@ test('an even swap of equals reads as even', () => {
     assert.ok(['Even', 'Win-win'].includes(res.verdict.label));
 });
 
-test('need-based trade: swapping surplus for a hole helps both sides', () => {
+test('need-based trade: swapping surplus for a hole helps both sides', async () => {
     const rankings = new Map();
     // A is stacked at WR and starts a replacement-level TE.
     // B is stacked at TE and starts a replacement-level WR.
@@ -125,7 +125,7 @@ test('need-based trade: swapping surplus for a hole helps both sides', () => {
     ]);
     const wr = teams[0].players[6]; // WR8
     const te = teams[1].players[4]; // TE3
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [{ rosterId: 1, sending: [wr.id] }, { rosterId: 2, sending: [te.id] }],
     });
@@ -136,7 +136,7 @@ test('need-based trade: swapping surplus for a hole helps both sides', () => {
     assert.ok(res.reasons.some((r) => /upgrades at TE/.test(r.title)));
 });
 
-test('depth that never starts is flagged as value that does not score', () => {
+test('depth that never starts is flagged as value that does not score', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         {
@@ -149,7 +149,7 @@ test('depth that never starts is flagged as value that does not score', () => {
         { name: 'Other', players: [['WR', 7], ...BALANCED] },
     ]);
     // Stacked trades a bench body for a WR7 who still cannot crack its lineup.
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[10].id] },
@@ -162,13 +162,13 @@ test('depth that never starts is flagged as value that does not score', () => {
     assert.ok(res.reasons.some((r) => /"wins" the value but not the lineup/.test(r.title)));
 });
 
-test('injured incoming players are discounted and called out', () => {
+test('injured incoming players are discounted and called out', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['RB', 5], ...BALANCED] },
         { name: 'B', players: [['RB', 5, { injury: 'IR' }], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id] },
@@ -180,7 +180,7 @@ test('injured incoming players are discounted and called out', () => {
     assert.ok(res.sides[0].valueIn < res.sides[0].valueOut / 2);
 });
 
-test('roster crunch charges the team that has to make cuts', () => {
+test('roster crunch charges the team that has to make cuts', async () => {
     const rankings = new Map();
     const small = normalizeLeague({
         settings: { num_teams: 12, playoff_teams: 6 },
@@ -192,7 +192,7 @@ test('roster crunch charges the team that has to make cuts', () => {
         { name: 'A', players: [['RB', 3], ['QB', 8], ['RB', 20], ['WR', 15], ['WR', 25], ['TE', 12], ['K', 10], ['DEF', 10], ['WR', 35], ['RB', 42], ['WR', 60]] },
         { name: 'B', players: [['RB', 18], ['WR', 19], ['WR', 21], ['QB', 9], ['RB', 24], ['TE', 14], ['K', 11], ['DEF', 11], ['WR', 38], ['RB', 47], ['WR', 62]] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg: small, ctx: smallCtx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id] },
@@ -214,7 +214,7 @@ test('roster crunch charges the team that has to make cuts', () => {
     assert.match(cut.detail, /deep bench pieces/);
 });
 
-test('full mode reports playoff and title odds deltas', () => {
+test('full mode reports playoff and title odds deltas', async () => {
     const rankings = new Map();
     const specs = Array.from({ length: 12 }, (_, i) => ({
         name: `T${i + 1}`,
@@ -225,7 +225,7 @@ test('full mode reports playoff and title odds deltas', () => {
     const schedule = syntheticSchedule(teams.map((t) => t.rosterId), 5, 14);
 
     // Team 12 (worst) sends a spare part for Team 1's best player: a heist.
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings, schedule, iterations: 600,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id] },
@@ -240,17 +240,17 @@ test('full mode reports playoff and title odds deltas', () => {
     assert.ok(res.reasons.some((r) => /playoff odds/.test(r.title)));
 });
 
-test('rejects malformed offers', () => {
+test('rejects malformed offers', async () => {
     const rankings = new Map();
     const teams = league(rankings, [{ name: 'A', players: BALANCED }, { name: 'B', players: BALANCED }]);
-    assert.equal(evaluateTrade({ cfg, ctx, teams, rankings, offers: [{ rosterId: 1, sending: [] }, { rosterId: 2, sending: [] }] }).ok, false);
+    assert.equal((await evaluateTrade({ cfg, ctx, teams, rankings, offers: [{ rosterId: 1, sending: [] }, { rosterId: 2, sending: [] }] })).ok, false);
     assert.match(
-        evaluateTrade({ cfg, ctx, teams, rankings, offers: [{ rosterId: 1, sending: ['x'] }] }).error,
+        (await evaluateTrade({ cfg, ctx, teams, rankings, offers: [{ rosterId: 1, sending: ['x'] }] })).error,
         /at least two teams/
     );
 });
 
-test('add-on suggestions favour surplus-for-need over raw value matching', () => {
+test('add-on suggestions favour surplus-for-need over raw value matching', async () => {
     const rankings = new Map();
     // Giver is stacked at RB (four good ones) and thin at WR.
     // Receiver is stacked at WR and desperate at RB.
@@ -270,7 +270,7 @@ test('add-on suggestions favour surplus-for-need over raw value matching', () =>
             ],
         },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[5].id] },
@@ -290,14 +290,14 @@ test('add-on suggestions favour surplus-for-need over raw value matching', () =>
     assert.ok(picks[0].rationale && picks[0].rationale.length > 10);
 });
 
-test('add-ons never propose a player already in the deal', () => {
+test('add-ons never propose a player already in the deal', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['RB', 4], ...BALANCED] },
         { name: 'B', players: [['WR', 4], ...BALANCED] },
     ]);
     const sentId = teams[0].players[0].id;
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [{ rosterId: 1, sending: [sentId] }, { rosterId: 2, sending: [teams[1].players[0].id] }],
     });
@@ -305,13 +305,13 @@ test('add-ons never propose a player already in the deal', () => {
     assert.ok(!picks.some((p) => p.player.id === sentId), 'a traded player cannot also be the sweetener');
 });
 
-test('add-ons that wildly overshoot the gap are filtered out', () => {
+test('add-ons that wildly overshoot the gap are filtered out', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['RB', 1], ['WR', 60], ...BALANCED] },
         { name: 'B', players: [['WR', 30], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [{ rosterId: 1, sending: [teams[0].players[1].id] }, { rosterId: 2, sending: [teams[1].players[0].id] }],
     });
@@ -321,13 +321,13 @@ test('add-ons that wildly overshoot the gap are filtered out', () => {
     assert.ok(!elite, 'an elite player must not be proposed to close a trivial gap');
 });
 
-test('packages are offered and land near the gap', () => {
+test('packages are offered and land near the gap', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['RB', 5], ['RB', 11], ['RB', 16], ['WR', 20], ...BALANCED] },
         { name: 'B', players: [['WR', 6], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [{ rosterId: 1, sending: [teams[0].players[3].id] }, { rosterId: 2, sending: [teams[1].players[0].id] }],
     });
@@ -340,13 +340,13 @@ test('packages are offered and land near the gap', () => {
     }
 });
 
-test('reasons are deduped and capped per team', () => {
+test('reasons are deduped and capped per team', async () => {
     const rankings = new Map();
     const teams = league(rankings, [
         { name: 'A', players: [['RB', 2], ['WR', 3], ['TE', 2], ...BALANCED] },
         { name: 'B', players: [['RB', 50], ['WR', 55], ['TE', 30], ...BALANCED] },
     ]);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         offers: [
             { rosterId: 1, sending: [teams[0].players[0].id, teams[0].players[1].id, teams[0].players[2].id] },
@@ -360,13 +360,13 @@ test('reasons are deduped and capped per team', () => {
     assert.equal(new Set(keys).size, keys.length, 'no duplicate reasons');
 });
 
-test('the most important reason comes first', () => {
+test('the most important reason comes first', async () => {
     const rankings = new Map();
     const specs = Array.from({ length: 12 }, (_, i) => ({
         name: `T${i + 1}`, players: [['RB', 4 + i], ['WR', 4 + i], ...BALANCED], wins: 3, losses: 3,
     }));
     const teams = league(rankings, specs);
-    const res = evaluateTrade({
+    const res = await evaluateTrade({
         cfg, ctx, teams, rankings,
         schedule: syntheticSchedule(teams.map((t) => t.rosterId), 5, 14),
         iterations: 500,

@@ -14,18 +14,16 @@ const DEFAULTS = {
     leagueId: null,
     season: null,
     // Positional order the user has arranged. Position -> [playerId].
+    // Tiers are derived from value gaps rather than stored: there is no manual
+    // tiering UI, so a persisted tier map would only ever go stale.
     order: {},
-    // Position -> [{ afterIndex, label }]
-    tiers: {},
     settings: {
-        showAvatars: true,
         simIterations: 2000,
         autoRefreshLive: true,
+        powerPreset: 'balanced',
     },
     updatedAt: null,
 };
-
-const listeners = new Set();
 
 function read(key, fallback) {
     try {
@@ -54,22 +52,6 @@ state.settings = { ...DEFAULTS.settings, ...(state.settings || {}) };
 export function save() {
     state.updatedAt = new Date().toISOString();
     write(KEY, state);
-    emit();
-}
-
-export function subscribe(fn) {
-    listeners.add(fn);
-    return () => listeners.delete(fn);
-}
-
-function emit() {
-    for (const fn of listeners) {
-        try {
-            fn(state);
-        } catch (err) {
-            console.error('store listener failed', err);
-        }
-    }
 }
 
 export function update(patch) {
@@ -79,15 +61,6 @@ export function update(patch) {
 
 export function resetRankings() {
     state.order = {};
-    state.tiers = {};
-    save();
-}
-
-export function resetAll() {
-    Object.assign(state, structuredClone(DEFAULTS));
-    localStorage.removeItem(PLAYERS_KEY);
-    localStorage.removeItem(SNAPSHOT_KEY);
-    localStorage.removeItem(PROJECTIONS_KEY);
     save();
 }
 
@@ -121,15 +94,18 @@ export function cacheProjections(season, projections) {
 // --- Power ranking history -------------------------------------------------
 
 /** Keeps the last 20 weekly snapshots so the board can show movement arrows. */
-export function saveSnapshot(leagueId, week, ranking) {
+export function saveSnapshot(leagueId, week, ranking, preset = 'balanced') {
     const all = read(SNAPSHOT_KEY, {});
     const forLeague = all[leagueId] || [];
-    const existing = forLeague.findIndex((s) => s.week === week);
-    const entry = { week, at: Date.now(), ranking };
+    const existing = forLeague.findIndex((s) => s.week === week && (s.preset ?? 'balanced') === preset);
+    const entry = { week, at: Date.now(), preset, ranking };
+    // Snapshots are per (week, preset): overwriting one preset's history with
+    // another's made movement arrows compare against a different ranking
+    // system, which is worse than showing nothing.
     if (existing >= 0) forLeague[existing] = entry;
     else forLeague.push(entry);
     forLeague.sort((a, b) => a.week - b.week);
-    all[leagueId] = forLeague.slice(-20);
+    all[leagueId] = forLeague.slice(-60);
     write(SNAPSHOT_KEY, all);
 }
 
@@ -138,7 +114,9 @@ export function getSnapshots(leagueId) {
 }
 
 /** The most recent snapshot from a week before `week`, for movement arrows. */
-export function previousSnapshot(leagueId, week) {
-    const snaps = getSnapshots(leagueId).filter((s) => s.week < week);
+export function previousSnapshot(leagueId, week, preset = 'balanced') {
+    const snaps = getSnapshots(leagueId)
+        .filter((s) => s.week < week && (s.preset ?? 'balanced') === preset)
+        .sort((a, b) => a.week - b.week);
     return snaps.length ? snaps[snaps.length - 1] : null;
 }

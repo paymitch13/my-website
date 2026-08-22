@@ -135,20 +135,6 @@ export async function transactionFeed(leagueId, week, teams, players, { weeksBac
 }
 
 /**
- * Combined feed, most important first. Injuries that actually cost a lineup
- * points outrank waiver noise, which outranks routine transactions.
- */
-export function buildFeed({ injuries = [], trending = { adds: [], drops: [] }, transactions = [] }) {
-    const scored = [
-        ...injuries.map((i) => ({ item: i, weight: 1000 + i.severity * 50 + i.weeklyCost * 5 })),
-        ...trending.adds.slice(0, 12).map((t, i) => ({ item: t, weight: 500 - i * 5 + (t.owner ? 0 : 30) })),
-        ...transactions.map((t, i) => ({ item: t, weight: 400 - i })),
-        ...trending.drops.slice(0, 6).map((t, i) => ({ item: t, weight: 200 - i })),
-    ];
-    return sortBy(scored, (s) => s.weight, -1).map((s) => s.item);
-}
-
-/**
  * Diff two scoreboards so the live view can call out what changed since the
  * last poll rather than silently repainting.
  */

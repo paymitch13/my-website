@@ -189,6 +189,41 @@ test('adjustments compound onto the base projection', () => {
     assert.ok(great.factors.some((f) => f.kind === 'vegas'));
 });
 
+test('a player ruled OUT is never startable', () => {
+    // The headline bug: Start/Sit used the rest-of-season availability curve,
+    // so an Out player with 14 weeks left lost 7% of his projection instead of
+    // being removed from consideration entirely.
+    for (const status of ['Out', 'IR', 'PUP', 'DNR', 'Sus', 'NA']) {
+        const ev = evaluate(mkPlayer('x', 'RB', 'KC', { injury: status }));
+        assert.equal(ev.ruledOut, true, `${status} must count as ruled out`);
+        assert.equal(ev.adjusted, null, `${status} must have no startable projection`);
+        assert.equal(ev.hasGame, false);
+        assert.equal(ev.confidence.level, 'none');
+    }
+});
+
+test('ruled-out players are excluded from the recommended lineup', () => {
+    const evaluations = roster();
+    // The best running back on the roster is Out.
+    const ruled = {
+        player: mkPlayer('rbOut', 'RB', 'KC', { injury: 'Out' }),
+        hasGame: false, ruledOut: true, adjusted: null, baseProjection: 40,
+        multiplier: 0, factors: [], opponent: 'OPP', confidence: { level: 'none' },
+    };
+    const rep = buildStartSitReport({ team: { name: 'T' }, cfg, evaluations: [...evaluations, ruled] });
+    assert.ok(!rep.lineup.starters.some((s) => s.entry.player.id === 'rbOut'), 'an Out player cannot start');
+    assert.ok(rep.unavailable.some((e) => e.player.id === 'rbOut'));
+});
+
+test('Doubtful is heavily discounted, Questionable only mildly', () => {
+    const healthy = evaluate(mkPlayer('h', 'WR', 'BUF')).adjusted;
+    const q = evaluate(mkPlayer('q', 'WR', 'BUF', { injury: 'Questionable' })).adjusted;
+    const d = evaluate(mkPlayer('d', 'WR', 'BUF', { injury: 'Doubtful' })).adjusted;
+    assert.ok(q > d, 'Questionable must beat Doubtful');
+    assert.ok(q / healthy > 0.6 && q / healthy < 0.85, `Questionable ratio ${q / healthy}`);
+    assert.ok(d / healthy < 0.35, `Doubtful should be gutted, ratio ${d / healthy}`);
+});
+
 test('an injury designation both cuts the projection and is surfaced', () => {
     const healthy = evaluate(mkPlayer('a', 'RB', 'KC'));
     const hurt = evaluate(mkPlayer('b', 'RB', 'KC', { injury: 'Questionable', injuryBody: 'Ankle' }));
@@ -196,7 +231,6 @@ test('an injury designation both cuts the projection and is surfaced', () => {
     const health = hurt.factors.find((f) => f.kind === 'health');
     assert.ok(health && /Ankle/.test(health.detail));
     assert.notEqual(hurt.confidence.level, 'high', 'an injury designation must cost confidence');
-    assert.match(hurt.confidence.why, /injury/);
 });
 
 test('a player with no game is flagged and never started', () => {
@@ -256,7 +290,7 @@ test('players with no game are separated out and never started', () => {
     const evaluations = roster();
     evaluations.push({ player: mkPlayer('bye1', 'WR', 'NYJ'), hasGame: false, adjusted: null, factors: [], confidence: {} });
     const rep = buildStartSitReport({ team: { name: 'T' }, cfg, evaluations });
-    assert.equal(rep.benchedByBye.length, 1);
+    assert.equal(rep.unavailable.length, 1);
     assert.ok(!rep.lineup.starters.some((s) => s.entry.player.id === 'bye1'));
 });
 

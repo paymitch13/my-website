@@ -20,10 +20,9 @@
 
 import { optimizeLineup, positionalReport, teamScoringProfile } from './lineup.js';
 import { valuePlayer } from './valuation.js';
-import { simulateSeason } from './sim.js';
+import { DEFAULT_SIM_SEED } from './sim.js';
+import { runSimulation } from './simclient.js';
 import { clamp, round, sortBy, sum } from './util.js';
-
-const SIM_SEED = 4815162342;
 
 /** Value + projection for one player, given the user's rankings. */
 export function evaluateRosterEntry(player, rankings, ctx) {
@@ -46,8 +45,9 @@ export function buildEntries(players, rankings, ctx) {
  * @param {Array}  input.offers     [{rosterId, sending:[playerId], receiving?:[playerId]}]
  * @param {Map}    input.rankings   playerId -> positional rank
  * @param {Array}  [input.schedule] remaining schedule; omit to skip odds simulation
+ * @returns {Promise<object>} async because the simulation runs in a worker
  */
-export function evaluateTrade(input) {
+export async function evaluateTrade(input) {
     const { cfg, ctx, teams, offers, rankings, schedule = null, iterations = 2000 } = input;
 
     const byRoster = new Map(teams.map((t) => [t.rosterId, t]));
@@ -118,7 +118,7 @@ export function evaluateTrade(input) {
     // --- 3. IMPACT: playoff and title odds, before vs after -----------------
     let odds = null;
     if (schedule && schedule.length && teams.length > 2) {
-        odds = simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations });
+        odds = await simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations });
         for (const a of analysis) {
             const o = odds.get(a.side.rosterId);
             a.playoffBefore = o.before.playoffOdds;
@@ -172,7 +172,7 @@ function resolveOffers(offers) {
  * share a seed so the two runs see identical weekly randomness -- the
  * difference between them is the trade, not sampling noise.
  */
-function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations }) {
+async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations }) {
     const overrideBefore = new Map();
     const overrideAfter = new Map();
     for (const a of analysis) {
@@ -200,11 +200,14 @@ function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterati
     const opts = {
         iterations,
         playoffTeams: cfg.playoffTeams,
-        seed: SIM_SEED,
+        seed: DEFAULT_SIM_SEED,
         medianScoring: cfg.medianScoring,
     };
-    const before = simulateSeason(mk(overrideBefore), schedule, opts);
-    const after = simulateSeason(mk(overrideAfter), schedule, opts);
+    // Both runs go to the worker together; they are independent.
+    const [before, after] = await Promise.all([
+        runSimulation(mk(overrideBefore), schedule, opts),
+        runSimulation(mk(overrideAfter), schedule, opts),
+    ]);
 
     const out = new Map();
     const bIdx = new Map(before.map((r) => [r.rosterId, r]));
@@ -431,7 +434,7 @@ function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000) {
                     kind: pd + td > 0 ? 'good' : 'bad',
                     team: s.team.rosterId,
                     weight: 3 + Math.abs(pd) * 10 + Math.abs(td) * 20,
-                    title: `${name}: playoff odds ${fmtDelta(pd)}, title odds ${fmtDelta(td)}`,
+                    title: `${name}: playoff odds ${fmtPctDelta(pd)}, title odds ${fmtPctDelta(td)}`,
                     detail: `${round(s.playoffBefore * 100, 1)}% → ${round(s.playoffAfter * 100, 1)}% to make the playoffs across ${iterations.toLocaleString()} simulated seasons on the real remaining schedule.`,
                 });
             } else {
@@ -484,7 +487,9 @@ function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000) {
     return out;
 }
 
-const fmtDelta = (d) => `${d >= 0 ? '+' : ''}${round(d * 100, 1)}%`;
+/** Signed percentage from a 0-1 ratio. Named for its unit to avoid the
+ * collision with ui.fmtDelta, which formats a signed plain number. */
+const fmtPctDelta = (d) => `${d >= 0 ? '+' : ''}${round(d * 100, 1)}%`;
 
 /**
  * Suggest add-ons that would actually get a lopsided offer accepted.
@@ -593,12 +598,27 @@ export function suggestPackages({ cfg, ctx, giver, receiver, gap, limit = 3 }) {
             const combined = a.value + b.value;
             const closes = combined / gap;
             if (closes < 0.75 || closes > 1.45) continue;
+
+            // Two players added together are worth less than the sum of their
+            // separate marginal values -- the second one is competing for a
+            // lineup spot the first has already taken. Re-solve with both.
+            const slots = cfg.starterSlots;
+            const receiverBase = optimizeLineup(receiver.after, slots).points;
+            const aEntry = giver.after.find((e) => e.player.id === a.player.id);
+            const bEntry = giver.after.find((e) => e.player.id === b.player.id);
+            if (!aEntry || !bEntry) continue;
+            const jointGain =
+                optimizeLineup([...receiver.after, aEntry, bEntry], slots).points - receiverBase;
+            const giverBase = optimizeLineup(giver.after, slots).points;
+            const jointCost =
+                giverBase - optimizeLineup(giver.after.filter((e) => e !== aEntry && e !== bEntry), slots).points;
+
             packages.push({
                 players: [a.player, b.player],
                 value: combined,
                 closes: Math.round(closes * 100),
-                gainToReceiver: round(a.gainToReceiver + b.gainToReceiver, 1),
-                costToGiver: round(a.costToGiver + b.costToGiver, 1),
+                gainToReceiver: round(jointGain, 1),
+                costToGiver: round(jointCost, 1),
             });
         }
     }

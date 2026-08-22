@@ -40,7 +40,15 @@ export function scoreStats(stats, scoring) {
  * Only rows carrying a real projection are kept; Sleeper returns thousands of
  * empty rows for every practice-squad body in the league.
  */
-export function normalizeProjections(rows) {
+/**
+ * @param {Array} rows raw Sleeper rows
+ * @param {object} [opts]
+ * @param {'projection'|'actual'} [opts.kind] Season projections mislabel games
+ *   played (18 for offense, 1 for defenses) and need repairing; actual stats
+ *   report the real number and must be trusted. Applying the projection repair
+ *   to actuals divided a defense's week-3 total by 17 instead of 3.
+ */
+export function normalizeProjections(rows, { kind = 'projection' } = {}) {
     const out = {};
     for (const row of rows || []) {
         const stats = row?.stats;
@@ -65,7 +73,7 @@ export function normalizeProjections(rows) {
         }
 
         const pos = player?.position || (player?.fantasy_positions || [])[0] || null;
-        const games = clampGames(stats.gp, pos);
+        const games = kind === 'actual' ? actualGames(stats.gp) : clampGames(stats.gp, pos);
 
         out[id] = {
             id,
@@ -86,6 +94,12 @@ export function normalizeProjections(rows) {
  * games) and team defenses say 1. Normalizing per-game rates off those numbers
  * would silently scale whole positions wrong.
  */
+/** Actual games played: trust it, only guarding against nonsense. */
+function actualGames(gp) {
+    if (typeof gp !== 'number' || !Number.isFinite(gp) || gp <= 0) return null;
+    return Math.min(gp, NFL_GAMES);
+}
+
 function clampGames(gp, pos) {
     if (typeof gp !== 'number' || gp <= 0) return NFL_GAMES;
     if (gp > NFL_GAMES) return NFL_GAMES;
@@ -167,7 +181,7 @@ export async function fetchSeasonStats(season) {
     const url = `${BASE}/stats/nfl/${season}?season_type=regular&${qs}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Stats fetch failed (${res.status})`);
-    return normalizeProjections(await res.json());
+    return normalizeProjections(await res.json(), { kind: 'actual' });
 }
 
 /**
@@ -194,7 +208,7 @@ export function blendedPpg({ projection, actual, scoring, week = 1 }) {
     if (projPpg === null && !actual) return null;
 
     const gp = actual?.games ?? 0;
-    const actualPpg = actual ? scoreStats(actual.stats, scoring) / Math.max(1, gp) : null;
+    const actualPpg = actual && gp > 0 ? scoreStats(actual.stats, scoring) / gp : null;
 
     if (projPpg === null) return actualPpg;
     if (actualPpg === null || gp < 1 || week <= 1) return projPpg;

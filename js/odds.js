@@ -14,8 +14,8 @@
 
 const SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';
 
-/** ESPN abbreviations that differ from Sleeper's. */
-const TEAM_ALIAS = { WSH: 'WAS', LAR: 'LAR', JAX: 'JAX' };
+/** ESPN abbreviations that genuinely differ from Sleeper's. */
+const TEAM_ALIAS = { WSH: 'WAS' };
 const normalizeTeam = (t) => TEAM_ALIAS[t] || t;
 
 /**
@@ -70,6 +70,8 @@ export function parseScoreboard(payload) {
         games.push({
             id: event.id,
             name: event.shortName,
+            // ESPN flags international and other neutral-site games.
+            neutralSite: !!comp.neutralSite,
             date: event.date,
             status: comp.status?.type?.description || null,
             home: homeAbbr,

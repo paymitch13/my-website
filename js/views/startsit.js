@@ -2,13 +2,13 @@
 
 import { buildStartSitReport, evaluatePlayerWeek, lineupChanges, slateAverage } from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
-import { fetchWeatherForGames, describeWeather } from '../weather.js';
+import { fetchWeatherForGames } from '../weather.js';
 import { loadWeekContext, loadOdds } from '../data.js';
 import { slotLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
     banner, el, emptyState, fmtDelta, playerLink, posBadge, round, sortBy,
-    spinnerRow, tag, tile, toast,
+    spinnerRow, tag, tile,
 } from '../ui.js';
 
 export default function renderStartSit(app) {
@@ -74,11 +74,19 @@ export default function renderStartSit(app) {
         host
     );
 
+    // Guards against a slow request for one roster painting over a newer one.
+    let renderToken = 0;
+
     async function run() {
+        const token = ++renderToken;
+        const target = selected;
         host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Pulling projections, lines, weather and matchup history…')));
         try {
-            host.replaceChildren(await build(app, selected));
+            const built = await build(app, target);
+            if (token !== renderToken) return;
+            host.replaceChildren(built);
         } catch (err) {
+            if (token !== renderToken) return;
             console.error(err);
             host.replaceChildren(emptyState('⚠️', 'Could not build the report', err.message));
         }
@@ -154,7 +162,7 @@ async function build(app, team) {
                       changes.swaps.length ? 'warn' : 'good'
                   )
                 : null,
-            tile('On bye or no game', report.benchedByBye.length, 'cannot be started'),
+            tile('Unavailable', report.unavailable.length, 'bye, no game, or ruled out'),
             tile('Close calls', report.closeCalls.length, 'within 2.5 points')
         )
     );
@@ -287,7 +295,7 @@ async function build(app, team) {
     }
 
     // --- Bench and byes ----------------------------------------------------
-    if (report.benchedByBye.length) {
+    if (report.unavailable.length) {
         wrap.append(
             el(
                 'div',

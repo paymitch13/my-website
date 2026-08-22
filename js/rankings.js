@@ -186,7 +186,8 @@ export function fromCsv(text, players) {
             const hit = nameIndex.get(normalizeName(raw));
             if (hit && hit.length === 1) id = hit[0];
             else if (hit && hit.length > 1 && posCol >= 0) {
-                const wantPos = cells[posCol].trim().toUpperCase().replace(/[0-9]/g, '');
+                // Ragged rows are normal in hand-edited cheat sheets.
+                const wantPos = (cells[posCol] || '').trim().toUpperCase().replace(/[0-9]/g, '');
                 id = hit.find((c) => players[c].pos === wantPos) || null;
             }
         }

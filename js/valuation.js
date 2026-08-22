@@ -11,7 +11,7 @@
 // different values, because the scoring settings are applied to the estimated
 // production instead of being bolted on as a fudge factor afterwards.
 
-import { clamp, sortBy } from './util.js';
+import { clamp } from './util.js';
 import { ALL_POS, replacementRanks } from './league.js';
 import { blendedPpg, projectedPpg } from './projections.js';
 
@@ -129,11 +129,41 @@ export function scoreStatLine(line, scoring, pos) {
     return p;
 }
 
+/**
+ * Reference per-game production for a kicker and a defense, used only to work
+ * out how a league's K/DST rules compare to the standard ones. The flat curves
+ * below are calibrated to standard scoring, so a league that pays double for
+ * kickers needs them scaled -- previously a comment promised this and the code
+ * did not do it, so unusual kicker and defense scoring was silently ignored.
+ */
+const REFERENCE_LINE = {
+    K: { xpm: 1.9, fgm_0_19: 0.05, fgm_20_29: 0.35, fgm_30_39: 0.5, fgm_40_49: 0.45, fgm_50p: 0.25, fgmiss: 0.2 },
+    DEF: { sack: 2.4, int: 0.8, fum_rec: 0.7, def_td: 0.13, safe: 0.05, blk_kick: 0.06, pts_allow_21_27: 1 },
+};
+const STANDARD_SCORING = {
+    xpm: 1, fgm_0_19: 3, fgm_20_29: 3, fgm_30_39: 3, fgm_40_49: 4, fgm_50p: 5, fgmiss: -1,
+    sack: 1, int: 2, fum_rec: 2, def_td: 6, safe: 2, blk_kick: 2, pts_allow_21_27: 0,
+};
+
+const dot = (line, scoring) =>
+    Object.entries(line).reduce((a, [k, v]) => a + v * (scoring?.[k] ?? 0), 0);
+
+/** How much richer this league's K/DST scoring is than the standard set. */
+export function specialistScale(pos, scoring) {
+    const line = REFERENCE_LINE[pos];
+    if (!line || !scoring) return 1;
+    const standard = dot(line, STANDARD_SCORING);
+    if (!standard) return 1;
+    const league = dot(line, scoring);
+    // A league that scores none of these keys tells us nothing; leave it alone.
+    if (!league) return 1;
+    return clamp(league / standard, 0.35, 3);
+}
+
 /** Projected points per game for the Nth-ranked player at a position. */
 export function ppgFor(pos, posRank, scoring) {
     if (FLAT_PPG[pos]) {
-        // Scale the flat curve if the league uses unusual K/DST scoring magnitudes.
-        return FLAT_PPG[pos](posRank);
+        return FLAT_PPG[pos](posRank) * specialistScale(pos, scoring);
     }
     return scoreStatLine(statLine(pos, posRank), scoring, pos);
 }
@@ -150,6 +180,35 @@ const GAMES_MISSED = {
     COV: 1,
     DNR: 99,
 };
+
+/**
+ * Probability a player suits up THIS WEEK, by designation.
+ *
+ * `availability` below is a rest-of-season function: it spreads expected missed
+ * games across the remaining weeks, so a player ruled Out loses only 1/N of his
+ * value. That is right for trade value and badly wrong for a lineup decision --
+ * it was recommending players who are not playing on Sunday. Weekly decisions
+ * use this instead.
+ */
+export function weeklyPlayProbability(player) {
+    if (!player?.injury) return 1;
+    return {
+        Questionable: 0.72,
+        Doubtful: 0.25,
+        COV: 0.5,
+        Out: 0,
+        IR: 0,
+        PUP: 0,
+        DNR: 0,
+        NA: 0,
+        Sus: 0,
+    }[player.injury] ?? 0.85;
+}
+
+/** A designation that means he is not playing this week, full stop. */
+export function ruledOutThisWeek(player) {
+    return weeklyPlayProbability(player) === 0;
+}
 
 export function availability(player, weeksLeft) {
     if (!player?.injury || weeksLeft <= 0) return 1;
@@ -277,6 +336,8 @@ export function createValuationContext(cfg, {
         cfg,
         week,
         weeksLeft,
+        // Length of a full fantasy regular season in this league.
+        seasonLength: Math.max(1, (cfg.playoffWeekStart || 15) - 1),
         replacement,
         replacementPpg,
         curves,
@@ -320,7 +381,9 @@ export function valuePlayer(player, posRank, ctx) {
     let value = ros;
     if (ctx.dynasty) {
         const af = ageFactor(pos, player.age);
-        const seasonLength = 14;
+        // Derived from the league rather than hardcoded, like every other week
+        // count in the app.
+        const seasonLength = ctx.seasonLength;
         for (let y = 1; y < ctx.horizonYears; y++) {
             const future = ageFactor(pos, (player.age ?? 26) + y) / (af || 1);
             value += effectivePar * seasonLength * future * ctx.discount ** y;
@@ -361,12 +424,3 @@ function projectedRankOf(ctx, pos, ppg) {
     return lo + 1;
 }
 
-/**
- * Map raw value onto the 0-100 scale people expect from a trade calculator.
- * Anchored so that the best player in the league lands near 100 and a
- * replacement-level body lands at 0.
- */
-export function makeValueScaler(values) {
-    const top = Math.max(1, ...values);
-    return (v) => clamp(Math.round((v / top) * 100 * 10) / 10, -25, 100);
-}

@@ -8,6 +8,9 @@
 
 import { mulberry32, sortBy } from './util.js';
 
+/** Shared across every simulation in the app so results agree between views. */
+export const DEFAULT_SIM_SEED = 20260101;
+
 /** Box-Muller against a seeded generator, so two scenarios can share draws. */
 function normalDraw(rng) {
     let u = 0;
@@ -29,7 +32,9 @@ export function simulateSeason(teams, schedule, opts = {}) {
         // A fixed seed means running the same league twice gives the same
         // answer, and -- more importantly -- lets the trade engine compare
         // "with trade" against "without trade" using identical random weeks.
-        seed = 20260101,
+        // Every caller must share it, or the same team's playoff odds differ
+        // between the Trade view and the Power Rankings view.
+        seed = DEFAULT_SIM_SEED,
         medianScoring = false,
     } = opts;
 
@@ -125,7 +130,10 @@ function simulateBracket(field, teams, rng) {
     const n = field.length;
     const pow = 2 ** Math.floor(Math.log2(n));
     const playInCount = 2 * (n - pow);
-    const byes = field.slice(0, n - playInCount);
+    // Only teams that sit out a round have a bye. When the field is already a
+    // power of two nobody does -- treating the whole field as "on bye" made
+    // byeOdds 100% for every playoff team.
+    const byes = playInCount > 0 ? field.slice(0, n - playInCount) : [];
 
     let alive = field.slice();
     if (playInCount > 0) {

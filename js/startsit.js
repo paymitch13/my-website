@@ -15,9 +15,10 @@
 // by the same optimizer the trade engine uses.
 
 import { optimizeLineup } from './lineup.js';
+import { SLOT_ELIGIBILITY } from './league.js';
 import { scoreStats } from './projections.js';
-import { availability } from './valuation.js';
-import { matchupImpact, rankDefenses, describeMatchup } from './matchup.js';
+import { weeklyPlayProbability, ruledOutThisWeek } from './valuation.js';
+import { matchupImpact, describeMatchup } from './matchup.js';
 import { weatherImpact, describeWeather } from './weather.js';
 import { describeEnvironment } from './odds.js';
 import { clamp, round, sortBy } from './util.js';
@@ -138,33 +139,39 @@ export function evaluatePlayerWeek(input) {
     }
 
     // --- Health -----------------------------------------------------------
-    const avail = availability(player, Math.max(1, weeksLeft));
-    const healthMult = player.injury ? clamp(avail, 0.05, 1) : 1;
+    // Weekly probability of playing, NOT the rest-of-season discount.
+    const playProbability = weeklyPlayProbability(player);
+    const ruledOut = ruledOutThisWeek(player);
     if (player.injury) {
-        multiplier *= healthMult;
+        multiplier *= playProbability;
         factors.push({
             kind: 'health',
             label: 'Health',
-            multiplier: healthMult,
-            detail: `${player.injury}${player.injuryBody ? ` (${player.injuryBody})` : ''}${player.practice ? ` · ${player.practice} in practice` : ''}.`,
+            multiplier: playProbability,
+            detail: ruledOut
+                ? `${player.injury}${player.injuryBody ? ` (${player.injuryBody})` : ''} — not playing this week.`
+                : `${player.injury}${player.injuryBody ? ` (${player.injuryBody})` : ''}${player.practice ? ` · ${player.practice} in practice` : ''}. Roughly ${Math.round(playProbability * 100)}% to suit up.`,
             tone: 'bad',
         });
     }
 
-    const hasGame = !!weekly && !!opponent;
-    const adjusted = base === null ? null : base * multiplier;
+    // A player who is not playing cannot be started, exactly like a bye.
+    const hasGame = !!weekly && !!opponent && !ruledOut;
+    const adjusted = base === null || ruledOut ? null : base * multiplier;
 
     return {
         player,
         opponent,
         hasGame,
+        ruledOut,
+        playProbability,
         baseProjection: base,
         adjusted,
         multiplier,
         factors: sortBy(factors, (f) => Math.abs(f.multiplier - 1), -1),
         weather: wx || null,
         odds,
-        confidence: confidenceOf({ base, factors, hasGame, injury: player.injury }),
+        confidence: confidenceOf({ base, factors, hasGame, injury: player.injury, ruledOut }),
     };
 }
 
@@ -173,7 +180,8 @@ export function evaluatePlayerWeek(input) {
  * player in a dome with a well-sampled matchup is a confident call; a
  * questionable player in a windy game with no matchup history is not.
  */
-function confidenceOf({ base, factors, hasGame, injury }) {
+function confidenceOf({ base, factors, hasGame, injury, ruledOut }) {
+    if (ruledOut) return { level: 'none', score: 0, why: 'Ruled out — he is not playing.' };
     if (!hasGame) return { level: 'none', score: 0, why: 'No game this week.' };
     let score = 0.8;
     const why = [];
@@ -213,8 +221,8 @@ export function buildStartSitReport({ team, cfg, evaluations }) {
         .filter((e) => e.adjusted !== null)
         .map((e) => ({ player: e.player, score: e.adjusted, evaluation: e }));
 
-    // Players with no game this week can never be started.
-    const benchedByBye = evaluations.filter((e) => !e.hasGame);
+    // Players who cannot be started this week: bye, no game, or ruled out.
+    const unavailable = evaluations.filter((e) => !e.hasGame);
 
     const lineup = optimizeLineup(entries, cfg.starterSlots);
     const startingIds = new Set(lineup.starters.map((s) => s.entry.player.id));
@@ -226,19 +234,30 @@ export function buildStartSitReport({ team, cfg, evaluations }) {
     );
 
     // A close call is a benched player within a small margin of a starter he
-    // could legally replace -- those are the only decisions actually in doubt.
+    // could legally replace. Eligibility is what decides that, not an exact
+    // position match: RB-versus-WR for the flex spot is the decision people
+    // actually agonize over, and matching on position excluded it by
+    // construction.
     const closeCalls = [];
-    for (const benched of bench.slice(0, 6)) {
+    const seen = new Set();
+    for (const benched of bench.slice(0, 8)) {
         for (const slot of lineup.starters) {
             const starter = slot.entry;
-            if (starter.player.pos !== benched.player.pos) continue;
+            const eligible = SLOT_ELIGIBILITY[slot.slot] || [];
+            if (!eligible.includes(benched.player.pos)) continue;
+            if (starter.player.id === benched.player.id) continue;
             const gap = starter.score - benched.score;
             if (gap >= 0 && gap <= 2.5) {
+                const key = `${starter.player.id}:${benched.player.id}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
                 closeCalls.push({
                     start: starter,
                     sit: benched,
                     gap,
                     slot: slot.label,
+                    // A cross-position call is the flex question specifically.
+                    crossPosition: starter.player.pos !== benched.player.pos,
                 });
             }
         }
@@ -248,7 +267,7 @@ export function buildStartSitReport({ team, cfg, evaluations }) {
         team,
         lineup,
         bench,
-        benchedByBye,
+        unavailable,
         closeCalls: sortBy(closeCalls, (c) => c.gap).slice(0, 5),
         projectedTotal: lineup.points,
     };

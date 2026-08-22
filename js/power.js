@@ -11,8 +11,8 @@
 
 import { optimizeLineup, positionalReport, teamScoringProfile } from './lineup.js';
 import { buildEntries } from './trade.js';
-import { simulateSeason, scheduleStrength } from './sim.js';
-import { clamp, mean, round, sortBy, stdev, sum } from './util.js';
+import { simulateSeason, scheduleStrength, DEFAULT_SIM_SEED } from './sim.js';
+import { clamp, mean, ordinal, round, sortBy, stdev, sum } from './util.js';
 
 /**
  * Weighting presets.
@@ -43,6 +43,9 @@ export const WEIGHT_PRESETS = {
 };
 
 const WEIGHTS = WEIGHT_PRESETS.balanced.weights;
+
+/** Before any games are played there is nothing but the roster to rank on. */
+export const PRESEASON_WEIGHTS = { roster: 0.78, allPlay: 0, title: 0.12, form: 0, depth: 0.1 };
 
 /**
  * @param {object}  input
@@ -108,6 +111,7 @@ export function computePowerRankings(input) {
             iterations,
             playoffTeams: cfg.playoffTeams,
             medianScoring: cfg.medianScoring,
+            seed: DEFAULT_SIM_SEED,
         });
         const byId = new Map(sim.map((s) => [s.rosterId, s]));
         const sos = scheduleStrength(simTeams, schedule);
@@ -145,13 +149,18 @@ export function computePowerRankings(input) {
         // so roster strength has to carry the whole ranking.
         const live = r.games > 0;
         // With no games played there is no performance signal at all, so roster
-        // strength has to carry the ranking whatever preset is selected.
-        const w = live ? presetWeights : { roster: 0.78, allPlay: 0, title: 0.12, form: 0, depth: 0.1 };
+        // strength has to carry the ranking whatever preset is selected. The
+        // UI is told about this, because a preset selector that silently does
+        // nothing reads as broken.
+        const w = live ? presetWeights : PRESEASON_WEIGHTS;
+        r.presetApplied = live;
 
         r.score = Object.entries(w).reduce((acc, [k, weight]) => acc + weight * r.components[k], 0);
     }
 
+    const anyGames = rows.some((r) => r.games > 0);
     const ranked = sortBy(rows, (r) => r.score, -1);
+    for (const r of ranked) r.presetApplied = anyGames;
     ranked.forEach((r, i) => {
         r.rank = i + 1;
         // 0-100 for display; the raw score is a weighted z-score around zero.
@@ -395,13 +404,6 @@ function writeBlurb(r, ranked, cfg, week, context) {
 }
 
 const pctStr = (n) => `${Math.round(n * 100)}%`;
-
-function ordinal(n) {
-    const s = ['th', 'st', 'nd', 'rd'];
-    const v = n % 100;
-    return n + (s[(v - 20) % 10] || s[v] || s[0]);
-}
-
 /** Movement arrows against a stored snapshot from an earlier week. */
 export function applyMovement(ranked, snapshot) {
     const prev = new Map((snapshot?.ranking || []).map((r) => [r.rosterId, r.rank]));

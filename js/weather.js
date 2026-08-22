@@ -100,7 +100,12 @@ export function weatherImpact(wx, pos) {
  * Pull the forecast for one venue at one kickoff time.
  * Open-Meteo returns hourly arrays; we take the hour nearest kickoff.
  */
-export async function fetchVenueWeather(team, kickoffIso) {
+export async function fetchVenueWeather(team, kickoffIso, { neutralSite = false } = {}) {
+    // A game in London or Munich is not played at the home team's stadium, and
+    // pulling that forecast would be confidently wrong -- including its dome
+    // flag. Without a venue feed the honest answer is "unknown".
+    if (neutralSite) return { dome: false, team, venue: 'Neutral site', unavailable: true };
+
     const stadium = STADIUMS[team];
     if (!stadium) return null;
     if (stadium.dome) return { dome: true, venue: stadium.name, team };
@@ -162,13 +167,25 @@ export function describeWeather(wx) {
     return bits.join(' · ');
 }
 
+/**
+ * Forecasts are cached per venue and kickoff: the slate is the same whichever
+ * roster you are looking at, and re-requesting sixteen venues on every team
+ * switch was the second half of the Start/Sit stampede.
+ */
+const forecastCache = new Map();
+
 /** Fetch weather for many games at once, tolerating individual failures. */
 export async function fetchWeatherForGames(games) {
     const out = new Map();
     await Promise.all(
         (games || []).map(async (g) => {
             try {
-                const wx = await fetchVenueWeather(g.home, g.date);
+                const key = `${g.home}:${g.date}`;
+                if (!forecastCache.has(key)) {
+                    forecastCache.set(key, fetchVenueWeather(g.home, g.date, { neutralSite: g.neutralSite }));
+                    forecastCache.get(key).catch(() => forecastCache.delete(key));
+                }
+                const wx = await forecastCache.get(key);
                 if (wx) out.set(g.home, wx);
             } catch {
                 /* weather is enrichment; never fail the view over it */

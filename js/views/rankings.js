@@ -4,10 +4,7 @@ import { RANKABLE, autoTiers, fromCsv, nudge, reorder, toCsv } from '../rankings
 import { valuePlayer } from '../valuation.js';
 import { scoringLabel } from '../league.js';
 import * as store from '../store.js';
-import {
-    banner, copyToClipboard, download, el, emptyState, modal, playerCell, posBadge,
-    round, toast, tag,
-} from '../ui.js';
+import { banner, download, el, emptyState, modal, playerCell, round, toast } from '../ui.js';
 
 const POS_LABEL = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', DEF: 'D/ST' };
 
@@ -31,8 +28,9 @@ export default function renderRankings(app) {
             el(
                 'p',
                 { class: 'sub' },
-                'This board is the opinion the whole app runs on. Drag a player to move him; every trade value, ',
-                'power ranking and playoff projection updates from the order you set here.'
+                'This board is the opinion the whole app runs on. Every trade value, power ranking and playoff ',
+                'projection updates from the order you set here. Drag to reorder on a desktop, or use the ',
+                '▲ ▼ buttons and # to jump a player to an exact rank.'
             )
         )
     );
@@ -110,7 +108,7 @@ export default function renderRankings(app) {
                 el(
                     'button',
                     {
-                        class: 'btn btn-sm',
+                        class: 'btn btn-sm btn-toggle',
                         'aria-pressed': String(showTiers),
                         onclick: (e) => {
                             showTiers = !showTiers;
@@ -148,29 +146,53 @@ export default function renderRankings(app) {
         const breaks = showTiers ? new Set(autoTiers(ids, (id) => values.get(id)?.value ?? 0)) : new Set();
 
         listHost.replaceChildren();
-        countLabel.textContent = `${ids.length} ranked at ${POS_LABEL[pos]}`;
+
+        // Which rows survive the filter, and which tier each one belongs to.
+        let tierOf = [];
+        let t = 1;
+        ids.forEach((id, i) => {
+            tierOf[i] = t;
+            if (breaks.has(i)) t++;
+        });
+
+        const visible = ids
+            .map((id, i) => ({ id, i }))
+            .filter(({ id }) => {
+                const p = app.players[id];
+                return p && (!query || p.name.toLowerCase().includes(query));
+            });
+
+        countLabel.textContent = query
+            ? `${visible.length} of ${ids.length} at ${POS_LABEL[pos]}`
+            : `${ids.length} ranked at ${POS_LABEL[pos]}`;
 
         if (!ids.length) {
             listHost.append(emptyState('📋', 'Nothing here yet', 'No players at this position in the database.'));
             return;
         }
+        if (!visible.length) {
+            listHost.append(
+                emptyState(
+                    '🔍',
+                    'No matches',
+                    `Nobody at ${POS_LABEL[pos]} matches “${query}”.`,
+                    el('button', { class: 'btn', onclick: () => { search.value = ''; query = ''; paint(); } }, 'Clear filter')
+                )
+            );
+            return;
+        }
 
-        let tierNo = 1;
-        if (showTiers) listHost.append(el('div', { class: 'tier-break' }, `Tier ${tierNo}`));
-
-        ids.forEach((id, i) => {
-            const p = app.players[id];
-            if (!p) return;
-            if (query && !p.name.toLowerCase().includes(query)) {
-                if (breaks.has(i) && showTiers) tierNo++;
-                return;
+        // Emit a tier header only when that tier actually has a visible row, so
+        // filtering can never produce "Tier 1" followed by a jump to "Tier 5"
+        // with no separators in between.
+        let lastTier = null;
+        for (const { id, i } of visible) {
+            if (showTiers && tierOf[i] !== lastTier) {
+                lastTier = tierOf[i];
+                listHost.append(el('div', { class: 'tier-break' }, `Tier ${lastTier}`));
             }
-            listHost.append(row(p, i, values.get(id)));
-            if (breaks.has(i) && showTiers) {
-                tierNo++;
-                listHost.append(el('div', { class: 'tier-break' }, `Tier ${tierNo}`));
-            }
-        });
+            listHost.append(row(app.players[id], i, values.get(id)));
+        }
     }
 
     function row(player, index, val) {
@@ -275,7 +297,7 @@ export default function renderRankings(app) {
     function doReset() {
         const m = modal({
             title: 'Reset rankings?',
-            body: el('p', { class: 'muted' }, 'This clears every manual change and re-seeds the board from Sleeper’s default ordering. It cannot be undone.'),
+            body: el('p', { class: 'muted' }, 'This clears every manual change to your rankings and re-seeds the board from projections. Your league connection and settings are untouched. It cannot be undone.'),
             footer: el(
                 'div',
                 { class: 'row' },
@@ -292,7 +314,7 @@ export default function renderRankings(app) {
                             app.render();
                         },
                     },
-                    'Reset everything'
+                    'Reset my rankings'
                 )
             ),
         });

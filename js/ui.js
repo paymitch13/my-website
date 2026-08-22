@@ -1,6 +1,6 @@
 // Shared UI primitives. Plain DOM -- no framework, no build step.
 
-import { el, escapeHtml, round, sortBy } from './util.js';
+import { el, round, sortBy } from './util.js';
 import { headshotUrl } from './sleeper.js';
 
 // Set once at boot by app.js. Kept as a hook rather than an import so the
@@ -258,8 +258,13 @@ export function download(filename, text, mime = 'text/csv') {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// One percent formatter and one signed-number formatter for the whole app.
+// There were previously three of the former and two functions named fmtDelta
+// meaning different units, which is a correctness hazard, not a tidiness one.
 export const fmtPct = (n, places = 0) => `${(n * 100).toFixed(places)}%`;
+/** Signed plain number: +2.4 */
 export const fmtDelta = (n, places = 1) => `${n >= 0 ? '+' : ''}${round(n, places)}`;
+/** Signed percentage from a 0-1 ratio: +2.4% */
 export const fmtPctDelta = (n, places = 1) => `${n >= 0 ? '+' : ''}${(n * 100).toFixed(places)}%`;
 
 export function gradeClass(letter) {
@@ -269,4 +274,4 @@ export function gradeClass(letter) {
     return 'g-d';
 }
 
-export { el, escapeHtml, sortBy, round };
+export { el, sortBy, round };
