@@ -136,7 +136,8 @@ are the deals that really get done. Two-player packages are offered when no sing
 Completed trades across the season are pulled from Sleeper and shown as a league trade log, with
 each side's gives and gets, draft picks and FAAB. The app polls while open, so a trade accepted
 in Sleeper appears within a couple of minutes and the rosters it touched are re-synced. Every
-player's card carries his own transaction history — drafted, traded, dropped, claimed.
+player's card carries his own transaction history — traded, dropped, claimed. Draft selections
+are not included: Sleeper's transactions endpoint does not cover the draft.
 
 ## Power rankings
 
@@ -189,6 +190,13 @@ projections already price in team quality and offensive environment.
 So odds are surfaced as matchup context in the player card and are deliberately **not** folded
 into trade value. Doing otherwise would make trade grades swing on a single week's line.
 
+## Deliberate non-features
+
+- **Player props** — every source needs a paid key, and a key in a static site is a public key.
+- **Divisions in playoff seeding** — Sleeper exposes them, the simulator seeds purely on record
+  and points for. Correct for most leagues, wrong for divisional ones.
+- **Manual tiering** — tiers are derived from gaps in projected value, not hand-drawn.
+
 ## Known limitations
 
 - **Bye weeks are not modeled.** Sleeper does not publish them and there is no CORS-open NFL
@@ -206,7 +214,7 @@ into trade value. Doing otherwise would make trade grades swing on a single week
 ## Development
 
 ```bash
-npm test          # 132 engine tests, no dependencies
+npm test          # 146 engine tests, no dependencies
 ```
 
 Everything under `js/` is a plain ES module. `package.json` exists only so Node can run the

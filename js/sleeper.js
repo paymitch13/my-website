@@ -2,7 +2,7 @@
 //
 // Sleeper's v1 API needs no key and sends permissive CORS headers, so the whole
 // app can run from static hosting. The only endpoint that is genuinely heavy is
-// /players/nfl (~5MB), which Sleeper asks callers to hit at most once a day --
+// /players/nfl (about 14MB), which Sleeper asks callers to hit at most once a day --
 // we trim it to fantasy-relevant fields and cache the result.
 
 const BASE = 'https://api.sleeper.app/v1';
@@ -17,10 +17,13 @@ export class SleeperError extends Error {
     }
 }
 
-async function get(path, { ttl = 5 * 60 * 1000 } = {}) {
+async function get(path, { ttl = 5 * 60 * 1000, force = false } = {}) {
     const key = `sleeper:${path}`;
     const hit = MEM.get(key);
-    if (hit && Date.now() - hit.at < ttl) return hit.data;
+    // `force` exists so a user pressing Refresh always hits the network. A
+    // cache TTL longer than the caller's refresh interval turns the button
+    // into a no-op, which is worse than no button.
+    if (!force && hit && Date.now() - hit.at < ttl) return hit.data;
 
     let res;
     try {
@@ -52,13 +55,14 @@ export const getRosters = (leagueId) => get(`/league/${leagueId}/rosters`, { ttl
 export const getLeagueUsers = (leagueId) => get(`/league/${leagueId}/users`, { ttl: 10 * 60 * 1000 });
 
 /** Live during games -- short TTL so the scoreboard actually moves. */
-export const getMatchups = (leagueId, week) =>
-    get(`/league/${leagueId}/matchups/${week}`, { ttl: 45 * 1000 });
+export const getMatchups = (leagueId, week, { force = false } = {}) =>
+    get(`/league/${leagueId}/matchups/${week}`, { ttl: 30 * 1000, force });
 
-export const getTransactions = (leagueId, week) =>
-    get(`/league/${leagueId}/transactions/${week}`, { ttl: 5 * 60 * 1000 });
+// Shorter than the trade poll interval, or two of every three polls would be
+// no-ops and detection would lag by up to the TTL rather than the interval.
+export const getTransactions = (leagueId, week, { force = false } = {}) =>
+    get(`/league/${leagueId}/transactions/${week}`, { ttl: 60 * 1000, force });
 
-export const getWinnersBracket = (leagueId) => get(`/league/${leagueId}/winners_bracket`, { ttl: 10 * 60 * 1000 });
 
 /** Waiver-wire buzz. `type` is 'add' or 'drop'. */
 export const getTrending = (type = 'add', hours = 24, limit = 40) =>
@@ -68,7 +72,7 @@ const FANTASY_POSITIONS = new Set(['QB', 'RB', 'WR', 'TE', 'K', 'DEF']);
 
 /**
  * Trim Sleeper's player dump to the fields the app actually uses. The raw
- * payload is ~5MB of mostly-empty metadata; this lands around 300KB, which
+ * payload is about 14MB of mostly-empty metadata; this lands around 300KB, which
  * fits comfortably in localStorage.
  */
 export function trimPlayers(raw) {
@@ -104,12 +108,9 @@ export async function fetchPlayers() {
     return trimPlayers(await res.json());
 }
 
-export const avatarUrl = (id, size = 'thumbs') =>
-    id ? `https://sleepercdn.com/avatars/${size}/${id}` : null;
 
 export const headshotUrl = (playerId, pos, team) =>
     pos === 'DEF'
         ? `https://sleepercdn.com/images/team_logos/nfl/${String(team || '').toLowerCase()}.png`
         : `https://sleepercdn.com/content/nfl/players/thumb/${playerId}.jpg`;
 
-export const clearCache = () => MEM.clear();

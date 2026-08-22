@@ -4,8 +4,8 @@ import { computePowerRankings, applyMovement, toSnapshot, toShareText, WEIGHT_PR
 import * as store from '../store.js';
 import { openSyncModal } from '../app.js';
 import {
-    componentBar, copyToClipboard, el, emptyState, fmtPct, playerCell, posBadge,
-    round, sortBy, spinnerRow, tag, tile, toast,
+    banner, componentBar, copyToClipboard, el, emptyState, fmtPct, playerCell,
+    posBadge, round, sortBy, spinnerRow, tag, tile,
 } from '../ui.js';
 
 const LABELS = {
@@ -58,6 +58,7 @@ export default function renderPower(app) {
                     'aria-pressed': String(key === preset),
                     class: key === preset ? 'accent' : '',
                     title: cfg.blurb,
+                    disabled: false,
                     onclick: () => {
                         preset = key;
                         store.state.settings.powerPreset = key;
@@ -120,11 +121,21 @@ function build(app, preset = 'balanced') {
         preset,
     });
 
-    const prev = store.previousSnapshot(league.cfg.id, week);
+    const presetLive = ranked.length ? ranked[0].presetApplied !== false : true;
+    const prev = store.previousSnapshot(league.cfg.id, week, preset);
     ranked = applyMovement(ranked, prev);
-    store.saveSnapshot(league.cfg.id, week, toSnapshot(ranked));
+    store.saveSnapshot(league.cfg.id, week, toSnapshot(ranked), preset);
 
     const wrap = el('div', {});
+
+    if (!presetLive) {
+        wrap.append(
+            banner(
+                'No games have been played yet, so there is no performance signal to weight — every preset ranks on roster strength alone right now. The selector starts mattering in week 1.',
+                'warn'
+            )
+        );
+    }
 
     // Summary tiles
     const best = ranked[0];
@@ -155,7 +166,13 @@ function build(app, preset = 'balanced') {
             'div',
             { class: 'section-head' },
             el('h2', {}, `Week ${week}`),
-            el('span', { class: 'hint grow' }, prev ? `movement vs. week ${prev.week}` : 'first snapshot — movement starts next week'),
+            el(
+                'span',
+                { class: 'hint grow' },
+                prev
+                    ? `movement vs. week ${prev.week}${week - prev.week > 1 ? ` (${week - prev.week} weeks ago — the last time you opened this view)` : ''}`
+                    : 'first snapshot for this weighting — movement starts once there is a week to compare against'
+            ),
             el(
                 'button',
                 {

@@ -6,7 +6,7 @@ import * as api from './sleeper.js';
 import { normalizeLeague, defaultRosterPositions, scoringLabel } from './league.js';
 import { createValuationContext } from './valuation.js';
 import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
-import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, tag, onPlayerClick } from './ui.js';
+import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, onPlayerClick } from './ui.js';
 import { openPlayerCard } from './views/player.js';
 import { loadSeasonTransactions, tradesOnly, newTradesSince } from './transactions.js';
 
@@ -96,8 +96,11 @@ function renderView(key) {
     app.view = key;
     const host = document.getElementById('view');
     for (const btn of document.querySelectorAll('#tabs .tab')) {
-        btn.setAttribute('aria-selected', String(btn.dataset.view === key));
+        const on = btn.dataset.view === key;
+        btn.setAttribute('aria-selected', String(on));
+        if (on) btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
+    app.updateTabFade?.();
 
     host.replaceChildren();
     try {
@@ -183,6 +186,7 @@ export function watchForTrades() {
             const fresh = await loadSeasonTransactions(app.league.cfg.id, app.league.currentWeek, {
                 teamsById,
                 players: app.players,
+                force: true,
             });
             const seen = tradesOnly(app.transactions).map((t) => t.id);
             const added = newTradesSince(fresh, seen);
@@ -337,6 +341,19 @@ async function boot() {
     document.getElementById('league-chip').addEventListener('click', openSyncModal);
     onPlayerClick((player) => openPlayerCard(app, player));
     window.addEventListener('hashchange', () => renderView(currentViewFromHash()));
+
+    // Mark the tab strip when it has content scrolled out of view, and keep the
+    // selected tab visible after navigation.
+    const tabsEl = document.getElementById('tabs');
+    const wrap = document.getElementById('tabs-wrap');
+    const updateFade = () => {
+        const more = tabsEl.scrollWidth - tabsEl.clientWidth - tabsEl.scrollLeft;
+        wrap.classList.toggle('is-scrollable', more > 4);
+    };
+    tabsEl.addEventListener('scroll', updateFade, { passive: true });
+    window.addEventListener('resize', updateFade);
+    app.updateTabFade = updateFade;
+    setTimeout(updateFade, 0);
 
     try {
         const nflState = await api.getState().catch(() => null);

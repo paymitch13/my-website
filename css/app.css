@@ -177,8 +177,6 @@ button { font: inherit; }
 
 .grid { display: grid; gap: var(--sp-4); }
 .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .row { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
 
 /* ---------- Buttons & inputs ---------- */
@@ -321,16 +319,18 @@ input::placeholder { color: var(--text-3); }
 .side-panel { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r); padding: var(--sp-4); }
 .side-panel.is-winner { border-color: var(--accent-dim); box-shadow: 0 0 0 1px var(--accent-dim), 0 0 26px rgba(79, 209, 197, 0.09); }
 
-.dropzone {
+/* Was `.dropzone`, styled as a drag target with a dashed border. Nothing was
+   ever draggable into it -- the interaction is click to add -- so the affordance
+   was a lie. It is now a plain list. */
+.picklist {
     min-height: 96px;
-    border: 1.5px dashed var(--line);
+    border: 1px solid var(--line);
     border-radius: var(--r-sm);
     padding: var(--sp-2);
+    background: var(--bg);
     display: flex; flex-direction: column; gap: 5px;
-    transition: border-color 0.15s, background 0.15s;
 }
-.dropzone.empty { align-items: center; justify-content: center; color: var(--text-3); font-size: 13px; text-align: center; }
-.dropzone.over { border-color: var(--accent); background: var(--accent-glow); }
+.picklist.empty { align-items: center; justify-content: center; color: var(--text-3); font-size: 13px; text-align: center; }
 
 .chip {
     display: flex; align-items: center; gap: var(--sp-2);
@@ -536,8 +536,6 @@ input::placeholder { color: var(--text-3); }
 /* ---------- Responsive ---------- */
 
 @media (max-width: 900px) {
-    .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .trade-grid { grid-template-columns: 1fr; }
     .trade-mid { flex-direction: row; padding-top: 0; }
     .swap-arrows { transform: rotate(90deg); }
@@ -559,7 +557,7 @@ input::placeholder { color: var(--text-3); }
     .section-head .hint { flex-basis: 100%; }
     .shell { padding: 0 var(--sp-3) var(--sp-6); }
     .card { padding: var(--sp-4); border-radius: var(--r); }
-    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    .grid-2 { grid-template-columns: 1fr; }
     .page-head h1 { font-size: 22px; }
     .table-scroll { margin: 0 calc(var(--sp-4) * -1); padding: 0 var(--sp-4); }
     /* The grip is hidden on touch, so it leaves the grid flow entirely -- the
@@ -720,4 +718,31 @@ input::placeholder { color: var(--text-3); }
     border: 1px solid var(--line-soft);
     border-radius: var(--r-sm);
     margin-bottom: var(--sp-2);
+}
+
+/* A plain button used as a toggle needs a pressed state of its own; only
+   .seg buttons had one, so the Tiers toggle gave no feedback at all. */
+.btn-toggle[aria-pressed='true'] {
+    background: var(--accent-glow);
+    border-color: var(--accent-dim);
+    color: var(--accent);
+}
+
+/* The tab strip scrolls on narrow screens with hidden scrollbars, so the last
+   tab was invisible and undiscoverable. A fade marks that there is more. */
+.tabs-wrap { position: relative; min-width: 0; flex: 1 1 auto; }
+.tabs-wrap::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--bg));
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.tabs-wrap.is-scrollable::after { opacity: 1; }
+
+@media (max-width: 640px) {
+    .tabs-wrap { order: 3; width: 100%; flex-basis: 100%; }
 }

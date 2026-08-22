@@ -5,7 +5,6 @@
 // slots, superflex, team count, playoff structure -- is resolved here exactly
 // once, so no downstream module has to guess.
 
-export const OFFENSE = ['QB', 'RB', 'WR', 'TE'];
 export const ALL_POS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 
 /** Which positions may fill each Sleeper starting slot. */
@@ -139,10 +138,10 @@ export function normalizeLeague(league, opts = {}) {
         format: settings.type === 2 ? 'dynasty' : settings.type === 1 ? 'keeper' : 'redraft',
         playoffTeams: settings.playoff_teams || 6,
         playoffWeekStart: settings.playoff_week_start || 15,
-        // Sleeper: 0 = head-to-head each week, 2 = median/"all-play" bonus win
+        // Sleeper: settings.league_average_match is 1 when the league plays an
+        // extra weekly matchup against the league median, 0 otherwise. Teams in
+        // such a league therefore play two games a week, and both count.
         medianScoring: settings.league_average_match === 1,
-        tradeDeadline: settings.trade_deadline || 99,
-        waiverType: settings.waiver_type ?? null,
         raw: league || null,
     };
 }
@@ -174,10 +173,6 @@ export function replacementRanks(cfg) {
 export function weeksRemaining(cfg, currentWeek) {
     const lastRegular = (cfg.playoffWeekStart || 15) - 1;
     return Math.max(0, lastRegular - (currentWeek || 1) + 1);
-}
-
-export function isStarterSlot(slot) {
-    return !BENCH_SLOTS.has(slot);
 }
 
 export function slotLabel(slot) {

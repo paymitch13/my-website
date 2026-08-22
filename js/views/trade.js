@@ -5,14 +5,14 @@
 // ledger, and says so plainly rather than pretending the missing analysis is
 // there.
 
-import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages } from '../trade.js';
+import { evaluateTrade, suggestAddOns, suggestPackages } from '../trade.js';
 import { valuePlayer } from '../valuation.js';
 import { slotLabel, scoringLabel } from '../league.js';
-import { optimizeLineup } from '../lineup.js';
 import { openSyncModal } from '../app.js';
+import * as store from '../store.js';
 import {
-    banner, componentBar, el, emptyState, fmtDelta, fmtPct, fmtPctDelta, gradeClass,
-    pickPlayer, playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
+    banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
+    playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 export default function renderTrade(app) {
@@ -49,8 +49,11 @@ export default function renderTrade(app) {
     // ---- Full mode --------------------------------------------------------
 
     const teams = sortBy(app.league.teams, (t) => t.name.toLowerCase());
-    const stateA = { team: teams[0], sending: [] };
-    const stateB = { team: teams[1] || teams[0], sending: [] };
+    // Start on the user's own roster: they are one side of almost every trade
+    // they evaluate.
+    const mine = teams.find((t) => t.ownerId && t.ownerId === app.userId);
+    const stateA = { team: mine || teams[0], sending: [] };
+    const stateB = { team: teams.find((t) => t.rosterId !== stateA.team.rosterId) || teams[0], sending: [] };
 
     const resultHost = el('div', { style: 'margin-top:24px' });
     const panelA = el('div', { class: 'side-panel' });
@@ -108,7 +111,7 @@ export default function renderTrade(app) {
             )
         );
 
-        const zone = el('div', { class: `dropzone${side.sending.length ? '' : ' empty'}` });
+        const zone = el('div', { class: `picklist${side.sending.length ? '' : ' empty'}` });
         if (!side.sending.length) {
             zone.append('Nobody selected yet');
         } else {
@@ -210,15 +213,14 @@ export default function renderTrade(app) {
 
         resultHost.replaceChildren(el('div', { class: 'card' }, spinnerRow('Simulating the rest of the season both ways…')));
 
-        // Yield a frame so the spinner paints before the sim blocks the thread.
-        setTimeout(() => {
-            const result = evaluateTrade({
+        (async () => {
+            const result = await evaluateTrade({
                 cfg: app.league.cfg,
                 ctx: app.ctx,
                 teams: app.league.teams,
                 rankings: app.rankings,
                 schedule: app.league.schedule,
-                iterations: 2000,
+                iterations: store.state.settings.simIterations || 2000,
                 offers: [
                     { rosterId: stateA.team.rosterId, sending: stateA.sending },
                     { rosterId: stateB.team.rosterId, sending: stateB.sending },
@@ -232,7 +234,10 @@ export default function renderTrade(app) {
             resultHost.replaceChildren(renderResult(app, result, () => paintPanels()));
             panelA.classList.toggle('is-winner', result.verdict.winner === stateA.team.rosterId);
             panelB.classList.toggle('is-winner', result.verdict.winner === stateB.team.rosterId);
-        }, 30);
+        })().catch((err) => {
+            console.error(err);
+            resultHost.replaceChildren(banner(`Could not evaluate the trade: ${err.message}`, 'bad'));
+        });
     }
 
     paintPanels();
@@ -526,14 +531,20 @@ function quickMode(app) {
         );
 
     async function add(list) {
-        const chosen = await pickPlayer({ title: 'Add a player', entries: pool() });
+        // A player cannot be on both sides of a trade. Full mode enforces this
+        // structurally; quick mode has to do it explicitly.
+        const taken = new Set([...sideA, ...sideB].map((e) => e.player.id));
+        const chosen = await pickPlayer({
+            title: 'Add a player',
+            entries: pool().filter((e) => !taken.has(e.player.id)),
+        });
         if (!chosen) return;
         list.push(chosen);
         paint();
     }
 
     function column(title, list) {
-        const zone = el('div', { class: `dropzone${list.length ? '' : ' empty'}` });
+        const zone = el('div', { class: `picklist${list.length ? '' : ' empty'}` });
         if (!list.length) zone.append('Nobody selected yet');
         for (const e of list) {
             zone.append(
@@ -572,7 +583,13 @@ function quickMode(app) {
         const total = va + vb || 1;
 
         wrap.replaceChildren(
-            el('div', { class: 'trade-grid' }, column('SIDE A GETS', sideA), el('div', { class: 'trade-mid' }, el('div', { class: 'swap-arrows' }, '⇄')), column('SIDE B GETS', sideB)),
+            el(
+                'div',
+                { class: 'trade-grid' },
+                column('SIDE A SENDS AWAY', sideA),
+                el('div', { class: 'trade-mid' }, el('div', { class: 'swap-arrows' }, '⇄')),
+                column('SIDE B SENDS AWAY', sideB)
+            ),
             out
         );
 
@@ -581,8 +598,11 @@ function quickMode(app) {
             return;
         }
 
-        const diff = va - vb;
-        const pctGap = Math.abs(diff) / Math.max(va, vb);
+        // Side A sends `sideA`, so Side A RECEIVES the value of sideB.
+        const receivesA = vb;
+        const receivesB = va;
+        const diff = receivesA - receivesB;
+        const pctGap = Math.abs(diff) / Math.max(receivesA, receivesB);
         const label = pctGap < 0.07 ? 'Even' : `${diff > 0 ? 'Side A' : 'Side B'} wins the value`;
         const tone = pctGap < 0.07 ? 'neutral' : pctGap < 0.2 ? 'warn' : 'bad';
 
@@ -594,13 +614,13 @@ function quickMode(app) {
                 el(
                     'div',
                     { class: 'headline' },
-                    `${round(va, 0)} vs ${round(vb, 0)} rest-of-season points above replacement — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
+                    `Side A receives ${round(receivesA, 0)}, Side B receives ${round(receivesB, 0)} rest-of-season points above replacement — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
                 ),
                 el(
                     'div',
                     { class: 'meter' },
-                    el('i', { class: 'fill-a', style: `width:${(va / total) * 100}%` }),
-                    el('i', { class: 'fill-b', style: `width:${(vb / total) * 100}%` })
+                    el('i', { class: 'fill-a', style: `width:${(receivesA / total) * 100}%` }),
+                    el('i', { class: 'fill-b', style: `width:${(receivesB / total) * 100}%` })
                 )
             )
         );

@@ -10,7 +10,7 @@
 //   2. The result is expressed as a multiplier around 1.0, so it composes
 //      cleanly with the weather and Vegas adjustments.
 
-import { mean, sortBy } from './util.js';
+import { mean, ordinal, sortBy } from './util.js';
 import { scoreStats } from './projections.js';
 
 /**
@@ -44,9 +44,16 @@ export function buildDefenseProfiles(weeklyStats, scoring, { minSamples = 4 } = 
     for (const r of rows) {
         const games = playerGames.get(r.id) || [];
         if (games.length < 3) continue; // too small a sample to have a baseline
-        const own = mean(games);
+
+        // Leave-one-out: the game being measured must not be part of the
+        // baseline it is measured against. Including it made every performance
+        // a fraction of its own yardstick and pulled every ratio toward 1,
+        // systematically flattening the difference between defenses.
+        const total = games.reduce((a, b) => a + b, 0);
+        const own = (total - r.pts) / (games.length - 1);
+
         // Fringe players' ratios are wild and meaningless; require real usage.
-        if (own < 4) continue;
+        if (!Number.isFinite(own) || own < 4) continue;
         const ratio = r.pts / own;
 
         if (!buckets.has(r.opp)) buckets.set(r.opp, {});
@@ -112,10 +119,4 @@ export function describeMatchup(rankInfo, pos) {
     if (pct >= 0.8) return { tone: 'good', text: `A smash spot — this defense is ${ordinal(total - rank + 1)}-most generous to ${pos}s.` };
     if (pct >= 0.6) return { tone: 'good', text: `A favorable ${pos} matchup (${ordinal(rank)} of ${total}).` };
     return { tone: 'neutral', text: `A neutral ${pos} matchup.` };
-}
-
-function ordinal(n) {
-    const s = ['th', 'st', 'nd', 'rd'];
-    const v = n % 100;
-    return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }

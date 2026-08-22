@@ -6,6 +6,7 @@
 // look like for him.
 
 import { describeEnvironment } from '../odds.js';
+import { slateAverage } from '../startsit.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
 import { getTrending } from '../sleeper.js';
@@ -50,7 +51,9 @@ export function openPlayerCard(app, player) {
 
     const owner = findOwner(app, player.id);
     const oddsCtx = app.odds?.byTeam?.get(player.team) || null;
-    const env = describeEnvironment(oddsCtx);
+    // Compare against this week's actual slate, exactly as Start/Sit does --
+    // otherwise the same game reads differently in two places.
+    const env = describeEnvironment(oddsCtx, slateAverage(app.odds?.byTeam));
 
     const body = el('div', {});
 

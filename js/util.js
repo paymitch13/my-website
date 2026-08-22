@@ -15,16 +15,6 @@ export function stdev(arr, f = (x) => x) {
 /** Sort helper that never mutates the input. */
 export const sortBy = (arr, f, dir = 1) => [...arr].sort((a, b) => (f(a) - f(b)) * dir);
 
-export const groupBy = (arr, f) => {
-    const out = new Map();
-    for (const item of arr) {
-        const k = f(item);
-        if (!out.has(k)) out.set(k, []);
-        out.get(k).push(item);
-    }
-    return out;
-};
-
 export const round = (n, places = 1) => {
     const m = 10 ** places;
     return Math.round(n * m) / m;
@@ -34,46 +24,12 @@ export const pct = (n, places = 0) => `${(n * 100).toFixed(places)}%`;
 
 export const signed = (n, places = 1) => (n >= 0 ? `+${round(n, places)}` : `${round(n, places)}`);
 
-/**
- * Box-Muller. Returns a standard normal deviate.
- * Used heavily by the season simulator, so it avoids allocation.
- */
-export function randNorm() {
-    let u = 0;
-    let v = 0;
-    while (u === 0) u = Math.random();
-    while (v === 0) v = Math.random();
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-}
-
-/** Standard normal CDF, Abramowitz & Stegun 26.2.17. */
-export function normCdf(z) {
-    const t = 1 / (1 + 0.2316419 * Math.abs(z));
-    const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
-    const p =
-        d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-    return z > 0 ? 1 - p : p;
-}
-
-export const escapeHtml = (s) =>
-    String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-/** Fires `fn` at most once per `ms`, on the trailing edge. */
-export function debounce(fn, ms = 250) {
-    let t;
-    return (...args) => {
-        clearTimeout(t);
-        t = setTimeout(() => fn(...args), ms);
-    };
-}
-
 /** `el('div', {class:'x'}, 'text')` -> HTMLElement */
 export function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
         if (v === null || v === undefined || v === false) continue;
         if (k === 'class') node.className = v;
-        else if (k === 'html') node.innerHTML = v;
         else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
         else if (k === 'dataset') Object.assign(node.dataset, v);
         else node.setAttribute(k, v === true ? '' : v);
@@ -87,6 +43,13 @@ export function el(tag, attrs = {}, ...children) {
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+/** 1 -> "1st", 22 -> "22nd". */
+export function ordinal(n) {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
 
 /** Deterministic PRNG so a given sim result can be reproduced when we want it to be. */
 export function mulberry32(seed) {

@@ -1,12 +1,13 @@
 // News & Live — what changed around the league, and the scoreboard as it moves.
 
-import { injuryReport, trendingReport, transactionFeed, buildFeed, diffScoreboard } from '../news.js';
+import { injuryReport, trendingReport, transactionFeed, diffScoreboard } from '../news.js';
 import { loadScoreboard } from '../data.js';
 import { tradesOnly, summarizeTrade } from '../transactions.js';
 import * as store from '../store.js';
 import { openSyncModal } from '../app.js';
 import {
-    el, emptyState, headshot, playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
+    copyToClipboard, el, emptyState, playerLink, posBadge, round, sortBy,
+    spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 const REFRESH_MS = 45000;
@@ -57,9 +58,9 @@ export default function renderNews(app) {
     });
     observer.observe(document.getElementById('view'), { childList: true });
 
-    async function paintScoreboard({ announce = false } = {}) {
+    async function paintScoreboard({ announce = false, force = false } = {}) {
         try {
-            const board = await loadScoreboard(app.league.cfg.id, app.league.currentWeek, app.league.teams, app.players);
+            const board = await loadScoreboard(app.league.cfg.id, app.league.currentWeek, app.league.teams, app.players, { force });
             if (announce && previousBoard) {
                 const changes = diffScoreboard(previousBoard, board);
                 if (changes.length) {
@@ -101,7 +102,7 @@ export default function renderNews(app) {
                     },
                     auto ? 'Pause' : 'Auto-refresh'
                 ),
-                el('button', { class: 'btn btn-sm', onclick: () => paintScoreboard() }, 'Refresh')
+                el('button', { class: 'btn btn-sm', onclick: () => paintScoreboard({ force: true }) }, 'Refresh')
             )
         );
 
@@ -143,7 +144,7 @@ export default function renderNews(app) {
     function setupTimer() {
         clearInterval(timer);
         if (store.state.settings.autoRefreshLive) {
-            timer = setInterval(() => paintScoreboard({ announce: true }), REFRESH_MS);
+            timer = setInterval(() => paintScoreboard({ announce: true, force: true }), REFRESH_MS);
         }
     }
 
@@ -257,10 +258,23 @@ export default function renderNews(app) {
                                   ),
                                   el(
                                       'div',
-                                      { class: 'tiny dim' },
-                                      [t.week ? `Week ${t.week}` : null, t.at ? new Date(t.at).toLocaleString() : null]
-                                          .filter(Boolean)
-                                          .join(' · ')
+                                      { class: 'row', style: 'gap:10px;margin-top:2px' },
+                                      el(
+                                          'span',
+                                          { class: 'tiny dim' },
+                                          [t.week ? `Week ${t.week}` : null, t.at ? new Date(t.at).toLocaleString() : null]
+                                              .filter(Boolean)
+                                              .join(' · ')
+                                      ),
+                                      el(
+                                          'button',
+                                          {
+                                              class: 'btn btn-sm btn-ghost',
+                                              style: 'padding:1px 7px;font-size:11.5px',
+                                              onclick: () => copyToClipboard(summarizeTrade(t), 'Trade copied'),
+                                          },
+                                          'Copy'
+                                      )
                                   )
                               )
                           )
@@ -273,15 +287,18 @@ export default function renderNews(app) {
                   )
         );
 
-        if (transactions.length) {
+        // Trades already have their own log above; repeating them here was
+        // pure duplication.
+        const nonTrades = transactions.filter((t) => t.kind !== 'trade');
+        if (nonTrades.length) {
             wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Waivers and free agents')));
             const card = el('div', { class: 'card' });
-            for (const t of transactions.slice(0, 25)) {
+            for (const t of nonTrades.slice(0, 25)) {
                 card.append(
                     el(
                         'div',
                         { class: 'feed-item' },
-                        el('div', { class: 'feed-icon' }, t.kind === 'trade' ? '🤝' : t.kind === 'waiver' ? '📝' : '➕'),
+                        el('div', { class: 'feed-icon' }, t.kind === 'waiver' ? '📝' : '➕'),
                         el(
                             'div',
                             { style: 'min-width:0' },

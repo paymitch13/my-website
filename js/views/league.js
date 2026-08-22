@@ -5,7 +5,7 @@ import { buildEntries } from '../trade.js';
 import { scoringLabel, slotLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
-    el, emptyState, fmtDelta, modal, playerCell, posBadge, round, sortBy, tag, tile, toast,
+    el, emptyState, fmtDelta, modal, playerCell, posBadge, round, sortBy, tag, tile,
 } from '../ui.js';
 
 export default function renderLeague(app) {
@@ -78,7 +78,8 @@ export default function renderLeague(app) {
             const lineup = optimizeLineup(entries, cfg.starterSlots);
             return { team: t, entries, lineup, report: positionalReport(entries, cfg.starterSlots) };
         }),
-        (a) => a.team.wins * 10000 + a.team.pointsFor,
+        // Half a win per tie, matching how the simulator seeds standings.
+        (a) => (a.team.wins + 0.5 * (a.team.ties || 0)) * 10000 + a.team.pointsFor,
         -1
     );
 

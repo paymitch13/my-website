@@ -85,11 +85,15 @@ export function normalizeTransaction(tx, { teamsById, players }) {
  * Every completed transaction in the season, newest first.
  * Weeks are fetched in parallel and individual failures are tolerated.
  */
-export async function loadSeasonTransactions(leagueId, throughWeek, { teamsById, players }) {
+export async function loadSeasonTransactions(leagueId, throughWeek, { teamsById, players, force = false }) {
     const weeks = [];
     for (let w = 1; w <= Math.max(1, Math.min(throughWeek, 18)); w++) weeks.push(w);
 
-    const batches = await Promise.all(weeks.map((w) => getTransactions(leagueId, w).catch(() => [])));
+    // Only the current week can gain new transactions; older weeks are settled
+    // history and are served from cache even on a forced refresh.
+    const batches = await Promise.all(
+        weeks.map((w) => getTransactions(leagueId, w, { force: force && w >= throughWeek - 1 }).catch(() => []))
+    );
 
     const out = [];
     for (const batch of batches) {
