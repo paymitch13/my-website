@@ -24,7 +24,7 @@ import { DEFAULT_SIM_SEED } from './sim.js';
 import { runSimulation } from './simclient.js';
 import { clamp, round, sortBy, sum } from './util.js';
 
-/** Value + projection for one player, given the user's rankings. */
+/** Value + projection for one player, given a ranking board. */
 export function evaluateRosterEntry(player, rankings, ctx) {
     const posRank = rankings.get(player.id) ?? 999;
     const v = valuePlayer(player, posRank, ctx);
@@ -33,6 +33,31 @@ export function evaluateRosterEntry(player, rankings, ctx) {
 
 export function buildEntries(players, rankings, ctx) {
     return players.map((p) => evaluateRosterEntry(p, rankings, ctx));
+}
+
+/**
+ * Value a player the way the rest of the league would, not the way you do.
+ *
+ * This is the difference between "do I want this deal" and "will they accept
+ * it". Valuing a counterparty's roster with YOUR board means that if you are
+ * low on a player, the app decides his own manager is low on him too, and
+ * cheerfully reports that they will hand him over. They will not.
+ *
+ * The neutral board already exists: valuePlayer computes each player's
+ * projected rank independently of the user's ordering, so scoring the other
+ * roster at projectedRank gives a market-ish second opinion for free.
+ */
+export function neutralEntry(player, ctx) {
+    const proj = ctx.projections?.[player.id] || null;
+    // Fall back to the user's board only when there is no projection at all.
+    const own = proj ? valuePlayer(player, 1, ctx) : null;
+    const rank = own?.projectedRank ?? null;
+    const v = valuePlayer(player, rank ?? 999, ctx);
+    return { player, posRank: rank ?? 999, score: v.effectivePpg, value: v.value, detail: v, neutral: true };
+}
+
+export function buildNeutralEntries(players, ctx) {
+    return players.map((p) => neutralEntry(p, ctx));
 }
 
 /**

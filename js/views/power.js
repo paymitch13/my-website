@@ -91,9 +91,9 @@ export default function renderPower(app) {
     function render() {
         blurbLine.textContent = WEIGHT_PRESETS[preset].blurb;
         host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Simulating the rest of the season…')));
-        setTimeout(() => {
+        setTimeout(async () => {
             try {
-                host.replaceChildren(build(app, preset));
+                host.replaceChildren(await build(app, preset));
             } catch (err) {
                 console.error(err);
                 host.replaceChildren(emptyState('⚠️', 'Could not build the rankings', err.message));
@@ -105,11 +105,11 @@ export default function renderPower(app) {
     return root;
 }
 
-function build(app, preset = 'balanced') {
+async function build(app, preset = 'balanced') {
     const { league } = app;
     const week = league.currentWeek;
 
-    let ranked = computePowerRankings({
+    let ranked = await computePowerRankings({
         cfg: league.cfg,
         ctx: app.ctx,
         teams: league.teams,
@@ -121,6 +121,8 @@ function build(app, preset = 'balanced') {
         preset,
     });
 
+    // The finder uses these to decide who is buying and who is selling.
+    app.powerOdds = new Map(ranked.map((r) => [r.rosterId, r.playoffOdds]));
     const presetLive = ranked.length ? ranked[0].presetApplied !== false : true;
     const prev = store.previousSnapshot(league.cfg.id, week, preset);
     ranked = applyMovement(ranked, prev);
