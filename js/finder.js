@@ -39,7 +39,11 @@ export async function findTrades(input) {
         limits = {},
     } = input;
 
-    const { stage2Keep = 40, stage3Keep = 8 } = limits;
+    // Generous by default: the funnel exists to make the search affordable, not
+    // to hide what it found. Everything that survives stage 2 is returned; only
+    // the top slice gets the expensive odds simulation.
+    const { stage2Keep = 150, stage3Keep = 25 } = limits;
+    const { requireMutualGain = true, minGain = 0.05 } = input;
 
     const me = teams.find((t) => t.rosterId === myRosterId);
     if (!me) return { ok: false, error: 'Unknown roster.' };
@@ -69,8 +73,8 @@ export async function findTrades(input) {
         const theyWant = matchingPositions(theirs, mine);
         if (!iWant.length || !theyWant.length) continue;
 
-        for (const want of iWant.slice(0, 2)) {
-            for (const give of theyWant.slice(0, 2)) {
+        for (const want of iWant.slice(0, 3)) {
+            for (const give of theyWant.slice(0, 3)) {
                 if (want.pos === give.pos) continue;
                 pairs.push({ other, theirs, wantPos: want.pos, givePos: give.pos, score: want.score + give.score });
             }
@@ -93,8 +97,8 @@ export async function findTrades(input) {
         const myBase = mine.lineup.points;
         const theirBase = theirs.lineup.points;
 
-        for (const target of sortBy(targets, (e) => e.value, -1).slice(0, 5)) {
-            for (const offer of sortBy(offers, (e) => e.value, -1).slice(0, 5)) {
+        for (const target of sortBy(targets, (e) => e.value, -1).slice(0, 8)) {
+            for (const offer of sortBy(offers, (e) => e.value, -1).slice(0, 8)) {
                 // What each side's starting lineup actually gains.
                 const myAfter = optimizeLineup(
                     [...mine.entries.filter((e) => e !== offer), target],
@@ -108,10 +112,11 @@ export async function findTrades(input) {
                 const myGain = myAfter - myBase;
                 const theirGain = theirAfter - theirBase;
 
-                // Both sides must gain. A deal that only helps me is one they
-                // decline, and the whole point of the finder is offers that get
-                // sent and accepted.
-                if (myGain <= 0.15 || theirGain <= 0.15) continue;
+                // I must gain something, always. Whether THEY must gain is a
+                // choice: mutual-gain deals are the ones that get accepted, but
+                // a lopsided offer is still worth seeing before you send it.
+                if (myGain <= minGain) continue;
+                if (requireMutualGain && theirGain <= minGain) continue;
 
                 candidates.push({
                     other,
@@ -122,13 +127,27 @@ export async function findTrades(input) {
                     jointGain: myGain + theirGain,
                     // Neutral value gap: how lopsided it looks on a market board.
                     neutralGap: target.value - offer.value,
+                    mutual: theirGain > minGain,
                 });
             }
         }
     }
 
-    const shortlist = sortBy(candidates, (c) => c.jointGain, -1).slice(0, stage2Keep);
-    if (!shortlist.length) return { ok: true, trades: [], scanned: pairs.length };
+    // Deduplicate: the same two players can surface from several position
+    // pairings.
+    const seen = new Set();
+    const unique = [];
+    for (const c of sortBy(candidates, (x) => x.jointGain, -1)) {
+        const key = `${c.other.rosterId}:${c.give.player.id}:${c.get.player.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(c);
+    }
+
+    const shortlist = unique.slice(0, stage2Keep);
+    if (!shortlist.length) {
+        return { ok: true, trades: [], others: [], scanned: pairs.length, shortlisted: 0 };
+    }
 
     // --- Stage 3: full evaluation with the odds simulation ------------------
     const finalists = shortlist.slice(0, stage3Keep);
@@ -184,11 +203,24 @@ export async function findTrades(input) {
         -1
     );
 
+    // Everything the simulation rejected, plus everything past the stage-3 cut,
+    // is still shown -- with lineup numbers rather than odds, and labelled as
+    // such. Reporting "9 found" and rendering one was the wrong trade-off.
+    const simulatedKeys = new Set(finalists.map((c) => `${c.other.rosterId}:${c.give.player.id}:${c.get.player.id}`));
+    const alsoPossible = [
+        ...evaluated.filter((e) => !worthSending.includes(e)).map((e) => ({ ...e, reason: 'lowers-odds' })),
+        ...shortlist
+            .filter((c) => !simulatedKeys.has(`${c.other.rosterId}:${c.give.player.id}:${c.get.player.id}`))
+            .map((c) => ({ ...c, reason: 'not-simulated' })),
+    ];
+
     return {
         ok: true,
         trades: ranked,
+        others: sortBy(alsoPossible, (o) => o.myGain, -1),
         scanned: pairs.length,
         shortlisted: shortlist.length,
+        simulated: evaluated.length,
         rejected: evaluated.length - worthSending.length,
     };
 }

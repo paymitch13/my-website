@@ -170,3 +170,52 @@ test('a trade that lowers my own odds is never recommended', async () => {
     }
     assert.ok(typeof res.rejected === 'number');
 });
+
+test('everything found is returned, not just the simulated few', async () => {
+    const { teams, rankings } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        schedule: syntheticSchedule(teams.map((t) => t.rosterId), 7, 14),
+        iterations: 120, limits: { stage2Keep: 50, stage3Keep: 3 },
+    });
+    // The invariant that matters: nothing found is thrown away. Everything that
+    // survived the lineup solve is either fully simulated and ranked, or listed
+    // as also-possible -- reporting "9 found" and rendering one was the bug.
+    assert.ok(res.trades.length <= 3, 'only the top slice gets simulated');
+    assert.equal(
+        res.trades.length + res.others.length,
+        res.shortlisted,
+        `every shortlisted candidate must be returned (${res.trades.length} + ${res.others.length} != ${res.shortlisted})`
+    );
+    for (const o of res.others) assert.ok(o.reason === 'not-simulated' || o.reason === 'lowers-odds');
+});
+
+test('lopsided offers can be included on request', async () => {
+    const { teams, rankings } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const strict = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, iterations: 100,
+        limits: { stage2Keep: 60, stage3Keep: 2 },
+    });
+    const loose = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, iterations: 100,
+        requireMutualGain: false, limits: { stage2Keep: 60, stage3Keep: 2 },
+    });
+    const strictTotal = strict.trades.length + strict.others.length;
+    const looseTotal = loose.trades.length + loose.others.length;
+    assert.ok(looseTotal >= strictTotal, `loose ${looseTotal} should not be fewer than strict ${strictTotal}`);
+    // Even loose, I must always gain.
+    for (const t of [...loose.trades, ...loose.others]) assert.ok(t.myGain > 0);
+});
+
+test('the same pair of players is never listed twice', async () => {
+    const { teams, rankings } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, iterations: 100,
+        limits: { stage2Keep: 80, stage3Keep: 5 },
+    });
+    const keys = [...res.trades, ...res.others].map((t) => `${t.other.rosterId}:${t.give.player.id}:${t.get.player.id}`);
+    assert.equal(new Set(keys).size, keys.length);
+});

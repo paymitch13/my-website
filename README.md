@@ -69,7 +69,8 @@ everywhere, and asymptotically equal to points-above-replacement for genuine sta
 |---|---|
 | `js/projections.js` | Sleeper projections + actuals, scored against league rules |
 | `js/valuation.js` | Rank → projection curve → league-scored points → value |
-| `js/odds.js` | Vegas lines → implied team totals (weekly context only) |
+| `js/odds.js` | Vegas markets: spread, moneyline, total, opening lines, movement |
+| `js/tradevalue.js` | Market-scale trade values |
 | `js/lineup.js` | Optimal starting lineup solver (FLEX / SUPER_FLEX aware) |
 | `js/sim.js` | Monte Carlo season + bracket simulator → playoff and title odds |
 | `js/trade.js` | The trade engine: value, fit, impact, verdict and written reasoning |
@@ -129,7 +130,13 @@ of evaluation is matched to how many candidates survive:
 |---|---|---|---|
 | 1 | Need / surplus filter | microseconds | ~2,800 → ~200 |
 | 2 | Lineup solve, both directions | milliseconds | ~200 → ~40 |
-| 3 | Full evaluation with odds simulation | seconds | ~40 → ~8 |
+| 3 | Full evaluation with odds simulation | seconds | ~40 → ~25 |
+
+Everything that survives stage 2 is shown. Only the top slice gets the expensive simulation; the
+rest is listed as **also possible** with lineup numbers and a note saying so. Reporting "15
+found" and rendering one was the wrong trade-off. A **Balanced only** toggle controls whether
+the other side must gain too — on by default, because those are the offers that get accepted,
+but a lopsided offer is still worth seeing before you send it.
 
 Surplus is measured as bench depth relative to positional dropoff, not as low starting points: a
 team with three startable backs and one flex spot has surplus at running back even when its
@@ -233,16 +240,45 @@ no password, no OAuth — a username is enough to find your leagues. Your rankin
 The ~14MB player database is fetched once and cached for a day in trimmed form (about 300KB).
 Projections are cached for six hours, since they move as news breaks.
 
-### On Vegas odds
+## Trade values
 
-Vegas is excellent at predicting how many points a team scores in a **specific game**, which
-makes it a genuinely useful weekly signal — a back on a 27-point implied team is in a very
-different spot than the same back on a 16-point implied team. It is a poor **season-long**
-signal: this week's spread says nothing about a player's rest-of-season worth, and the season
-projections already price in team quality and offensive environment.
+The engine works in points above replacement, which is the right unit for deciding anything: it
+composes with lineups, schedules and simulations. It is a poor unit for *reading* — a 63 next to
+a 58 does not feel like the gap it represents — so values are displayed on the 0–10,000 scale
+people know from other calculators.
 
-So odds are surfaced as matchup context in the player card and are deliberately **not** folded
-into trade value. Doing otherwise would make trade grades swing on a single week's line.
+The rescale itself adds no accuracy, and this document is not going to pretend otherwise. The
+part that **is** substantive is the curve. Trade markets are convex: one elite player costs more
+than two good ones, because a roster has a fixed number of starting slots and only one can hold
+your best player. Points above replacement is close to linear, so on the raw scale two RB20s
+look equal to one RB4 — and no manager alive makes that trade. Values are raised to a power
+greater than one, which reproduces the premium the market actually charges for consolidation.
+
+## Vegas
+
+Every posted market on the slate, and what each one is good for in fantasy:
+
+| Market | What it tells you |
+|---|---|
+| **Implied team total** | How many points an offense is expected to score — the best one-number summary of a game environment |
+| **Moneyline** | Win probability once the bookmaker's margin is removed by normalizing both sides |
+| **Spread** | Game script. A heavy favorite runs it out; a heavy underdog throws forty times |
+| **Line movement** | Where the market has moved since opening — weather, injury or news a projection has not absorbed |
+| **Favorite flip** | The market changing its mind about who wins, which is news by itself |
+
+ESPN also reports whether the venue is indoors, which is authoritative in a way a hardcoded
+stadium table cannot be: it handles relocations, new roofs and neutral-site games.
+
+Implied total, game script and total movement all feed Start/Sit as separate, individually
+reported adjustments. None of them touch season-long trade value — a single week's line says
+nothing about a player's rest-of-season worth, and letting it move trade grades would be wrong.
+
+### On using Vegas for value
+
+Vegas is excellent at predicting how many points a team scores in a **specific game**. It is a
+poor **season-long** signal, and the season projections already price in team quality and
+offensive environment. So odds drive the weekly views and are deliberately kept out of trade
+value.
 
 ## Deliberate non-features
 
@@ -267,7 +303,7 @@ into trade value. Doing otherwise would make trade grades swing on a single week
 ## Development
 
 ```bash
-npm test          # 179 engine tests, no dependencies
+npm test          # 196 engine tests, no dependencies
 ```
 
 Everything under `js/` is a plain ES module. `package.json` exists only so Node can run the

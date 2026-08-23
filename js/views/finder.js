@@ -7,6 +7,7 @@ import { loadWeekContext } from '../data.js';
 import { byeConflicts } from '../schedule.js';
 import { openSyncModal } from '../app.js';
 import * as store from '../store.js';
+import { formatValue } from '../tradevalue.js';
 import { encodeOffer, offerUrl } from '../share.js';
 import {
     banner, el, emptyState, fmtDelta, fmtPct, fmtPctDelta, playerLink, posBadge,
@@ -46,6 +47,8 @@ export default function renderFinder(app) {
     const teams = sortBy(app.league.teams, (t) => t.name.toLowerCase());
     let mine = teams.find((t) => t.ownerId && t.ownerId === app.userId) || teams[0];
 
+    let requireMutual = store.state.settings.finderMutualOnly !== false;
+
     const host = el('div', {});
     const picker = el(
         'select',
@@ -63,9 +66,30 @@ export default function renderFinder(app) {
         el(
             'div',
             { class: 'card card-tight' },
-            el('div', { class: 'row' }, el('span', { class: 'tiny dim' }, 'MY ROSTER'), picker,
+            el(
+                'div',
+                { class: 'row' },
+                el('span', { class: 'tiny dim' }, 'MY ROSTER'),
+                picker,
                 el('div', { class: 'grow' }),
-                el('button', { class: 'btn btn-sm', onclick: () => run() }, 'Search again'))
+                el(
+                    'button',
+                    {
+                        class: 'btn btn-sm btn-toggle',
+                        'aria-pressed': String(requireMutual),
+                        title: 'Only show deals that improve both lineups. Turn off to include lopsided offers.',
+                        onclick: (e) => {
+                            requireMutual = !requireMutual;
+                            store.state.settings.finderMutualOnly = requireMutual;
+                            store.save();
+                            e.currentTarget.setAttribute('aria-pressed', String(requireMutual));
+                            run();
+                        },
+                    },
+                    'Balanced only'
+                ),
+                el('button', { class: 'btn btn-sm', onclick: () => run() }, 'Search again')
+            )
         ),
         host
     );
@@ -76,7 +100,7 @@ export default function renderFinder(app) {
         const target = mine;
         host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Searching every roster — needs, lineups, then full simulations…')));
         try {
-            const built = await build(app, target);
+            const built = await build(app, target, requireMutual);
             if (mineNow !== token) return;
             host.replaceChildren(built);
         } catch (err) {
@@ -90,7 +114,7 @@ export default function renderFinder(app) {
     return root;
 }
 
-async function build(app, me) {
+async function build(app, me, requireMutual = true) {
     const { cfg, currentWeek, lastPlayed, raw, teams, schedule } = app.league;
 
     const wrap = el('div', {});
@@ -107,6 +131,7 @@ async function build(app, me) {
         schedule,
         playoffOdds,
         iterations: Math.min(store.state.settings.simIterations || 2000, 1200),
+        requireMutualGain: requireMutual,
     });
 
     if (!res.ok) {
@@ -119,12 +144,8 @@ async function build(app, me) {
             'div',
             { class: 'tiles' },
             tile('Pairings considered', res.scanned ?? 0, 'after the need/surplus filter'),
-            tile('Survived lineup solve', res.shortlisted ?? 0, 'both sides gain points'),
-            tile(
-                'Worth sending',
-                res.trades.length,
-                res.rejected ? `${res.rejected} dropped for lowering your odds` : 'ranked by your title odds'
-            )
+            tile('Trades found', res.shortlisted ?? 0, requireMutual ? 'both lineups improve' : 'your lineup improves'),
+            tile('Simulated in full', res.trades.length, 'ranked by your title odds')
         )
     );
 
@@ -145,6 +166,20 @@ async function build(app, me) {
         );
     } else {
         for (const t of res.trades) wrap.append(tradeCard(app, me, t));
+    }
+
+    if (res.others?.length) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'section-head' },
+                el('h2', {}, 'Also possible'),
+                el('span', { class: 'hint' }, 'lineup numbers only — not run through the season simulation')
+            )
+        );
+        const card = el('div', { class: 'card' });
+        for (const t of res.others) card.append(otherRow(app, me, t));
+        wrap.append(card);
     }
 
     // --- Buy low / sell high ------------------------------------------------
@@ -287,6 +322,49 @@ function openInCalculator(me, t) {
         aRoster: me.rosterId, aSend: [t.give.player.id],
         bRoster: t.other.rosterId, bSend: [t.get.player.id],
     });
+}
+
+/** A candidate that did not get the full simulation, or that the sim rejected. */
+function otherRow(app, me, t) {
+    return el(
+        'div',
+        { class: 'suggest' },
+        el(
+            'div',
+            { class: 'suggest-main' },
+            el(
+                'div',
+                { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
+                el('span', { class: 'tiny good' }, 'GET'),
+                posBadge(t.get.player.pos), playerLink(t.get.player),
+                el('span', { class: 'dim' }, '·'),
+                el('span', { class: 'tiny bad' }, 'SEND'),
+                posBadge(t.give.player.pos), playerLink(t.give.player)
+            ),
+            el(
+                'div',
+                { class: 'suggest-why' },
+                `${t.other.name} · you ${fmtDelta(t.myGain)} pts/wk, they ${fmtDelta(t.theirGain)} pts/wk`,
+                t.reason === 'lowers-odds'
+                    ? ' — the season simulation says this lowers your playoff or title odds despite the lineup gain.'
+                    : ''
+            )
+        ),
+        el(
+            'div',
+            { class: 'suggest-meta' },
+            t.reason === 'lowers-odds' ? tag('odds down', 'warn') : tag('not simulated', ''),
+            el(
+                'button',
+                {
+                    class: 'btn btn-sm',
+                    style: 'padding:2px 8px;font-size:12px',
+                    onclick: () => openInCalculator(me, t),
+                },
+                'Open'
+            )
+        )
+    );
 }
 
 function usageCard(rows, rostered, describe, tone, emptyText) {

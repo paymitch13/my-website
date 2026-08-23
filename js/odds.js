@@ -1,16 +1,22 @@
-// Vegas game lines, from ESPN's public scoreboard feed (DraftKings numbers).
+// Vegas lines from ESPN's public scoreboard (DraftKings numbers).
 //
-// A word on what this is and is not for.
+// The payload carries far more than a spread and a total: opening AND closing
+// numbers for the spread, moneyline and total, whether the favorite has flipped
+// since the market opened, whether the venue is indoors, and whether the game is
+// at a neutral site. All of it is free and CORS-open, and most of it was being
+// thrown away.
 //
-// Vegas is excellent at one thing: predicting how many points a team will score
-// in a specific game. That makes it a genuinely useful WEEKLY signal -- a back
-// on a 27-point implied team in a shootout is in a different situation than the
-// same back on a 16-point implied team getting buried. It is a poor SEASON-LONG
-// signal, because this week's spread says nothing about a player's rest-of-
-// season worth, and the season projections already price in team quality and
-// offensive environment.
+// What each market is actually good for in fantasy:
 //
-// So odds are surfaced as matchup context and never folded into trade value.
+//   Implied team total  how many points an offense is expected to score. The
+//                       single best one-number summary of a game environment.
+//   Moneyline           win probability, once the vig is removed. Drives game
+//                       script: big favorites run, big underdogs throw.
+//   Line movement       where the market has moved since it opened. A total
+//                       falling three points is information about weather,
+//                       injuries or news that has not reached a projection yet.
+//   Spread magnitude    blowout risk. A 14-point favorite's starters may not
+//                       see the fourth quarter.
 
 const SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';
 
@@ -18,13 +24,37 @@ const SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/s
 const TEAM_ALIAS = { WSH: 'WAS' };
 const normalizeTeam = (t) => TEAM_ALIAS[t] || t;
 
+/** "+150" / "-180" -> implied probability, before removing the vig. */
+export function americanToProbability(odds) {
+    const n = typeof odds === 'string' ? Number(odds.replace('+', '')) : odds;
+    if (!Number.isFinite(n) || n === 0) return null;
+    return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
+}
+
 /**
- * Implied team totals from the spread and the over/under.
- *
- *   favorite  = total/2 + |spread|/2
- *   underdog  = total/2 - |spread|/2
- *
- * which is just the pair of scores that hits the total and covers the spread.
+ * Two-way market probabilities with the bookmaker's margin removed.
+ * Raw implied probabilities sum to more than 1; the overround is the vig.
+ */
+export function devig(oddsA, oddsB) {
+    const a = americanToProbability(oddsA);
+    const b = americanToProbability(oddsB);
+    if (a === null || b === null) return null;
+    const total = a + b;
+    if (total <= 0) return null;
+    return { a: a / total, b: b / total, vig: total - 1 };
+}
+
+/** "o37.5" / "+3.5" / "-1.5" -> number */
+export function parseLine(line) {
+    if (typeof line === 'number') return line;
+    if (typeof line !== 'string') return null;
+    const n = Number(line.replace(/^[ou]/i, ''));
+    return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Implied team totals from the spread and the over/under: the pair of scores
+ * that hits the total and covers the spread.
  */
 export function impliedTotals(overUnder, spread) {
     if (!Number.isFinite(overUnder) || !Number.isFinite(spread)) return null;
@@ -33,12 +63,14 @@ export function impliedTotals(overUnder, spread) {
     return { favorite: half + edge, underdog: half - edge };
 }
 
+const phase = (market, side, which) => market?.[side]?.[which] ?? null;
+
 export function parseScoreboard(payload) {
     const games = [];
-    // payload.week.teamsOnBye was being downloaded and discarded.
     const teamsOnBye = (payload?.week?.teamsOnBye || [])
         .map((t) => normalizeTeam(t?.abbreviation))
         .filter(Boolean);
+
     for (const event of payload?.events || []) {
         const comp = event?.competitions?.[0];
         if (!comp) continue;
@@ -53,9 +85,28 @@ export function parseScoreboard(payload) {
         const odds = comp.odds?.[0] || null;
         const overUnder = odds?.overUnder ?? null;
         const spread = odds?.spread ?? null;
+
+        // --- Opening numbers, for movement --------------------------------
+        const openSpreadHome = parseLine(phase(odds?.pointSpread, 'home', 'open')?.line);
+        const closeSpreadHome = parseLine(phase(odds?.pointSpread, 'home', 'close')?.line);
+        const openTotal = parseLine(phase(odds?.total, 'over', 'open')?.line);
+        const closeTotal = parseLine(phase(odds?.total, 'over', 'close')?.line) ?? overUnder;
+
+        // --- Moneyline -> win probability ---------------------------------
+        const mlHome = phase(odds?.moneyline, 'home', 'close')?.odds ?? null;
+        const mlAway = phase(odds?.moneyline, 'away', 'close')?.odds ?? null;
+        const probs = devig(mlHome, mlAway);
+
         const favoriteAbbr = odds?.awayTeamOdds?.favorite
             ? awayAbbr
             : odds?.homeTeamOdds?.favorite
+              ? homeAbbr
+              : null;
+        // ESPN records who was favored when the market opened, so a flip is
+        // detectable: that is the market changing its mind, which is news.
+        const favoriteAtOpen = odds?.awayTeamOdds?.favoriteAtOpen
+            ? awayAbbr
+            : odds?.homeTeamOdds?.favoriteAtOpen
               ? homeAbbr
               : null;
 
@@ -66,7 +117,6 @@ export function parseScoreboard(payload) {
             implied[favoriteAbbr] = totals.favorite;
             implied[dog] = totals.underdog;
         } else if (totals) {
-            // Pick'em: no favorite, so both sides sit at half the total.
             implied[homeAbbr] = overUnder / 2;
             implied[awayAbbr] = overUnder / 2;
         }
@@ -74,28 +124,49 @@ export function parseScoreboard(payload) {
         games.push({
             id: event.id,
             name: event.shortName,
-            // ESPN flags international and other neutral-site games.
-            neutralSite: !!comp.neutralSite,
             date: event.date,
             status: comp.status?.type?.description || null,
+            state: comp.status?.type?.state || null,
             home: homeAbbr,
             away: awayAbbr,
+            neutralSite: !!comp.neutralSite,
+            // Authoritative, and it handles neutral sites a hardcoded stadium
+            // table cannot.
+            indoor: comp.venue?.indoor ?? null,
+            venue: comp.venue?.fullName || null,
             spread,
             overUnder,
             favorite: favoriteAbbr,
+            favoriteAtOpen,
+            favoriteFlipped: !!(favoriteAbbr && favoriteAtOpen && favoriteAbbr !== favoriteAtOpen),
             detail: odds?.details || null,
             provider: odds?.provider?.name || null,
             implied,
+            moneyline: { home: mlHome, away: mlAway },
+            winProbability: probs ? { [homeAbbr]: probs.a, [awayAbbr]: probs.b, vig: probs.vig } : null,
+            movement: {
+                spread: openSpreadHome !== null && closeSpreadHome !== null
+                    ? { open: openSpreadHome, close: closeSpreadHome, change: closeSpreadHome - openSpreadHome }
+                    : null,
+                total: openTotal !== null && closeTotal !== null
+                    ? { open: openTotal, close: closeTotal, change: closeTotal - openTotal }
+                    : null,
+            },
+            // ESPN ships a forecast on the event itself.
+            espnWeather: event.weather
+                ? {
+                      temperature: event.weather.temperature ?? null,
+                      condition: event.weather.conditionId || event.weather.displayValue || null,
+                  }
+                : null,
         });
     }
+
     games.teamsOnBye = teamsOnBye;
     return games;
 }
 
-/**
- * team abbreviation -> { impliedTotal, opponent, spread, overUnder, ... }
- * for the requested week.
- */
+/** team abbreviation -> everything known about that team's week. */
 export function buildTeamContext(games) {
     const byTeam = new Map();
     for (const g of games) {
@@ -104,29 +175,40 @@ export function buildTeamContext(games) {
             [g.away, g.home],
         ]) {
             if (!team) continue;
+            const isHome = team === g.home;
+            const isFavorite = g.favorite === team;
+            // A team's own spread: negative when favored, as it is quoted.
+            const ownSpread = Number.isFinite(g.spread)
+                ? (isFavorite ? -Math.abs(g.spread) : Math.abs(g.spread))
+                : null;
+
             byTeam.set(team, {
                 team,
                 opponent,
-                home: team === g.home,
+                home: isHome,
+                neutralSite: g.neutralSite,
+                indoor: g.indoor,
+                venue: g.venue,
                 impliedTotal: g.implied[team] ?? null,
                 opponentImplied: g.implied[opponent] ?? null,
                 spread: g.spread,
+                ownSpread,
                 overUnder: g.overUnder,
-                isFavorite: g.favorite === team,
+                isFavorite,
+                favoriteFlipped: g.favoriteFlipped,
+                winProbability: g.winProbability?.[team] ?? null,
+                movement: g.movement,
                 detail: g.detail,
                 kickoff: g.date,
                 status: g.status,
+                espnWeather: g.espnWeather,
+                game: g,
             });
         }
     }
     return byTeam;
 }
 
-/**
- * @param {object} [opts]
- * @param {number} [opts.week] NFL week; omit for whatever ESPN considers current
- * @param {number} [opts.season]
- */
 export async function fetchOdds({ week, season, seasonType = 2 } = {}) {
     const params = new URLSearchParams();
     if (week) params.set('week', String(week));
@@ -139,9 +221,10 @@ export async function fetchOdds({ week, season, seasonType = 2 } = {}) {
     return { games, byTeam: buildTeamContext(games), teamsOnBye: games.teamsOnBye || [] };
 }
 
-/** Plain-language read on a team's week: "shootout", "buried", etc. */
+// --- Interpretation --------------------------------------------------------
+
+/** Plain-language read on a team's game environment. */
 export function describeEnvironment(ctx, leagueAverageTotal = 22.5) {
-    // leagueAverageTotal should be this week's slate mean where available.
     if (!ctx || ctx.impliedTotal === null) return null;
     const t = ctx.impliedTotal;
     const diff = t - leagueAverageTotal;
@@ -151,3 +234,57 @@ export function describeEnvironment(ctx, leagueAverageTotal = 22.5) {
     if (diff < -1.5) return { tone: 'warn', text: `Below-average game environment at ${t.toFixed(1)} implied points.` };
     return { tone: 'neutral', text: `Neutral spot at ${t.toFixed(1)} implied points.` };
 }
+
+/**
+ * Blowout risk. A double-digit favorite may rest starters; a double-digit
+ * underdog abandons the run and throws forty times. Both matter, in opposite
+ * directions, and they matter per position.
+ */
+export function gameScript(ctx) {
+    if (!ctx || !Number.isFinite(ctx.ownSpread)) return null;
+    const s = ctx.ownSpread;
+    if (s <= -10) return { kind: 'heavy-favorite', text: `${Math.abs(s)}-point favorite — run-heavy script, and starters may sit late if it gets out of hand.` };
+    if (s <= -3.5) return { kind: 'favorite', text: `Favored by ${Math.abs(s)} — mildly run-leaning script.` };
+    if (s >= 10) return { kind: 'heavy-underdog', text: `${s}-point underdog — likely trailing and throwing, which lifts pass-catchers and hurts the run.` };
+    if (s >= 3.5) return { kind: 'underdog', text: `Underdog by ${s} — modest pass-leaning script.` };
+    return { kind: 'even', text: 'Close game expected — neutral script.' };
+}
+
+/**
+ * Whether the market has moved, and by how much. A total that has fallen three
+ * points since opening reflects weather, injury or news that a preseason
+ * projection has not absorbed yet.
+ */
+export function describeMovement(ctx) {
+    const notes = [];
+    const m = ctx?.movement;
+    if (!m) return notes;
+
+    if (m.total && Math.abs(m.total.change) >= 1.5) {
+        const dir = m.total.change > 0 ? 'risen' : 'fallen';
+        notes.push({
+            kind: 'total',
+            tone: m.total.change > 0 ? 'good' : 'bad',
+            text: `The game total has ${dir} from ${m.total.open} to ${m.total.close} since it opened.`,
+        });
+    }
+    if (m.spread && Math.abs(m.spread.change) >= 1.5) {
+        notes.push({
+            kind: 'spread',
+            tone: 'neutral',
+            text: `The spread has moved ${Math.abs(m.spread.change).toFixed(1)} points since opening (${fmtSpread(m.spread.open)} → ${fmtSpread(m.spread.close)}, home side).`,
+        });
+    }
+    if (ctx.favoriteFlipped) {
+        notes.push({
+            kind: 'flip',
+            tone: 'warn',
+            text: 'The favorite has flipped since the market opened — something changed.',
+        });
+    }
+    return notes;
+}
+
+export const fmtSpread = (n) => (n > 0 ? `+${n}` : `${n}`);
+
+export const fmtMoneyline = (odds) => (typeof odds === 'string' ? odds : odds > 0 ? `+${odds}` : `${odds}`);

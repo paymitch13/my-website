@@ -780,3 +780,18 @@ input::placeholder { color: var(--text-3); }
     .finder-arrow { display: none; }
     .finder-partner { text-align: left; align-items: flex-start; }
 }
+
+/* ---------- Vegas board ---------- */
+
+.vegas-game { margin-bottom: var(--sp-3); }
+.vegas-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line-soft);
+}
+.vegas-cell .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); font-weight: 650; }
+.vegas-cell .v { font-size: 18px; font-weight: 700; margin-top: 2px; }
+.vegas-cell .d { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }

@@ -9,6 +9,7 @@ import { describeEnvironment } from '../odds.js';
 import { slateAverage } from '../startsit.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
+import { formatValue } from '../tradevalue.js';
 import { getTrending } from '../sleeper.js';
 import { playerHistory } from '../transactions.js';
 import {
@@ -106,7 +107,7 @@ export function openPlayerCard(app, player) {
     // --- Headline numbers --------------------------------------------------
     const tiles = el('div', { class: 'tiles', style: 'margin-bottom:18px' });
     if (v) {
-        tiles.append(tile('Trade value', round(v.value, 0), `rest of season · ${app.ctx.weeksLeft} wk left`));
+        tiles.append(tile('Trade value', formatValue(app.tradeValue(v.value)), `rest of season · ${app.ctx.weeksLeft} wk left`));
         tiles.append(tile('Your rank', `${POS_LABEL[player.pos] || player.pos}${posRank}`, 'where you have him'));
     }
     if (projPpg !== null) {
@@ -190,7 +191,8 @@ export function openPlayerCard(app, player) {
                     row('Points above replacement/game', fmtDelta(v.parPerGame, 2), v.parPerGame >= 0 ? 'good' : 'bad'),
                     row('Weeks remaining', app.ctx.weeksLeft),
                     player.injury ? row('Availability', `${Math.round(v.availability * 100)}%`, 'warn') : null,
-                    row('Rest-of-season value', round(v.value, 1))
+                    row('Points above replacement, rest of season', round(v.ros, 1)),
+                    row('Trade value', formatValue(app.tradeValue(v.value)))
                 )
             ),
             app.ctx.dynasty
