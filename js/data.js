@@ -174,7 +174,11 @@ export async function loadLeague(leagueId, players, { onProgress = () => {} } = 
             ties: s.ties || 0,
             pointsFor: (s.fpts || 0) + (s.fpts_decimal || 0) / 100,
             pointsAgainst: (s.fpts_against || 0) + (s.fpts_against_decimal || 0) / 100,
-            waiverBudget: s.waiver_budget_used ?? null,
+            // Was `waiverBudget`, holding waiver_budget_used: a name that said
+            // "budget" and held "spent". Both numbers are useful and the
+            // difference is the one that matters in a trade.
+            faabUsed: s.waiver_budget_used ?? 0,
+            faabRemaining: Math.max(0, (cfg.faabBudget || 0) - (s.waiver_budget_used ?? 0)),
         };
     });
 

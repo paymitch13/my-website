@@ -12,9 +12,14 @@
  * readable by somebody already synced to the same league, which is exactly the
  * person who did not need the link.
  */
-export function encodeOffer({ leagueId, aRoster, aSend, bRoster, bSend }) {
+export function encodeOffer({ leagueId, aRoster, aSend, bRoster, bSend, aFaab = 0, bFaab = 0 }) {
     const league = leagueId ? `l=${encodeURIComponent(leagueId)}&` : '';
-    return `#/trade?${league}a=${aRoster}&as=${(aSend || []).join('.')}&b=${bRoster}&bs=${(bSend || []).join('.')}`;
+    // Cash is part of the offer, so it has to survive the paste. A link that
+    // drops the $30 describes a different trade than the one that was sent.
+    const cash = (Number(aFaab) || 0) || (Number(bFaab) || 0)
+        ? `&af=${Number(aFaab) || 0}&bf=${Number(bFaab) || 0}`
+        : '';
+    return `#/trade?${league}a=${aRoster}&as=${(aSend || []).join('.')}&b=${bRoster}&bs=${(bSend || []).join('.')}${cash}`;
 }
 
 export function decodeOffer(hash) {
@@ -25,12 +30,18 @@ export function decodeOffer(hash) {
     const bRoster = Number(p.get('b'));
     if (!aRoster || !bRoster) return null;
     const split = (v) => (v ? v.split('.').filter(Boolean) : []);
+    const cash = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    };
     return {
         leagueId: p.get('l') || null,
         aRoster,
         aSend: split(p.get('as')),
+        aFaab: cash(p.get('af')),
         bRoster,
         bSend: split(p.get('bs')),
+        bFaab: cash(p.get('bf')),
     };
 }
 

@@ -5,13 +5,14 @@
 // ledger, and says so plainly rather than pretending the missing analysis is
 // there.
 
-import { evaluateTrade, suggestAddOns, suggestPackages } from '../trade.js';
+import { evaluateTrade, suggestAddOns, suggestPackages, suggestFaab } from '../trade.js';
 import { valuePlayer } from '../valuation.js';
 import { slotLabel, scoringLabel } from '../league.js';
 import { openSyncModal, connectLeague } from '../app.js';
 import * as store from '../store.js';
 import { byeConflicts } from '../schedule.js';
 import { formatValue, fairness } from '../tradevalue.js';
+import { offerUrl } from '../share.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
     playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -81,8 +82,8 @@ export default function renderTrade(app) {
     // Start on the user's own roster: they are one side of almost every trade
     // they evaluate.
     const mine = teams.find((t) => t.ownerId && t.ownerId === app.userId);
-    const stateA = { team: mine || teams[0], sending: [] };
-    const stateB = { team: teams.find((t) => t.rosterId !== stateA.team.rosterId) || teams[0], sending: [] };
+    const stateA = { team: mine || teams[0], sending: [], faab: 0 };
+    const stateB = { team: teams.find((t) => t.rosterId !== stateA.team.rosterId) || teams[0], sending: [], faab: 0 };
 
     // A link from the finder, or pasted from a league chat, pre-fills the deal.
     const shared = app.pendingOffer;
@@ -93,8 +94,10 @@ export default function renderTrade(app) {
             const owned = (team, ids) => ids.filter((id) => team.players.some((p) => p.id === id));
             stateA.team = a;
             stateA.sending = owned(a, shared.aSend);
+            stateA.faab = Math.min(shared.aFaab || 0, a.faabRemaining ?? 0);
             stateB.team = b;
             stateB.sending = owned(b, shared.bSend);
+            stateB.faab = Math.min(shared.bFaab || 0, b.faabRemaining ?? 0);
         }
         app.pendingOffer = null;
     }
@@ -146,6 +149,9 @@ export default function renderTrade(app) {
                 onchange: (e) => {
                     side.team = teams.find((t) => String(t.rosterId) === e.target.value);
                     side.sending = [];
+                    // A different roster has a different budget, so any cash
+                    // already dialled in may no longer be legal to send.
+                    side.faab = 0;
                     paintPanels();
                     resultHost.replaceChildren();
                 },
@@ -200,7 +206,82 @@ export default function renderTrade(app) {
                 'button',
                 { class: 'btn btn-sm', style: 'margin-top:10px;width:100%', onclick: () => addPlayer(side) },
                 '+ Add player'
-            )
+            ),
+            faabRow(side)
+        );
+    }
+
+    /**
+     * Cash on this side of the deal. Only rendered in a FAAB league, because in
+     * a rolling-waiver league there is nothing to send and a disabled stepper
+     * is just clutter.
+     *
+     * The counterparty's remaining budget is shown as well: knowing they have
+     * $2 left tells you cash will not move them, and that is the single most
+     * useful fact about the other side's wallet.
+     */
+    function faabRow(side) {
+        const cfg = app.league.cfg;
+        if (!cfg.usesFaab) return null;
+
+        const budget = side.team.faabRemaining ?? 0;
+
+        const input = el('input', {
+            type: 'number',
+            min: '0',
+            max: String(budget),
+            step: '1',
+            value: String(side.faab),
+            style: 'width:78px;text-align:center',
+            'aria-label': `FAAB sent by ${side.team.name}`,
+        });
+        const minus = el('button', {
+            class: 'btn btn-sm', style: 'padding:4px 10px', 'aria-label': 'Send less FAAB',
+        }, '−');
+        const plus = el('button', {
+            class: 'btn btn-sm', style: 'padding:4px 10px', 'aria-label': 'Send more FAAB',
+        }, '+');
+        const budgetLine = el('div', { class: 'tiny dim', style: 'margin-top:4px' });
+        const worthLine = el('div', { class: 'tiny', style: 'margin-top:4px;color:var(--accent)' });
+
+        // Updated IN PLACE rather than by repainting the panel. Repainting from
+        // inside the input's own change handler tears out the element the
+        // browser is mid-blur on, which throws -- and it also stole focus on
+        // every keystroke, so holding the stepper was unusable.
+        function sync(next) {
+            side.faab = Math.max(0, Math.min(budget, Math.round(next) || 0));
+            if (input.value !== String(side.faab)) input.value = String(side.faab);
+            minus.disabled = side.faab <= 0;
+            plus.disabled = side.faab >= budget;
+            budgetLine.textContent = budget > 0
+                ? `$${budget - side.faab} of $${cfg.faabBudget} would be left`
+                : 'No budget left to send';
+            worthLine.textContent = side.faab > 0 && app.faab?.usable
+                ? `worth about ${round(app.faab.valueOf(side.faab, side.team), 1)} rest-of-season points`
+                : '';
+            // The old analysis described a different trade.
+            resultHost.replaceChildren();
+        }
+
+        input.addEventListener('change', () => sync(Number(input.value)));
+        input.addEventListener('input', () => sync(Number(input.value)));
+        minus.addEventListener('click', () => sync(side.faab - 1));
+        plus.addEventListener('click', () => sync(side.faab + 1));
+        sync(side.faab);
+
+        return el(
+            'div',
+            { style: 'margin-top:12px' },
+            el(
+                'div',
+                { class: 'row', style: 'gap:6px' },
+                el('span', { class: 'tiny dim grow' }, 'FAAB'),
+                minus,
+                input,
+                plus
+            ),
+            budgetLine,
+            worthLine
         );
     }
 
@@ -221,6 +302,9 @@ export default function renderTrade(app) {
             title: `${side.team.name} sends…`,
             entries,
             emptyText: 'Every player on this roster is already in the deal.',
+            // The picker and the panel show the same player one click apart.
+            // They have to be the same number.
+            formatValue: (v) => formatValue(app.tradeValue(v)),
         });
         if (!chosen) return;
         side.sending.push(chosen.player.id);
@@ -246,8 +330,11 @@ export default function renderTrade(app) {
     }
 
     function evaluate() {
-        if (!stateA.sending.length || !stateB.sending.length) {
-            toast('Add at least one player to each side.', 'bad');
+        // A player-for-cash trade is a real trade, so a side sending only money
+        // is complete. A side sending nothing at all is not.
+        const empty = (s) => !s.sending.length && !(s.faab > 0);
+        if (empty(stateA) || empty(stateB)) {
+            toast('Each side has to send a player or some FAAB.', 'bad');
             return;
         }
         if (stateA.team.rosterId === stateB.team.rosterId) {
@@ -265,9 +352,10 @@ export default function renderTrade(app) {
                 rankings: app.rankings,
                 schedule: app.league.schedule,
                 iterations: store.state.settings.simIterations || 2000,
+                faab: app.faab,
                 offers: [
-                    { rosterId: stateA.team.rosterId, sending: stateA.sending },
-                    { rosterId: stateB.team.rosterId, sending: stateB.sending },
+                    { rosterId: stateA.team.rosterId, sending: stateA.sending, faab: stateA.faab },
+                    { rosterId: stateB.team.rosterId, sending: stateB.sending, faab: stateB.faab },
                 ],
             });
 
@@ -338,6 +426,35 @@ function renderResult(app, result, repaint) {
                 { class: 'meter-labels' },
                 el('span', {}, `${a.team.name} receives ${formatValue(scaledA)}`),
                 el('span', {}, `${formatValue(scaledB)} to ${b.team.name}`)
+            ),
+            // A trade you cannot send is a trade that does not happen. The
+            // link carries the league, both sides and any cash, so pasting it
+            // in the league chat reproduces exactly this deal.
+            el(
+                'div',
+                { class: 'row', style: 'margin-top:14px' },
+                el(
+                    'button',
+                    {
+                        class: 'btn btn-sm',
+                        onclick: () => {
+                            const url = offerUrl({
+                                leagueId: app.league?.cfg?.id ?? null,
+                                aRoster: a.team.rosterId,
+                                aSend: a.side.sending,
+                                aFaab: a.faabOut || 0,
+                                bRoster: b.team.rosterId,
+                                bSend: b.side.sending,
+                                bFaab: b.faabOut || 0,
+                            });
+                            navigator.clipboard?.writeText(url).then(
+                                () => toast('Trade link copied — paste it in your league chat', 'good'),
+                                () => toast(url, '')
+                            );
+                        },
+                    },
+                    'Copy link to this trade'
+                )
             )
         )
     );
@@ -440,8 +557,11 @@ function renderResult(app, result, repaint) {
         );
         const picks = suggestAddOns({ cfg: app.league.cfg, ctx: app.ctx, giver: winner, receiver: loser, gap, limit: 4 });
         const packages = suggestPackages({ cfg: app.league.cfg, ctx: app.ctx, giver: winner, receiver: loser, gap, limit: 2 });
+        // Cash is often the only thing that closes a gap cleanly: it costs the
+        // giver no lineup points and takes no roster spot on the other side.
+        const cash = suggestFaab({ faab: app.faab, giver: winner, receiver: loser, gap });
 
-        if (picks.length || packages.length) {
+        if (picks.length || packages.length || cash) {
             wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'How to get this accepted')));
             const card = el('div', { class: 'card' });
             card.append(
@@ -472,6 +592,37 @@ function renderResult(app, result, repaint) {
                                 { class: 'tiny dim nowrap' },
                                 `+${p.gainToReceiver} pts/wk to ${loser.team.name.split(' ')[0]} · −${p.costToGiver} to give up`
                             )
+                        )
+                    )
+                );
+            }
+
+            if (cash) {
+                card.append(
+                    el(
+                        'div',
+                        { class: 'suggest' },
+                        el(
+                            'div',
+                            { class: 'suggest-main' },
+                            el(
+                                'div',
+                                { class: 'row', style: 'gap:8px' },
+                                el('span', { class: 'chip', style: 'padding:4px 10px;font-weight:700' }, `$${cash.dollars} FAAB`),
+                                el('span', { class: 'tiny dim' }, `${winner.team.name} would have $${cash.remainingAfter} left`)
+                            ),
+                            el('div', { class: 'suggest-why' }, cash.rationale)
+                        ),
+                        el(
+                            'div',
+                            { class: 'suggest-meta' },
+                            cash.short ? tag(`closes ~${cash.closes}%`, 'warn') : tag('costs no points', 'good'),
+                            // On the market scale, like the gap right above it.
+                            // Quoting cash in raw points beside a gap quoted in
+                            // market value gives the reader two numbers that
+                            // cannot be reconciled.
+                            el('div', { class: 'tiny dim nowrap' },
+                                `${formatValue(Math.max(0, app.tradeValue(loser.valueIn + cash.value) - app.tradeValue(loser.valueIn)))} in value`)
                         )
                     )
                 );
@@ -617,6 +768,7 @@ function quickMode(app) {
         const chosen = await pickPlayer({
             title: 'Add a player',
             entries: pool().filter((e) => !taken.has(e.player.id)),
+            formatValue: (v) => formatValue(app.tradeValue(v)),
         });
         if (!chosen) return;
         list.push(chosen);
@@ -633,7 +785,7 @@ function quickMode(app) {
                     { class: 'chip' },
                     posBadge(e.player.pos),
                     el('span', { class: 'grow' }, playerLink(e.player)),
-                    el('span', { class: 'num tiny', style: 'color:var(--accent)' }, round(e.value, 0)),
+                    el('span', { class: 'num tiny', style: 'color:var(--accent)' }, formatValue(app.tradeValue(e.value))),
                     el(
                         'button',
                         {
@@ -658,9 +810,11 @@ function quickMode(app) {
     }
 
     function paint() {
-        const va = sideA.reduce((s, e) => s + e.value, 0);
-        const vb = sideB.reduce((s, e) => s + e.value, 0);
-        const total = va + vb || 1;
+        // Scaled, like everything else on screen. Summing raw points here and
+        // printing market values in the chips above put two different scales
+        // in one panel and made the split disagree with the pieces.
+        const va = sideA.reduce((s, e) => s + app.tradeValue(e.value), 0);
+        const vb = sideB.reduce((s, e) => s + app.tradeValue(e.value), 0);
 
         wrap.replaceChildren(
             el(
@@ -682,7 +836,7 @@ function quickMode(app) {
         const receivesA = vb;
         const receivesB = va;
         const diff = receivesA - receivesB;
-        const pctGap = Math.abs(diff) / Math.max(receivesA, receivesB);
+        const pctGap = fairness(receivesA, receivesB).gap;
         const label = pctGap < 0.07 ? 'Even' : `${diff > 0 ? 'Side A' : 'Side B'} wins the value`;
         const tone = pctGap < 0.07 ? 'neutral' : pctGap < 0.2 ? 'warn' : 'bad';
 
@@ -694,7 +848,7 @@ function quickMode(app) {
                 el(
                     'div',
                     { class: 'headline' },
-                    `Side A receives ${round(receivesA, 0)}, Side B receives ${round(receivesB, 0)} rest-of-season points above replacement — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
+                    `Side A receives ${formatValue(receivesA)}, Side B receives ${formatValue(receivesB)} in trade value — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
                 ),
                 el(
                     'div',

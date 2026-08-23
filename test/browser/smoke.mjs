@@ -66,12 +66,32 @@ for (let t = 1; t <= 12; t++) {
 const league = {
     league_id: 'L1', name: 'Fixture League', season: '2025', status: 'in_season',
     total_rosters: 12,
-    settings: { num_teams: 12, playoff_teams: 6, playoff_week_start: 15, leg: 7 },
+    settings: {
+        num_teams: 12, playoff_teams: 6, playoff_week_start: 15, leg: 7,
+        // A FAAB league, so the cash UI is exercised rather than skipped.
+        waiver_budget: 100, waiver_type: 2, waiver_day_of_week: 3, trade_deadline: 12,
+    },
     scoring_settings: { rec: 0.5, rec_yd: 0.1, rush_yd: 0.1, pass_yd: 0.04, rec_td: 6, rush_td: 6, pass_td: 4 },
     roster_positions: ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF', 'BN', 'BN', 'BN', 'BN', 'BN', 'BN'],
 };
 const state = { season: '2025', week: 7, display_week: 7, season_type: 'regular', leg: 7 };
 const matchups = rosters.map((r, i) => ({ roster_id: r.roster_id, matchup_id: Math.floor(i / 2) + 1, points: 95 + i, starters: r.players.slice(0, 9), players: r.players }));
+
+// Winning bids, so the FAAB rate is measured rather than guessed.
+const waivers = ids.slice(0, 6).map((id, i) => ({
+    transaction_id: `w${i}`,
+    type: 'waiver',
+    status: 'complete',
+    leg: 3,
+    created: Date.now() - i * 86400000,
+    status_updated: Date.now() - i * 86400000,
+    roster_ids: [1],
+    adds: { [id]: 1 },
+    drops: null,
+    draft_picks: [],
+    waiver_budget: [],
+    settings: { waiver_bid: 4 + i * 3 },
+}));
 
 const json = (body) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 const fixtures = [
@@ -82,7 +102,7 @@ const fixtures = [
     [/\/league\/L1\/rosters/, () => json(rosters)],
     [/\/league\/L1\/users/, () => json(users)],
     [/\/league\/L1\/matchups/, () => json(matchups)],
-    [/\/league\/L1\/transactions/, () => json([])],
+    [/\/league\/L1\/transactions/, () => json(waivers)],
     [/\/league\/L1$/, () => json(league)],
     [/\/user\//, () => json({ user_id: 'u1', display_name: 'Manager 1' })],
     [/players\/nfl\/trending/, () => json([])],
@@ -151,6 +171,34 @@ for (const v of views) {
     if (o.scrolled > 0) errors.push(`${v}: page scrolls horizontally by ${o.scrolled}px`);
     if (o.wide.length) errors.push(`${v}: content overflows its box — ${o.wide.join(', ')}`);
     if (text.trim().length < 80) errors.push(`${v}: rendered almost nothing (${text.trim().length} chars)`);
+}
+
+// --- FAAB, which only exists in the UI --------------------------------------
+// The engine tests price cash; only the browser can say whether a manager can
+// actually put it in a deal.
+await page.setViewportSize({ width: 1280, height: 900 });
+await page.click('#tabs .tab[data-view="trade"]');
+await page.waitForTimeout(800);
+
+const faabInputs = await page.$$('input[aria-label^="FAAB sent by"]');
+if (faabInputs.length !== 2) {
+    errors.push(`trade: expected a FAAB stepper on both sides, found ${faabInputs.length}`);
+} else {
+    const budgetText = (await page.textContent('#view')) || '';
+    if (!/of \$100 would be left/.test(budgetText)) errors.push('trade: the FAAB row does not show the remaining budget');
+
+    // The + button has to move the number and the cap has to hold.
+    await page.click('button[aria-label="Send more FAAB"]');
+    await page.waitForTimeout(250);
+    const after = await page.$eval('input[aria-label^="FAAB sent by"]', (e) => e.value);
+    if (after !== '1') errors.push(`trade: stepping FAAB up gave "${after}", expected "1"`);
+
+    // Typing past the budget must clamp, not send money nobody has.
+    await page.fill('input[aria-label^="FAAB sent by"]', '9999');
+    await page.dispatchEvent('input[aria-label^="FAAB sent by"]', 'change');
+    await page.waitForTimeout(300);
+    const clamped = Number(await page.$eval('input[aria-label^="FAAB sent by"]', (e) => e.value));
+    if (!(clamped > 0 && clamped <= 100)) errors.push(`trade: FAAB did not clamp to the budget, got ${clamped}`);
 }
 
 for (const width of [360, 414, 768]) {

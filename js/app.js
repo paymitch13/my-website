@@ -25,6 +25,8 @@ import { optimizeLineup, teamScoringProfile } from './lineup.js';
 import { buildEntries } from './trade.js';
 import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
+import { faabModel } from './faab.js';
+import { sortBy } from './util.js';
 
 const VIEWS = {
     trade: { render: renderTrade, title: 'Trade Calculator' },
@@ -55,6 +57,7 @@ export const app = {
     rankings: new Map(),
     ctx: null,
     tradeValue: (v) => Math.round(v),
+    faab: null,
     view: 'trade',
     busy: false,
 
@@ -96,6 +99,48 @@ export const app = {
             });
         }
         this.tradeValue = createTradeValueScale(raw);
+
+        // What a dollar of FAAB is worth, measured from this league's own
+        // bidding. Rebuilt here rather than at sync because it depends on the
+        // board and the valuation context, both of which change when the user
+        // re-ranks, and a stale rate would price cash off last week's opinion.
+        this.faab = this.league
+            ? faabModel({
+                  cfg,
+                  teams: this.league.teams,
+                  transactions: this.transactions,
+                  players: this.players,
+                  ctx: this.ctx,
+                  rankings: this.rankings,
+                  freeAgents: this.freeAgentEntries(),
+                  entriesFor: (team) => buildEntries(team.players, this.rankings, this.ctx),
+              })
+            : null;
+    },
+
+    /**
+     * Everyone in the player database nobody rosters, valued on the user's
+     * board. This is what FAAB actually buys, so it is what cash is priced
+     * against before the league has bid enough to measure a rate directly.
+     */
+    freeAgentEntries({ limit = 60 } = {}) {
+        if (!this.league || !this.players) return [];
+        const rostered = new Set();
+        for (const t of this.league.teams) for (const p of t.players) rostered.add(p.id);
+
+        const out = [];
+        for (const [id, player] of Object.entries(this.players)) {
+            if (rostered.has(id)) continue;
+            const rank = this.rankings.get(id);
+            // Unranked players are the long tail of the database -- practice
+            // squads and retirees -- not waiver targets.
+            if (rank === undefined || rank >= 900) continue;
+            if (player.pos === 'K' || player.pos === 'DEF') continue;
+            const v = valuePlayer(player, rank, this.ctx);
+            if (v.value <= 0) continue;
+            out.push({ player, posRank: rank, score: v.effectivePpg, value: v.value, detail: v });
+        }
+        return sortBy(out, (e) => e.value, -1).slice(0, limit);
     },
 
     /** Persist the current board. */
