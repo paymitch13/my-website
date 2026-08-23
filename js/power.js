@@ -11,7 +11,7 @@
 
 import { optimizeLineup, positionalReport, teamScoringProfile } from './lineup.js';
 import { buildEntries } from './trade.js';
-import { leagueAverages, NEED_POSITIONS } from './needs.js';
+import { leaguePerSlotAverages, leagueAverages, NEED_POSITIONS } from './needs.js';
 import { scheduleStrength, DEFAULT_SIM_SEED } from './sim.js';
 import { runSimulation } from './simclient.js';
 import { clamp, mean, ordinal, round, sortBy, stdev, sum } from './util.js';
@@ -291,11 +291,17 @@ function assignTiers(ranked) {
 function leagueContext(ranked) {
     const positions = NEED_POSITIONS;
     const avgByPos = leagueAverages(ranked, positions);
+    // Per-slot as well as total: a team that flexes a running back starts two
+    // receivers where the rest of the league starts three, and comparing raw
+    // totals turns that lineup shape into an imaginary receiver problem the
+    // blurb then announces to everybody.
+    const perSlotAvg = leaguePerSlotAverages(ranked, positions);
     const played = ranked.filter((r) => r.games >= 3);
     const rosterOrder = sortBy(ranked, (x) => x.mu, -1).map((x) => x.rosterId);
     return {
         positions,
         avgByPos,
+        perSlotAvg,
         rosterOrder,
         mostUnlucky: played.length ? sortBy(played, (r) => r.luck)[0] : null,
         luckiest: played.length ? sortBy(played, (r) => r.luck, -1)[0] : null,
@@ -352,7 +358,11 @@ function writeBlurb(r, ranked, cfg, week, context) {
     // --- Roster shape, measured against the rest of the league ---------------
     const deltas = context.positions
         .filter((pos) => (r.report.byPosition[pos]?.starting ?? 0) > 0)
-        .map((pos) => ({ pos, delta: (r.report.byPosition[pos]?.startingPoints ?? 0) - context.avgByPos[pos] }));
+        .map((pos) => {
+            const v = r.report.byPosition[pos];
+            const perSlot = v.startingPerSlot ?? (v.startingPoints ?? 0) / Math.max(1, v.starting);
+            return { pos, delta: (perSlot - (context.perSlotAvg[pos] ?? 0)) * v.starting };
+        });
 
     if (deltas.length) {
         const worst = sortBy(deltas, (d) => d.delta)[0];

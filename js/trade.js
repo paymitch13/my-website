@@ -69,11 +69,22 @@ export function buildNeutralEntries(players, ctx) {
  * @param {Array}  input.teams      [{rosterId, name, owner, players, wins, losses, ties, pointsFor}]
  * @param {Array}  input.offers     [{rosterId, sending:[playerId], receiving?:[playerId]}]
  * @param {Map}    input.rankings   playerId -> positional rank
+ * @param {Function} [input.entriesFor] team -> valued entries. Defaults to the
+ *   user's board for every roster. The finder passes neutral entries for
+ *   everyone but the user, so "will they accept" is answered on their terms.
  * @param {Array}  [input.schedule] remaining schedule; omit to skip odds simulation
  * @returns {Promise<object>} async because the simulation runs in a worker
  */
 export async function evaluateTrade(input) {
-    const { cfg, ctx, teams, offers, rankings, schedule = null, iterations = 2000 } = input;
+    const {
+        cfg, ctx, teams, offers, rankings, schedule = null, iterations = 2000,
+        entriesFor = null, cache = null,
+    } = input;
+
+    // How each roster is valued. Without an override every side is judged on
+    // the user's board, which is right for a calculator the user drives and
+    // wrong for predicting whether a counterparty accepts.
+    const valueRoster = entriesFor || ((team) => buildEntries(team.players, rankings, ctx));
 
     const byRoster = new Map(teams.map((t) => [t.rosterId, t]));
     const playerIndex = new Map();
@@ -90,15 +101,17 @@ export async function evaluateTrade(input) {
         if (!team) return { ok: false, error: `Unknown team in offer: ${side.rosterId}` };
 
         const sendingSet = new Set(side.sending);
-        const before = buildEntries(team.players, rankings, ctx);
+        const before = valueRoster(team);
         const kept = team.players.filter((p) => !sendingSet.has(p.id));
         const incoming = side.receiving
             .map((id) => playerIndex.get(id)?.player)
             .filter(Boolean);
-        const after = buildEntries([...kept, ...incoming], rankings, ctx);
+        // Value the post-trade roster on the SAME board as the pre-trade one,
+        // so the delta is the trade and not a change of yardstick.
+        const after = valueRoster({ ...team, players: [...kept, ...incoming] });
 
         const outEntries = before.filter((e) => sendingSet.has(e.player.id));
-        const inEntries = buildEntries(incoming, rankings, ctx);
+        const inEntries = after.filter((e) => incoming.some((p) => p.id === e.player.id));
 
         analysis.push({ side, team, before, after, outEntries, inEntries });
     }
@@ -143,7 +156,7 @@ export async function evaluateTrade(input) {
     // --- 3. IMPACT: playoff and title odds, before vs after -----------------
     let odds = null;
     if (schedule && schedule.length && teams.length > 2) {
-        odds = await simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations });
+        odds = await simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations, valueRoster, cache });
         for (const a of analysis) {
             const o = odds.get(a.side.rosterId);
             a.playoffBefore = o.before.playoffOdds;
@@ -172,6 +185,16 @@ export async function evaluateTrade(input) {
     };
 }
 
+/**
+ * Scratch space shared by many evaluations of the SAME league, schedule, board
+ * and iteration count -- which is exactly what a finder search is. Anything
+ * else changing (a different week, a re-ranked board, a re-synced league) needs
+ * a fresh cache, so make one per search and throw it away afterwards.
+ */
+export function createEvalCache() {
+    return { basePoints: new Map(), baseline: null };
+}
+
 /** Two-team offers can infer what each side receives; larger deals must be explicit. */
 function resolveOffers(offers) {
     if (!offers || offers.length < 2) return { error: 'A trade needs at least two teams.' };
@@ -197,7 +220,7 @@ function resolveOffers(offers) {
  * share a seed so the two runs see identical weekly randomness -- the
  * difference between them is the trade, not sampling noise.
  */
-async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations }) {
+async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations, valueRoster, cache = null }) {
     const overrideBefore = new Map();
     const overrideAfter = new Map();
     for (const a of analysis) {
@@ -205,11 +228,20 @@ async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, i
         overrideAfter.set(a.side.rosterId, a.lineupAfter.points);
     }
 
+    // Every roster the trade does not touch is solved identically on every
+    // call. Across a finder search that is hundreds of repeats of the same
+    // lineup solve, each one rebuilding the same valued entries first.
+    const basePoints = (t) => {
+        if (!cache) return optimizeLineup(valueRoster(t), cfg.starterSlots).points;
+        if (!cache.basePoints.has(t.rosterId)) {
+            cache.basePoints.set(t.rosterId, optimizeLineup(valueRoster(t), cfg.starterSlots).points);
+        }
+        return cache.basePoints.get(t.rosterId);
+    };
+
     const mk = (overrides) =>
         teams.map((t) => {
-            const points =
-                overrides.get(t.rosterId) ??
-                optimizeLineup(buildEntries(t.players, rankings, ctx), cfg.starterSlots).points;
+            const points = overrides.get(t.rosterId) ?? basePoints(t);
             const profile = teamScoringProfile(points);
             return {
                 rosterId: t.rosterId,
@@ -228,9 +260,15 @@ async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, i
         seed: DEFAULT_SIM_SEED,
         medianScoring: cfg.medianScoring,
     };
+    // The "before" run is the untouched league: identical for every candidate
+    // in a search, and half the simulation budget if it is repeated. The
+    // promise is cached, not the result, so concurrent callers share one run.
     // Both runs go to the worker together; they are independent.
+    const beforePromise = cache
+        ? (cache.baseline ||= runSimulation(mk(overrideBefore), schedule, opts))
+        : runSimulation(mk(overrideBefore), schedule, opts);
     const [before, after] = await Promise.all([
-        runSimulation(mk(overrideBefore), schedule, opts),
+        beforePromise,
         runSimulation(mk(overrideAfter), schedule, opts),
     ]);
 

@@ -306,7 +306,10 @@ async function build(app, team) {
                 el(
                     'div',
                     { class: 'row', style: 'gap:6px' },
-                    ...report.benchedByBye.map((e) =>
+                    // The guard above and the list here have to be the same
+                    // field: they were not, so the section threw whenever it
+                    // was the section that had something to say.
+                    ...report.unavailable.map((e) =>
                         el('span', { class: 'chip', style: 'padding:4px 8px' }, posBadge(e.player.pos), playerLink(e.player))
                     )
                 )

@@ -138,9 +138,36 @@ found" and rendering one was the wrong trade-off. A **Balanced only** toggle con
 the other side must gain too — on by default, because those are the offers that get accepted,
 but a lopsided offer is still worth seeing before you send it.
 
-Surplus is measured as bench depth relative to positional dropoff, not as low starting points: a
-team with three startable backs and one flex spot has surplus at running back even when its
-starting production looks fine.
+### What counts as "they have something to sell"
+
+Surplus is measured as bench depth **above replacement** relative to positional dropoff, not as
+low starting points: a team with three startable backs and one flex spot has surplus at running
+back even when its starting production looks fine, and two backup quarterbacks out-score spare
+backs while being worth nothing, because that production is free on waivers.
+
+Surplus alone is not enough, though — matching only on it silently forbids the two trade shapes
+people actually make. Four signals now open a pairing:
+
+| Signal | What it means | The trade it enables |
+|---|---|---|
+| **surplus** | spare bodies the lineup cannot use | the classic depth-for-need swap |
+| **strength** | above-average production per starting slot, even with a bare bench | they sell a star for two starters |
+| **star** | one player well above the league's typical best at the position | *my WR3 for your WR1* — the only signal that fires when **both** teams are short |
+| **relative** | weakest-by-their-own-standards against strongest-by-theirs | keeps the best roster in the league from being told no deal exists |
+
+That last one matters more than it sounds. Need used to be measured only against the league
+average, so a roster above average everywhere registered a deficit nowhere, and the finder told
+the team most able to make a deal that there was nothing to look at. Every roster is weakest at
+*something* by its own standards, and that is what consolidation trades run on.
+
+Need itself is measured two ways for the same reason: per starting slot (so flexing a back does
+not invent a receiver hole), and at the **weakest starter** in the room (so a monster WR1 next
+to a waiver body does not average out to "fine" when that team is obviously shopping).
+
+None of this decides whether a trade is good — it only decides what is worth looking at. Stage 2
+still has to find a package that improves both lineups, and a bigger package has to buy
+something: a second player thrown in that leaves the other lineup exactly where the one-for-one
+left it is a player given away for nothing, and those are not proposed.
 
 ### They do not share your board
 
@@ -303,8 +330,21 @@ value.
 ## Development
 
 ```bash
-npm test          # 196 engine tests, no dependencies
+npm test          # 209 engine tests, no dependencies
+npm run smoke     # browser check: boots the app, visits every tab at four widths
 ```
+
+`npm test` covers the engine — valuation, lineups, simulation, needs, the finder funnel,
+trade evaluation. It is the fast loop and it has no dependencies.
+
+`npm run smoke` is the slow one: it serves the real files, fulfils every Sleeper, ESPN and
+weather request from a fixture so the run is hermetic and repeatable, then boots the app and
+visits all eight tabs at 360, 414, 768 and 1280 pixels. It fails on any page error, any view
+that renders nothing, and any box that sticks out past the viewport. It needs `playwright-core`
+and a Chromium binary (`CHROMIUM_PATH=... npm run smoke` to point at one), which is why it is
+kept out of `npm test`. It is the check that the engine being right actually reaches the screen
+— it is what caught the rankings tab throwing when the player database failed to download, and
+the scoreboard pushing a phone sideways by 20 pixels.
 
 Everything under `js/` is a plain ES module. `package.json` exists only so Node can run the
 tests; the browser loads `js/app.js` directly. There is no build step: what is in the repo is

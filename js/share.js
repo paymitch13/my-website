@@ -4,9 +4,17 @@
 // where trades actually get discussed. Kept separate from the views so it stays
 // pure: no DOM, no app singleton, importable from a test.
 
-/** #/trade?a=<roster>&as=<ids>&b=<roster>&bs=<ids> */
-export function encodeOffer({ aRoster, aSend, bRoster, bSend }) {
-    return `#/trade?a=${aRoster}&as=${(aSend || []).join('.')}&b=${bRoster}&bs=${(bSend || []).join('.')}`;
+/**
+ * #/trade?l=<league>&a=<roster>&as=<ids>&b=<roster>&bs=<ids>
+ *
+ * The league id travels with the offer. Roster ids mean nothing on their own --
+ * roster 3 is a different team in every league -- so a link without one is only
+ * readable by somebody already synced to the same league, which is exactly the
+ * person who did not need the link.
+ */
+export function encodeOffer({ leagueId, aRoster, aSend, bRoster, bSend }) {
+    const league = leagueId ? `l=${encodeURIComponent(leagueId)}&` : '';
+    return `#/trade?${league}a=${aRoster}&as=${(aSend || []).join('.')}&b=${bRoster}&bs=${(bSend || []).join('.')}`;
 }
 
 export function decodeOffer(hash) {
@@ -17,7 +25,13 @@ export function decodeOffer(hash) {
     const bRoster = Number(p.get('b'));
     if (!aRoster || !bRoster) return null;
     const split = (v) => (v ? v.split('.').filter(Boolean) : []);
-    return { aRoster, aSend: split(p.get('as')), bRoster, bSend: split(p.get('bs')) };
+    return {
+        leagueId: p.get('l') || null,
+        aRoster,
+        aSend: split(p.get('as')),
+        bRoster,
+        bSend: split(p.get('bs')),
+    };
 }
 
 /** Absolute link to a trade, for pasting somewhere else. */

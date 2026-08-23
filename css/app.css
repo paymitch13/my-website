@@ -160,11 +160,14 @@ button { font: inherit; }
 .page-head .sub { color: var(--text-2); margin-top: 6px; max-width: 70ch; }
 
 .section-head {
+    /* A heading, a hint and often a button. On a phone that is wider than the
+       screen, so it wraps rather than pushing the whole page sideways. */
     display: flex; align-items: baseline; gap: var(--sp-3);
+    flex-wrap: wrap; min-width: 0;
     margin: var(--sp-5) 0 var(--sp-3);
 }
-.section-head h2 { font-size: 17px; }
-.section-head .hint { font-size: 13px; color: var(--text-3); }
+.section-head h2 { font-size: 17px; min-width: 0; overflow-wrap: anywhere; }
+.section-head .hint { font-size: 13px; color: var(--text-3); min-width: 0; overflow-wrap: anywhere; }
 
 /* ---------- Cards ---------- */
 
@@ -180,6 +183,10 @@ button { font: inherit; }
 .card h3 { font-size: 15px; margin-bottom: var(--sp-3); }
 
 .grid { display: grid; gap: var(--sp-4); }
+/* Grid items default to min-width:auto, so one unbreakable child widens its
+   whole track and pushes the page sideways. Every grid here wants its columns
+   to hold their share and let the content inside them shrink. */
+.grid > * { min-width: 0; }
 .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .row { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
 

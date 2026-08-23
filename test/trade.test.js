@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages } from '../js/trade.js';
+import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages, createEvalCache } from '../js/trade.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
 import { syntheticSchedule } from '../js/sim.js';
@@ -238,6 +238,41 @@ test('full mode reports playoff and title odds deltas', async () => {
     assert.ok(b.playoffAfter > b.playoffBefore, 'receiving him helps');
     assert.ok(typeof a.titleDelta === 'number' && typeof b.titleDelta === 'number');
     assert.ok(res.reasons.some((r) => /playoff odds/.test(r.title)));
+});
+
+test('a shared cache changes the cost of a search, never its answer', async () => {
+    // The finder evaluates dozens of candidates against one unchanged league.
+    // The pre-trade simulation and every untouched roster's lineup are the same
+    // every time; caching them is only legitimate if the numbers come out
+    // identical, so assert that rather than trusting it.
+    const rankings = new Map();
+    const specs = Array.from({ length: 12 }, (_, i) => ({
+        name: `T${i + 1}`,
+        players: [['RB', 6 + i], ['WR', 6 + i], ...BALANCED],
+        wins: 3, losses: 3,
+    }));
+    const teams = league(rankings, specs);
+    const schedule = syntheticSchedule(teams.map((t) => t.rosterId), 5, 14);
+
+    const offersFor = (i) => [
+        { rosterId: 1, sending: [teams[0].players[0].id] },
+        { rosterId: 12, sending: [teams[11].players[13 - i].id] },
+    ];
+    const run = (offers, cache) =>
+        evaluateTrade({ cfg, ctx, teams, rankings, schedule, iterations: 400, offers, cache });
+
+    const cache = createEvalCache();
+    for (const i of [0, 1, 2]) {
+        const plain = await run(offersFor(i), null);
+        const cached = await run(offersFor(i), cache);
+        const [pa, pb] = plain.sides;
+        const [ca, cb] = cached.sides;
+        assert.equal(ca.playoffBefore, pa.playoffBefore);
+        assert.equal(ca.playoffAfter, pa.playoffAfter);
+        assert.equal(ca.titleDelta, pa.titleDelta);
+        assert.equal(cb.playoffDelta, pb.playoffDelta);
+    }
+    assert.ok(cache.basePoints.size > 0, 'the cache is actually being populated');
 });
 
 test('rejects malformed offers', async () => {

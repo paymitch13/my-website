@@ -30,6 +30,28 @@ export function extractByes(payload) {
  * @param {object} [opts]
  * @param {number} [opts.through] last week to scan
  */
+/** In-memory guard so concurrent callers share one network pass. */
+const inflight = new Map();
+
+/**
+ * Cached bye weeks for a season. Hits the network at most once per season, per
+ * browser.
+ */
+export async function loadByeWeeks(season, store) {
+    const cached = store.loadCachedByes(season);
+    if (cached && cached.size) return cached;
+    if (inflight.has(season)) return inflight.get(season);
+
+    const promise = fetchByeWeeks(season)
+        .then((map) => {
+            if (map.size) store.cacheByes(season, map);
+            return map;
+        })
+        .finally(() => inflight.delete(season));
+    inflight.set(season, promise);
+    return promise;
+}
+
 export async function fetchByeWeeks(season, { through = LAST_BYE_WEEK } = {}) {
     const weeks = [];
     for (let w = FIRST_BYE_WEEK; w <= through; w++) weeks.push(w);

@@ -1,15 +1,10 @@
 // Vegas — the full slate, and what each line means for fantasy.
 
 import { loadOdds } from '../data.js';
-import {
-    describeEnvironment, describeMovement, gameScript, fmtSpread, fmtMoneyline,
-} from '../odds.js';
+import { describeMovement, gameScript, fmtSpread, fmtMoneyline } from '../odds.js';
 import { slateAverage } from '../startsit.js';
 import { fetchWeatherForGames, describeWeather, weatherImpact } from '../weather.js';
-import { openSyncModal } from '../app.js';
-import {
-    banner, el, emptyState, fmtDelta, fmtPct, posBadge, round, sortBy, spinnerRow, tag, tile,
-} from '../ui.js';
+import { el, emptyState, fmtDelta, fmtPct, round, sortBy, spinnerRow, tag, tile } from '../ui.js';
 
 export default function renderVegas(app) {
     const root = el('div', {});

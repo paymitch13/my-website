@@ -19,8 +19,11 @@ import renderStartSit from './views/startsit.js';
 import renderFinder from './views/finder.js';
 import renderVegas from './views/vegas.js';
 import { decodeOffer } from './share.js';
-import { fetchByeWeeks } from './schedule.js';
+import { loadByeWeeks } from './schedule.js';
 import { createTradeValueScale } from './tradevalue.js';
+import { optimizeLineup, teamScoringProfile } from './lineup.js';
+import { buildEntries } from './trade.js';
+import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
 
 const VIEWS = {
@@ -175,7 +178,7 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
             app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
             data.loadOdds(app.league.currentWeek, app.league.raw.season),
             loadSeasonTransactions(leagueId, app.league.currentWeek, { teamsById, players: app.players }).catch(() => []),
-            fetchByeWeeks(app.league.raw.season).catch(() => new Map()),
+            loadByeWeeks(app.league.raw.season, store).catch(() => new Map()),
         ]);
         app.actuals = actuals;
         app.odds = odds;
@@ -183,6 +186,10 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         app.byeWeeks = byeWeeks;
 
         app.rebuild();
+        // Playoff odds drive buyer/seller posture in the Trade Finder. They
+        // used to be computed only when the Power Rankings view was opened, so
+        // going straight to the finder silently lost every posture tag.
+        app.powerOdds = await computePlayoffOdds().catch(() => null);
         updateChip();
         if (!silent) toast(`Synced ${app.league.cfg.name}`, 'good');
         watchForTrades();
@@ -234,6 +241,36 @@ export function watchForTrades() {
             /* polling is best-effort */
         }
     }, TRADE_POLL_MS);
+}
+
+/**
+ * A single cheap simulation of the current league, purely to get each team's
+ * playoff odds. Runs in the worker, so it does not block the first paint.
+ */
+async function computePlayoffOdds() {
+    const league = app.league;
+    if (!league?.schedule?.length) return null;
+
+    const simTeams = league.teams.map((t) => {
+        const points = optimizeLineup(buildEntries(t.players, app.rankings, app.ctx), league.cfg.starterSlots).points;
+        const profile = teamScoringProfile(points);
+        return {
+            rosterId: t.rosterId,
+            wins: t.wins || 0,
+            losses: t.losses || 0,
+            ties: t.ties || 0,
+            pointsFor: t.pointsFor || 0,
+            mu: profile.mu,
+            sigma: profile.sigma,
+        };
+    });
+
+    const res = await runSimulation(simTeams, league.schedule, {
+        iterations: 800,
+        playoffTeams: league.cfg.playoffTeams,
+        medianScoring: league.cfg.medianScoring,
+    });
+    return new Map(res.map((r) => [r.rosterId, r.playoffOdds]));
 }
 
 export function disconnectLeague() {
@@ -410,6 +447,13 @@ async function boot() {
                 el('button', { class: 'btn btn-primary', onclick: () => location.reload() }, 'Reload')
             )
         );
+        // The message is useless if the tabs still invite a click: every view
+        // behind them is about players nobody has, and the honest state is
+        // "come back when this loads", not eight empty screens.
+        for (const btn of document.querySelectorAll('#tabs .tab')) {
+            btn.disabled = true;
+            btn.setAttribute('aria-disabled', 'true');
+        }
         return;
     }
 

@@ -121,8 +121,11 @@ async function build(app, preset = 'balanced') {
         preset,
     });
 
-    // The finder uses these to decide who is buying and who is selling.
-    app.powerOdds = new Map(ranked.map((r) => [r.rosterId, r.playoffOdds]));
+    // Refresh the shared odds with this view's higher iteration count. They are
+    // already populated at league sync, so the finder never depends on this.
+    if (ranked.some((r) => r.playoffOdds !== null)) {
+        app.powerOdds = new Map(ranked.map((r) => [r.rosterId, r.playoffOdds]));
+    }
     const presetLive = ranked.length ? ranked[0].presetApplied !== false : true;
     const prev = store.previousSnapshot(league.cfg.id, week, preset);
     ranked = applyMovement(ranked, prev);

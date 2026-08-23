@@ -8,10 +8,10 @@
 import { evaluateTrade, suggestAddOns, suggestPackages } from '../trade.js';
 import { valuePlayer } from '../valuation.js';
 import { slotLabel, scoringLabel } from '../league.js';
-import { openSyncModal } from '../app.js';
+import { openSyncModal, connectLeague } from '../app.js';
 import * as store from '../store.js';
 import { byeConflicts } from '../schedule.js';
-import { formatValue } from '../tradevalue.js';
+import { formatValue, fairness } from '../tradevalue.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
     playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -35,17 +35,44 @@ export default function renderTrade(app) {
         )
     );
 
+    // A pasted link names the league it came from. Roster ids are meaningless
+    // without it, so offer the one-click sync rather than showing an empty
+    // calculator to somebody who followed a link about a specific deal.
+    const linkedLeague = app.pendingOffer?.leagueId || null;
+
     if (!connected) {
+        root.append(
+            linkedLeague
+                ? el(
+                      'div',
+                      { class: 'banner banner-warn' },
+                      el('span', { class: 'grow' }, 'This trade link is for a league you have not synced yet. Connect it to see roster fit, schedule and playoff odds for the deal.'),
+                      el('button', { class: 'btn btn-sm btn-primary', onclick: () => connectLeague(linkedLeague) }, 'Sync that league')
+                  )
+                : el(
+                      'div',
+                      { class: 'banner banner-warn' },
+                      el('span', { class: 'grow' }, 'Not connected to a league. You can still compare player values, but roster fit, schedule and playoff odds need a synced league.'),
+                      el('button', { class: 'btn btn-sm btn-primary', onclick: openSyncModal }, 'Connect Sleeper')
+                  )
+        );
+        root.append(quickMode(app));
+        return root;
+    }
+
+    // Connected, but to a different league than the link describes. Silently
+    // matching roster 3 against whatever roster 3 is here would render a deal
+    // between the wrong two teams and look authoritative doing it.
+    if (linkedLeague && String(linkedLeague) !== String(app.league.cfg.id)) {
         root.append(
             el(
                 'div',
                 { class: 'banner banner-warn' },
-                el('span', { class: 'grow' }, 'Not connected to a league. You can still compare player values, but roster fit, schedule and playoff odds need a synced league.'),
-                el('button', { class: 'btn btn-sm btn-primary', onclick: openSyncModal }, 'Connect Sleeper')
+                el('span', { class: 'grow' }, `This trade link is from a different league than ${app.league.cfg.name}. Switch to it to load the deal.`),
+                el('button', { class: 'btn btn-sm btn-primary', onclick: () => connectLeague(linkedLeague) }, 'Switch league')
             )
         );
-        root.append(quickMode(app));
-        return root;
+        app.pendingOffer = null;
     }
 
     // ---- Full mode --------------------------------------------------------
@@ -271,9 +298,14 @@ function renderResult(app, result, repaint) {
     const wrap = el('div', {});
     const [a, b] = result.sides;
 
-    // Verdict banner
-    const totalIn = Math.abs(a.valueIn) + Math.abs(b.valueIn) || 1;
-    const shareA = Math.max(4, (Math.abs(a.valueIn) / totalIn) * 100);
+    // Verdict banner.
+    // The meter and the numbers printed under it must be the same quantity.
+    // Splitting the bar on raw points while labelling it with scaled values put
+    // 67/33 above text that read 72/28.
+    const scaledA = app.tradeValue(a.valueIn);
+    const scaledB = app.tradeValue(b.valueIn);
+    const split = fairness(scaledA, scaledB);
+    const shareA = Math.max(4, Math.min(96, split.aShare * 100));
 
     wrap.append(
         el(
@@ -304,8 +336,8 @@ function renderResult(app, result, repaint) {
             el(
                 'div',
                 { class: 'meter-labels' },
-                el('span', {}, `${a.team.name} receives ${formatValue(app.tradeValue(a.valueIn))}`),
-                el('span', {}, `${formatValue(app.tradeValue(b.valueIn))} to ${b.team.name}`)
+                el('span', {}, `${a.team.name} receives ${formatValue(scaledA)}`),
+                el('span', {}, `${formatValue(scaledB)} to ${b.team.name}`)
             )
         )
     );
@@ -397,7 +429,15 @@ function renderResult(app, result, repaint) {
     const loser = result.sides.find((s) => s.team.rosterId === result.verdict.loser);
     const winner = result.sides.find((s) => s.team.rosterId === result.verdict.winner);
     if (loser && winner && result.verdict.gap > 0.08) {
+        // The gap has to be computed in the SAME space it is displayed in.
+        // Pushing a difference through a per-player convex curve anchored to
+        // the league's best player is a category error: the result cannot be
+        // reconciled against the add-on values printed right beneath it.
         const gap = Math.max(1, winner.valueNet);
+        const scaledGap = Math.max(
+            0,
+            app.tradeValue(winner.valueIn) - app.tradeValue(winner.valueOut)
+        );
         const picks = suggestAddOns({ cfg: app.league.cfg, ctx: app.ctx, giver: winner, receiver: loser, gap, limit: 4 });
         const packages = suggestPackages({ cfg: app.league.cfg, ctx: app.ctx, giver: winner, receiver: loser, gap, limit: 2 });
 
@@ -408,7 +448,7 @@ function renderResult(app, result, repaint) {
                 el(
                     'p',
                     { class: 'muted small' },
-                    `${loser.team.name} is short about ${formatValue(app.tradeValue(gap))} in value. These are players ${winner.team.name} can most afford to lose that ${loser.team.name} can most use:`
+                    `${loser.team.name} is short about ${formatValue(scaledGap)} in value. These are players ${winner.team.name} can most afford to lose that ${loser.team.name} can most use:`
                 )
             );
 

@@ -7,6 +7,7 @@ const KEY = 'ffc:state:v1';
 const PLAYERS_KEY = 'ffc:players:v1';
 const SNAPSHOT_KEY = 'ffc:power-snapshots:v1';
 const PROJECTIONS_KEY = 'ffc:projections:v1';
+const BYES_KEY = 'ffc:byes:v1';
 
 const DEFAULTS = {
     username: '',
@@ -89,6 +90,22 @@ export function loadCachedProjections(season, maxAgeMs = 6 * 60 * 60 * 1000) {
 
 export function cacheProjections(season, projections) {
     return write(PROJECTIONS_KEY, { at: Date.now(), season: String(season), projections });
+}
+
+/**
+ * Bye weeks never change once a season's schedule is published, so they are
+ * cached for the season with no expiry. Refetching them meant eleven ESPN
+ * requests -- about 2.4MB -- on every league sync, including the silent
+ * re-syncs the trade poller triggers.
+ */
+export function loadCachedByes(season) {
+    const cached = read(BYES_KEY, null);
+    if (!cached || cached.season !== String(season) || !cached.byes) return null;
+    return new Map(Object.entries(cached.byes));
+}
+
+export function cacheByes(season, byeMap) {
+    return write(BYES_KEY, { at: Date.now(), season: String(season), byes: Object.fromEntries(byeMap) });
 }
 
 // --- Power ranking history -------------------------------------------------

@@ -1,17 +1,15 @@
 // Trade Finder — the whole league searched for deals worth sending.
 
 import { findTrades, acceptanceNote } from '../finder.js';
-import { scanUsage, describeBuyLow, describeSellHigh } from '../usage.js';
-import { buildNeutralEntries } from '../trade.js';
+import { scanUsage, indexWeeklyStats, describeBuyLow, describeSellHigh } from '../usage.js';
 import { loadWeekContext } from '../data.js';
 import { byeConflicts } from '../schedule.js';
 import { openSyncModal } from '../app.js';
 import * as store from '../store.js';
-import { formatValue } from '../tradevalue.js';
 import { encodeOffer, offerUrl } from '../share.js';
 import {
-    banner, el, emptyState, fmtDelta, fmtPct, fmtPctDelta, playerLink, posBadge,
-    round, sortBy, spinnerRow, tag, tile, toast,
+    banner, el, emptyState, fmtDelta, fmtPctDelta, playerLink, posBadge,
+    sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 export default function renderFinder(app) {
@@ -143,9 +141,9 @@ async function build(app, me, requireMutual = true) {
         el(
             'div',
             { class: 'tiles' },
-            tile('Pairings considered', res.scanned ?? 0, 'after the need/surplus filter'),
-            tile('Trades found', res.shortlisted ?? 0, requireMutual ? 'both lineups improve' : 'your lineup improves'),
-            tile('Simulated in full', res.trades.length, 'ranked by your title odds')
+            tile('Pairings explored', res.scanned ?? 0, 'positions where you and a rival match up'),
+            tile('Offers that work', res.shortlisted ?? 0, requireMutual ? 'both lineups improve' : 'your lineup improves'),
+            tile('Recommended', res.trades.length, 'after the full season simulation')
         )
     );
 
@@ -188,21 +186,47 @@ async function build(app, me, requireMutual = true) {
         const rostered = new Map();
         for (const t of teams) for (const p of t.players) rostered.set(p.id, t);
 
-        const others = teams.filter((t) => t.rosterId !== me.rosterId).flatMap((t) => t.players);
-        const buyRows = scanUsage({ weeklyStats, players: others, scoring: cfg.scoring })
-            .filter((r) => r.buyLow !== null && r.buyLow > 1.5);
-        const sellRows = scanUsage({ weeklyStats, players: me.players, scoring: cfg.scoring })
-            .filter((r) => r.sellHigh !== null && r.sellHigh > 1.5);
+        // One pass over everyone: the baselines sell-high compares against are
+        // computed from the scanned pool, so scanning rosters separately would
+        // measure each against a different yardstick.
+        const index = indexWeeklyStats(weeklyStats);
+        const everyone = teams.flatMap((t) => t.players);
+        const scanned = scanUsage({ weeklyStats, players: everyone, scoring: cfg.scoring, index });
+        const mineIds = new Set(me.players.map((p) => p.id));
+
+        const buyRows = scanned.filter((r) => !mineIds.has(r.player.id) && r.buyLow !== null && r.buyLow > 1.5);
+        const sellRows = scanned.filter((r) => mineIds.has(r.player.id) && r.sellHigh !== null && r.sellHigh > 1.5);
 
         wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Buy low'),
             el('span', { class: 'hint' }, 'role growing faster than the box score')));
         wrap.append(usageCard(sortBy(buyRows, (r) => r.buyLow, -1).slice(0, 6), rostered, describeBuyLow, 'good',
-            'Nobody on another roster is showing a clear usage-up, points-down profile yet.'));
+            'Nobody on another roster is showing a clear usage-up, points-down profile yet.',
+            // A name and a reason is half an answer. The button opens the
+            // calculator already holding the deal, with the balancer ready to
+            // say what it would take -- which is the question the row raises.
+            (r) => {
+                const owner = rostered.get(r.player.id);
+                if (!owner || owner.rosterId === me.rosterId) return null;
+                return {
+                    label: 'Trade for',
+                    hash: encodeOffer({ leagueId: cfg.id, aRoster: me.rosterId, aSend: [], bRoster: owner.rosterId, bSend: [r.player.id] }),
+                };
+            }));
 
         wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Sell high'),
             el('span', { class: 'hint' }, 'your players carried by touchdowns')));
         wrap.append(usageCard(sortBy(sellRows, (r) => r.sellHigh, -1).slice(0, 6), rostered, describeSellHigh, 'warn',
-            'None of your players are unusually touchdown-dependent right now.'));
+            'None of your players are unusually touchdown-dependent right now.',
+            (r) => {
+                // Shop him at whoever is thinnest at the position; the picker
+                // in the calculator changes it in one click if that is wrong.
+                const other = teams.find((t) => t.rosterId !== me.rosterId);
+                if (!other) return null;
+                return {
+                    label: 'Shop him',
+                    hash: encodeOffer({ leagueId: cfg.id, aRoster: me.rosterId, aSend: [r.player.id], bRoster: other.rosterId, bSend: [] }),
+                };
+            }));
     } else {
         wrap.append(
             banner('Buy-low and sell-high signals need at least four completed weeks of usage data. They appear once the season is under way.', 'warn')
@@ -236,6 +260,31 @@ async function build(app, me, requireMutual = true) {
     return wrap;
 }
 
+/** One side of an offer, however many players it involves. */
+function leg(label, tone, entries) {
+    return el(
+        'div',
+        { class: 'finder-leg' },
+        el('div', { class: `tiny ${tone}` }, label),
+        ...entries.map((e) =>
+            el(
+                'div',
+                { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0;margin-top:2px' },
+                posBadge(e.player.pos),
+                el('span', { class: 'ellipsis' }, playerLink(e.player))
+            )
+        )
+    );
+}
+
+/** "Thin at RB · deep at WR" — why this manager is worth calling at all. */
+function rosterShape(t) {
+    const bits = [];
+    if (t.theirNeed && t.theirNeed.deficit > 1) bits.push(`thin at ${t.theirNeed.pos}`);
+    if (t.theirSurplus && t.theirSurplus.surplus > 1) bits.push(`deep at ${t.theirSurplus.pos}`);
+    return bits.length ? el('div', { class: 'tiny dim' }, bits.join(' · ')) : null;
+}
+
 function tradeCard(app, me, t) {
     const theirName = t.other.name;
     const accept = acceptanceNote(t, theirName);
@@ -249,27 +298,16 @@ function tradeCard(app, me, t) {
             el(
                 'div',
                 { class: 'finder-legs' },
-                el(
-                    'div',
-                    { class: 'finder-leg' },
-                    el('div', { class: 'tiny good' }, 'YOU GET'),
-                    el('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' },
-                        posBadge(t.get.player.pos), el('span', { class: 'ellipsis' }, playerLink(t.get.player)))
-                ),
+                leg('YOU GET', 'good', t.gets || [t.get]),
                 el('div', { class: 'finder-arrow' }, '⇄'),
-                el(
-                    'div',
-                    { class: 'finder-leg' },
-                    el('div', { class: 'tiny bad' }, 'YOU SEND'),
-                    el('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' },
-                        posBadge(t.give.player.pos), el('span', { class: 'ellipsis' }, playerLink(t.give.player)))
-                )
+                leg('YOU SEND', 'bad', t.gives || [t.give])
             ),
             el(
                 'div',
                 { class: 'finder-partner' },
                 el('div', { class: 'small', style: 'font-weight:600' }, theirName),
-                t.posture ? tag(t.posture.label, t.posture.kind === 'seller' ? 'good' : t.posture.kind === 'buyer' ? 'warn' : '') : null
+                t.posture ? tag(t.posture.label, t.posture.kind === 'seller' ? 'good' : t.posture.kind === 'buyer' ? 'warn' : '') : null,
+                rosterShape(t)
             )
         ),
         el(
@@ -298,15 +336,12 @@ function tradeCard(app, me, t) {
             { class: 'row', style: 'margin-top:12px;gap:8px' },
             el('button', {
                 class: 'btn btn-sm btn-primary',
-                onclick: () => openInCalculator(me, t),
+                onclick: () => openInCalculator(app, me, t),
             }, 'Open in calculator'),
             el('button', {
                 class: 'btn btn-sm',
                 onclick: () => {
-                    const url = offerUrl({
-                        aRoster: me.rosterId, aSend: [t.give.player.id],
-                        bRoster: t.other.rosterId, bSend: [t.get.player.id],
-                    });
+                    const url = offerUrl(offerOf(app, me, t));
                     navigator.clipboard?.writeText(url).then(
                         () => toast('Trade link copied — paste it in your league chat', 'good'),
                         () => toast(url, '')
@@ -317,11 +352,16 @@ function tradeCard(app, me, t) {
     );
 }
 
-function openInCalculator(me, t) {
-    location.hash = encodeOffer({
-        aRoster: me.rosterId, aSend: [t.give.player.id],
-        bRoster: t.other.rosterId, bSend: [t.get.player.id],
-    });
+const offerOf = (app, me, t) => ({
+    leagueId: app.league?.cfg?.id ?? null,
+    aRoster: me.rosterId,
+    aSend: (t.gives || [t.give]).map((e) => e.player.id),
+    bRoster: t.other.rosterId,
+    bSend: (t.gets || [t.get]).map((e) => e.player.id),
+});
+
+function openInCalculator(app, me, t) {
+    location.hash = encodeOffer(offerOf(app, me, t));
 }
 
 /** A candidate that did not get the full simulation, or that the sim rejected. */
@@ -336,10 +376,10 @@ function otherRow(app, me, t) {
                 'div',
                 { class: 'row', style: 'gap:8px;flex-wrap:wrap' },
                 el('span', { class: 'tiny good' }, 'GET'),
-                posBadge(t.get.player.pos), playerLink(t.get.player),
+                ...(t.gets || [t.get]).flatMap((e) => [posBadge(e.player.pos), playerLink(e.player)]),
                 el('span', { class: 'dim' }, '·'),
                 el('span', { class: 'tiny bad' }, 'SEND'),
-                posBadge(t.give.player.pos), playerLink(t.give.player)
+                ...(t.gives || [t.give]).flatMap((e) => [posBadge(e.player.pos), playerLink(e.player)])
             ),
             el(
                 'div',
@@ -359,7 +399,7 @@ function otherRow(app, me, t) {
                 {
                     class: 'btn btn-sm',
                     style: 'padding:2px 8px;font-size:12px',
-                    onclick: () => openInCalculator(me, t),
+                    onclick: () => openInCalculator(app, me, t),
                 },
                 'Open'
             )
@@ -367,18 +407,19 @@ function otherRow(app, me, t) {
     );
 }
 
-function usageCard(rows, rostered, describe, tone, emptyText) {
+function usageCard(rows, rostered, describe, tone, emptyText, actionFor = null) {
     if (!rows.length) return el('div', { class: 'card' }, el('p', { class: 'muted' }, emptyText));
     return el(
         'div',
         { class: 'card' },
-        ...rows.map((r) =>
-            el(
+        ...rows.map((r) => {
+            const action = actionFor?.(r) || null;
+            return el(
                 'div',
-                { class: `reason k-${tone}` },
+                { class: `reason k-${tone}`, style: 'align-items:center' },
                 el(
                     'div',
-                    { style: 'min-width:0' },
+                    { style: 'min-width:0;flex:1' },
                     el(
                         'div',
                         { class: 'row', style: 'gap:8px' },
@@ -387,8 +428,19 @@ function usageCard(rows, rostered, describe, tone, emptyText) {
                         el('span', { class: 'tiny dim' }, rostered.get(r.player.id)?.name || 'free agent')
                     ),
                     el('div', { class: 'r-detail' }, describe(r))
-                )
-            )
-        )
+                ),
+                action
+                    ? el(
+                          'button',
+                          {
+                              class: 'btn btn-sm',
+                              style: 'padding:2px 8px;font-size:12px;white-space:nowrap',
+                              onclick: () => { location.hash = action.hash; },
+                          },
+                          action.label
+                      )
+                    : null
+            );
+        })
     );
 }
