@@ -13,6 +13,7 @@ import * as store from '../store.js';
 import { byeConflicts } from '../schedule.js';
 import { formatValue, fairness } from '../tradevalue.js';
 import { offerUrl } from '../share.js';
+import { bidHistory, waiverTargets, estimateBid } from '../faab.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
     playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -542,6 +543,12 @@ function renderResult(app, result, repaint) {
         )
     );
 
+    // What the cash actually buys, whenever cash is in the deal. A dollar
+    // figure means nothing on its own; the players it could claim, at prices
+    // this league has actually paid, is the thing a manager can judge.
+    const cashSide = result.sides.find((s) => (s.faabIn || 0) > 0);
+    if (cashSide && app.faab?.usable) wrap.append(cashBuysCard(app, cashSide));
+
     // How to actually get this accepted
     const loser = result.sides.find((s) => s.team.rosterId === result.verdict.loser);
     const winner = result.sides.find((s) => s.team.rosterId === result.verdict.winner);
@@ -672,6 +679,113 @@ function gradeBlock(side) {
         el('div', { class: `grade ${gradeClass(side.grade.letter)}` }, side.grade.letter),
         el('div', { class: 'tiny dim', style: 'margin-top:4px;max-width:90px' }, side.team.name)
     );
+}
+
+/**
+ * The waiver wire, from the point of view of the manager being handed money.
+ *
+ * "$40" is not a fact anybody can weigh against a running back. "$40, and here
+ * is what it claims, at what this league has actually paid" is.
+ */
+function cashBuysCard(app, side) {
+    const cfg = app.league.cfg;
+    const model = app.faab;
+    const history = bidHistory(model);
+    const entries = side.after;
+    const targets = waiverTargets({
+        freeAgents: app.freeAgentEntries(),
+        entries,
+        cfg,
+        trending: app.trendingAdds || null,
+        limit: 5,
+    });
+
+    const card = el('div', { class: 'card' });
+
+    card.append(
+        el(
+            'p',
+            { class: 'muted small', style: 'margin-top:0' },
+            `${side.team.name} would take on $${side.faabIn}, leaving $${(side.team.faabRemaining ?? 0) + side.faabIn - (side.faabOut || 0)} to bid with. `,
+            history
+                ? `This league has settled ${history.samples} claim${history.samples === 1 ? '' : 's'} at a median of $${history.median}, and nobody has paid more than $${history.max} — ${history.richest.player.name}.`
+                : 'Nobody has bid yet this season, so the prices below are modelled rather than observed.'
+        )
+    );
+
+    if (targets.length) {
+        card.append(el('h3', { style: 'margin-top:16px' }, 'What it could claim'));
+        for (const t of targets) {
+            const estimate = estimateBid(model, t);
+            card.append(
+                el(
+                    'div',
+                    { class: 'suggest' },
+                    el(
+                        'div',
+                        { class: 'suggest-main' },
+                        playerCell(t.player, { rank: t.posRank }),
+                        el(
+                            'div',
+                            { class: 'suggest-why' },
+                            `Adds ${round(t.gain, 1)} pts/wk to this lineup`,
+                            t.demand > 0 ? ` · ${t.demand.toLocaleString()} adds across Sleeper today` : ''
+                        )
+                    ),
+                    el(
+                        'div',
+                        { class: 'suggest-meta' },
+                        estimate
+                            ? tag(`~$${estimate.dollars}${estimate.capped ? '+' : ''}`, estimate.dollars <= side.faabIn ? 'good' : 'warn')
+                            : null,
+                        el('div', { class: 'tiny dim nowrap' },
+                            estimate && estimate.dollars <= side.faabIn ? 'affordable with this cash' : 'more than this cash covers')
+                    )
+                )
+            );
+        }
+    } else {
+        card.append(
+            el('p', { class: 'muted small' },
+                'Nothing on the wire would crack this lineup right now, which is the honest case against taking cash for a starter.')
+        );
+    }
+
+    if (history?.tiers?.length) {
+        card.append(el('h3', { style: 'margin-top:18px' }, 'What this league pays'));
+        card.append(
+            el(
+                'div',
+                { class: 'table-scroll' },
+                el(
+                    'table',
+                    { class: 'table' },
+                    el('thead', {}, el('tr', {},
+                        el('th', {}, 'Tier'),
+                        el('th', { class: 'right' }, 'Claims'),
+                        el('th', { class: 'right' }, 'Median'),
+                        el('th', { class: 'right' }, 'Most paid'),
+                        el('th', { class: 'hide-sm' }, 'Priciest')
+                    )),
+                    el('tbody', {}, ...history.tiers.map((t) =>
+                        el('tr', {},
+                            el('td', { class: 'small' }, t.label),
+                            el('td', { class: 'num right small' }, t.count),
+                            el('td', { class: 'num right small' }, `$${t.median}`),
+                            el('td', { class: 'num right small' }, `$${t.max}`),
+                            el('td', { class: 'small hide-sm ellipsis' }, t.topPlayer.name)
+                        )
+                    ))
+                )
+            )
+        );
+    }
+
+    return el('div', {},
+        el('div', { class: 'section-head' },
+            el('h2', {}, 'What the cash buys'),
+            el('span', { class: 'hint' }, 'free agents ranked by what they add to THIS lineup')),
+        card);
 }
 
 function lineupCard(app, side) {

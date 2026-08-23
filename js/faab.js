@@ -204,6 +204,102 @@ export function faabModel({
 }
 
 /**
+ * What this league has actually paid, by how good the player was.
+ *
+ * "Nobody here has ever paid more than $31" is the single most useful thing to
+ * know before accepting cash, and it is knowable exactly -- it is in the
+ * transaction log. Bucketed by the claimed player's value, because $30 for a
+ * every-week starter and $30 for a handcuff are different facts.
+ */
+export function bidHistory(model) {
+    const bids = model?.observed?.bids;
+    if (!bids?.length) return null;
+
+    const sorted = sortBy(bids, (b) => b.value, -1);
+    const tierSize = Math.max(1, Math.ceil(sorted.length / 3));
+    const names = ['Starters', 'Contributors', 'Fliers'];
+
+    const tiers = [];
+    for (let i = 0; i < sorted.length; i += tierSize) {
+        const group = sorted.slice(i, i + tierSize);
+        const amounts = sortBy(group, (b) => b.bid).map((b) => b.bid);
+        const top = sortBy(group, (b) => b.bid, -1)[0];
+        tiers.push({
+            label: names[tiers.length] ?? `Tier ${tiers.length + 1}`,
+            count: group.length,
+            median: amounts[Math.floor(amounts.length / 2)],
+            max: amounts[amounts.length - 1],
+            min: amounts[0],
+            topPlayer: top.player,
+            topBid: top.bid,
+        });
+    }
+
+    const all = sortBy(bids, (b) => b.bid).map((b) => b.bid);
+    const richest = sortBy(bids, (b) => b.bid, -1)[0];
+    return {
+        tiers,
+        samples: bids.length,
+        median: all[Math.floor(all.length / 2)],
+        max: all[all.length - 1],
+        total: all.reduce((s, b) => s + b, 0),
+        richest,
+    };
+}
+
+/**
+ * The free-agent pool, ranked by what each player would actually add to ONE
+ * specific team's lineup.
+ *
+ * This is the number that makes cash legible. $20 to a team with a hole at
+ * running back buys a real upgrade; the same $20 to a team with no holes buys
+ * a bench body. Raw free-agent value cannot tell those apart and marginalValue
+ * can, which is precisely what it is for.
+ *
+ * @param {object} input
+ * @param {Array}  input.freeAgents entries not on any roster
+ * @param {Array}  input.entries    the receiving team's valued roster
+ * @param {object} input.cfg
+ * @param {Map}    [input.trending] playerId -> adds in the last day
+ */
+export function waiverTargets({ freeAgents, entries, cfg, trending = null, limit = 8 }) {
+    if (!freeAgents?.length || !entries) return [];
+
+    const rows = freeAgents.map((fa) => ({
+        player: fa.player,
+        posRank: fa.posRank,
+        value: fa.value,
+        score: fa.score,
+        gain: marginalValue(entries, cfg.starterSlots, fa),
+        demand: trending?.get(fa.player.id) ?? 0,
+    }));
+
+    // Ranked by lineup gain, not by value: a better player who cannot crack
+    // this lineup is worth less to THIS team than a worse one who starts.
+    return sortBy(rows, (r) => r.gain, -1)
+        .filter((r) => r.gain > 0.05)
+        .slice(0, limit);
+}
+
+/** What a target would plausibly cost, given what this league pays. */
+export function estimateBid(model, target) {
+    if (!model?.usable || !(target?.value > 0)) return null;
+    const perDollar = model.rate;
+    if (!(perDollar > 0)) return null;
+
+    const dollars = Math.max(1, Math.round(target.value / perDollar));
+    // Never quote above what anyone here has ever actually paid: the fit is a
+    // line through a handful of points and extrapolating it past the observed
+    // range invents prices this league has never seen.
+    const cap = model.max ?? dollars;
+    return {
+        dollars: Math.min(dollars, Math.max(cap, 1)),
+        capped: dollars > cap,
+        cap,
+    };
+}
+
+/**
  * One sentence about what a cash amount means in this league.
  *
  * Rest-of-season points AND points per week, because those answer different

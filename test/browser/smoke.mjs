@@ -201,6 +201,45 @@ if (faabInputs.length !== 2) {
     if (!(clamped > 0 && clamped <= 100)) errors.push(`trade: FAAB did not clamp to the budget, got ${clamped}`);
 }
 
+// --- A cash trade, end to end ----------------------------------------------
+// The engine tests price cash and the model tests rank waiver targets. Only
+// this proves the manager can actually build the deal and see the answer.
+async function addPlayerToSide(nth) {
+    const buttons = await page.$$('button:has-text("+ Add player")');
+    if (!buttons[nth]) return false;
+    await buttons[nth].click();
+    await page.waitForSelector('.pick', { timeout: 5000 });
+    await page.click('.pick');
+    await page.waitForTimeout(400);
+    return true;
+}
+
+if (await addPlayerToSide(0)) {
+    await addPlayerToSide(1);
+    // Put real money in the deal from side B.
+    const inputs = await page.$$('input[aria-label^="FAAB sent by"]');
+    if (inputs[1]) {
+        await inputs[1].fill('25');
+        await inputs[1].dispatchEvent('change');
+        await page.waitForTimeout(300);
+    }
+    await page.click('button:has-text("Analyze trade")');
+    await page.waitForTimeout(6000);
+
+    const text = (await page.textContent('#view')) || '';
+    if (!/What the cash buys/.test(text)) errors.push('trade: a cash deal did not surface what the cash buys');
+    if (!/FAAB/.test(text)) errors.push('trade: the analysis never mentions the cash that moved');
+    if (!/median of \$/.test(text)) errors.push('trade: the cash section does not cite the league’s own bid history');
+    if (!/Copy link to this trade/.test(text)) errors.push('trade: no way to send the deal that was just built');
+
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`trade result: scrolls horizontally by ${o.scrolled}px`);
+    if (o.wide.length) errors.push(`trade result: overflows — ${o.wide.join(', ')}`);
+    console.log(`  cash trade: analysed, ${text.trim().length} chars of result`);
+} else {
+    errors.push('trade: could not add a player to a side');
+}
+
 for (const width of [360, 414, 768]) {
     await page.setViewportSize({ width, height: 900 });
     for (const v of views) {

@@ -9,6 +9,7 @@ import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
 import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, onPlayerClick } from './ui.js';
 import { openPlayerCard } from './views/player.js';
 import { loadSeasonTransactions, tradesOnly, newTradesSince } from './transactions.js';
+import { trendingAdds } from './news.js';
 
 import renderTrade from './views/trade.js';
 import renderPower from './views/power.js';
@@ -58,6 +59,7 @@ export const app = {
     ctx: null,
     tradeValue: (v) => Math.round(v),
     faab: null,
+    trendingAdds: null,
     view: 'trade',
     busy: false,
 
@@ -219,16 +221,20 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         // can blend in what players have actually done and pull this week's
         // game lines.
         const teamsById = new Map(app.league.teams.map((t) => [t.rosterId, t]));
-        const [actuals, odds, transactions, byeWeeks] = await Promise.all([
+        const [actuals, odds, transactions, byeWeeks, trending] = await Promise.all([
             app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
             data.loadOdds(app.league.currentWeek, app.league.raw.season),
             loadSeasonTransactions(leagueId, app.league.currentWeek, { teamsById, players: app.players }).catch(() => []),
             loadByeWeeks(app.league.raw.season, store).catch(() => new Map()),
+            // Waiver demand: what the league at large is chasing right now, and
+            // therefore what a contested claim is about to cost.
+            trendingAdds().catch(() => new Map()),
         ]);
         app.actuals = actuals;
         app.odds = odds;
         app.transactions = transactions;
         app.byeWeeks = byeWeeks;
+        app.trendingAdds = trending;
 
         app.rebuild();
         // Playoff odds drive buyer/seller posture in the Trade Finder. They

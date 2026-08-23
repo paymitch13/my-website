@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     observedFaabRate, marketClearingRate, effectiveFaabRate, meanRemaining,
-    faabModel, describeFaab, MIN_OBSERVATIONS,
+    faabModel, describeFaab, bidHistory, waiverTargets, estimateBid, MIN_OBSERVATIONS,
 } from '../js/faab.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
@@ -222,4 +222,101 @@ test('the cash sentence says what it is worth, on what basis, and what it is not
     assert.match(text, /median winning bid/, 'it names the evidence, not a magic number');
     assert.match(text, /a week/, 'and gives the weekly figure a manager can compare a starter against');
     assert.match(text, /does not take a roster spot/, 'the one real advantage cash has');
+});
+
+// --- What the cash buys ----------------------------------------------------
+
+function pricedModel(bids = [4, 9, 14, 22, 31, 6]) {
+    const cfg = faabLeague();
+    const specs = bids.map((_, i) => ['WR', 16 - i]);
+    const { players, rankings, list } = world(specs);
+    const ctx = createValuationContext(cfg, { week: 5, weeksLeft: 9, projections });
+    const teams = [{ rosterId: 1, faabRemaining: 60 }, { rosterId: 2, faabRemaining: 40 }];
+    const model = faabModel({
+        cfg, teams, players, ctx, rankings,
+        transactions: list.map((p, i) => claim(p, bids[i])),
+    });
+    return { cfg, ctx, model, players, rankings, list, teams };
+}
+
+test('bid history answers “what does this league actually pay”', () => {
+    const { model } = pricedModel();
+    const history = bidHistory(model);
+
+    assert.ok(history, 'six priced claims is a history');
+    assert.equal(history.samples, 6);
+    assert.equal(history.max, 31, 'the ceiling is a fact, not an estimate');
+    assert.equal(history.tiers.length, 3, 'starters, contributors, fliers');
+    for (const tier of history.tiers) {
+        assert.ok(tier.count > 0);
+        assert.ok(tier.median >= tier.min && tier.median <= tier.max);
+        assert.ok(tier.topPlayer, 'each tier names the priciest claim in it');
+    }
+    assert.equal(history.richest.bid, 31);
+});
+
+test('a league that has never bid has no history to show', () => {
+    const cfg = faabLeague();
+    const ctx = createValuationContext(cfg, { week: 5, weeksLeft: 9, projections });
+    const model = faabModel({ cfg, teams: [{ rosterId: 1, faabRemaining: 100 }], players: {}, ctx, rankings: new Map(), transactions: [] });
+    assert.equal(bidHistory(model), null);
+});
+
+test('waiver targets are ranked by what they add to THIS lineup', () => {
+    const cfg = faabLeague();
+    const ctx = createValuationContext(cfg, { week: 5, weeksLeft: 9, projections });
+
+    // A roster stacked at receiver and bare at running back.
+    const roster = world([['QB', 20], ['WR', 18], ['WR', 17], ['WR', 16], ['RB', 4], ['TE', 9]]);
+    const entries = roster.list.map((p) => ({
+        player: p,
+        score: projections[p.id].stats.rush_yd / 170,
+        value: 40,
+    }));
+
+    const faPool = world([['WR', 13], ['RB', 12]]);
+    const freeAgents = faPool.list.map((p) => ({
+        player: p,
+        posRank: 20,
+        score: projections[p.id].stats.rush_yd / 170,
+        value: 30,
+    }));
+
+    const targets = waiverTargets({ freeAgents, entries, cfg });
+    assert.ok(targets.length > 0);
+    // Equal value on paper; only one of them starts. The better receiver is
+    // worth less to this team than the worse back, and raw value cannot see it.
+    assert.equal(targets[0].player.pos, 'RB', `expected the back first, got ${targets[0].player.pos}`);
+    assert.ok(targets[0].gain > 0);
+});
+
+test('a target nobody could start is not a target', () => {
+    const cfg = faabLeague();
+    // Every starting slot filled, flex included: an empty slot makes ANY body
+    // an upgrade, which is true but not what this test is about.
+    const roster = world([
+        ['QB', 22], ['RB', 20], ['RB', 19], ['RB', 18],
+        ['WR', 20], ['WR', 19], ['WR', 18], ['TE', 14],
+    ]);
+    const entries = roster.list.map((p) => ({ player: p, score: projections[p.id].stats.rush_yd / 170, value: 60 }));
+    const scrub = world([['WR', 1]]);
+    const freeAgents = scrub.list.map((p) => ({ player: p, posRank: 90, score: 1, value: 1 }));
+    assert.deepEqual(waiverTargets({ freeAgents, entries, cfg }), []);
+});
+
+test('a bid estimate never quotes a price this league has never paid', () => {
+    const { model } = pricedModel();
+    // A player worth far more than anything claimed this season.
+    const estimate = estimateBid(model, { value: 100000 });
+    assert.ok(estimate.capped, 'the extrapolation has to be flagged');
+    assert.equal(estimate.dollars, model.max, 'and clamped to the observed ceiling');
+    assert.ok(estimate.dollars <= 31);
+});
+
+test('a bid estimate for an ordinary target sits inside the observed range', () => {
+    const { model, list, ctx, rankings } = pricedModel();
+    const mid = { value: 30 };
+    const estimate = estimateBid(model, mid);
+    assert.ok(estimate.dollars >= 1);
+    assert.ok(Number.isInteger(estimate.dollars));
 });
