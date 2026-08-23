@@ -11,6 +11,7 @@ import { slotLabel, scoringLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import * as store from '../store.js';
 import { byeConflicts } from '../schedule.js';
+import { formatValue } from '../tradevalue.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
     playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -141,7 +142,7 @@ export default function renderTrade(app) {
                         { class: 'chip' },
                         posBadge(p.pos),
                         el('span', { class: 'grow', style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, playerLink(p)),
-                        el('span', { class: 'num tiny', style: 'color:var(--accent)' }, round(v.value, 0)),
+                        el('span', { class: 'num tiny', style: 'color:var(--accent)' }, formatValue(app.tradeValue(v.value))),
                         el(
                             'button',
                             {
@@ -303,8 +304,8 @@ function renderResult(app, result, repaint) {
             el(
                 'div',
                 { class: 'meter-labels' },
-                el('span', {}, `${a.team.name} receives ${round(a.valueIn, 0)}`),
-                el('span', {}, `${round(b.valueIn, 0)} to ${b.team.name}`)
+                el('span', {}, `${a.team.name} receives ${formatValue(app.tradeValue(a.valueIn))}`),
+                el('span', {}, `${formatValue(app.tradeValue(b.valueIn))} to ${b.team.name}`)
             )
         )
     );
@@ -407,7 +408,7 @@ function renderResult(app, result, repaint) {
                 el(
                     'p',
                     { class: 'muted small' },
-                    `${loser.team.name} is short about ${round(gap, 0)} points of value. These are players ${winner.team.name} can most afford to lose that ${loser.team.name} can most use:`
+                    `${loser.team.name} is short about ${formatValue(app.tradeValue(gap))} in value. These are players ${winner.team.name} can most afford to lose that ${loser.team.name} can most use:`
                 )
             );
 

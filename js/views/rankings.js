@@ -5,6 +5,7 @@ import { valuePlayer } from '../valuation.js';
 import { scoringLabel } from '../league.js';
 import * as store from '../store.js';
 import { banner, download, el, emptyState, modal, playerCell, round, toast } from '../ui.js';
+import { formatValue } from '../tradevalue.js';
 
 const POS_LABEL = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', DEF: 'D/ST' };
 
@@ -211,10 +212,10 @@ export default function renderRankings(app) {
                 {
                     class: 'val',
                     title: val?.projectedRank
-                        ? `Rest-of-season value. Projection has him ${POS_LABEL[pos]}${val.projectedRank}.`
-                        : 'Rest-of-season value in this league',
+                        ? `Trade value. Projection has him ${POS_LABEL[pos]}${val.projectedRank}.`
+                        : 'Trade value in this league',
                 },
-                val ? round(val.value, 0) : '—',
+                val ? formatValue(app.tradeValue(val.value)) : '—',
                 val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
                     ? el(
                           'span',

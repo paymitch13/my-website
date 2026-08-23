@@ -100,15 +100,19 @@ export function weatherImpact(wx, pos) {
  * Pull the forecast for one venue at one kickoff time.
  * Open-Meteo returns hourly arrays; we take the hour nearest kickoff.
  */
-export async function fetchVenueWeather(team, kickoffIso, { neutralSite = false } = {}) {
+export async function fetchVenueWeather(team, kickoffIso, { neutralSite = false, indoor = null, venueName = null } = {}) {
     // A game in London or Munich is not played at the home team's stadium, and
     // pulling that forecast would be confidently wrong -- including its dome
     // flag. Without a venue feed the honest answer is "unknown".
-    if (neutralSite) return { dome: false, team, venue: 'Neutral site', unavailable: true };
+    if (neutralSite) return { dome: false, team, venue: venueName || 'Neutral site', unavailable: true };
+
+    // ESPN reports whether the actual venue is indoors. Prefer it over the
+    // hardcoded table, which cannot know about a relocation or a new roof.
+    if (indoor === true) return { dome: true, venue: venueName || STADIUMS[team]?.name || 'Indoors', team };
 
     const stadium = STADIUMS[team];
     if (!stadium) return null;
-    if (stadium.dome) return { dome: true, venue: stadium.name, team };
+    if (indoor !== false && stadium.dome) return { dome: true, venue: stadium.name, team };
 
     const params = new URLSearchParams({
         latitude: String(stadium.lat),
@@ -182,7 +186,11 @@ export async function fetchWeatherForGames(games) {
             try {
                 const key = `${g.home}:${g.date}`;
                 if (!forecastCache.has(key)) {
-                    forecastCache.set(key, fetchVenueWeather(g.home, g.date, { neutralSite: g.neutralSite }));
+                    forecastCache.set(key, fetchVenueWeather(g.home, g.date, {
+                        neutralSite: g.neutralSite,
+                        indoor: g.indoor,
+                        venueName: g.venue,
+                    }));
                     forecastCache.get(key).catch(() => forecastCache.delete(key));
                 }
                 const wx = await forecastCache.get(key);

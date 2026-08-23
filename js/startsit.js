@@ -20,7 +20,7 @@ import { scoreStats } from './projections.js';
 import { weeklyPlayProbability, ruledOutThisWeek } from './valuation.js';
 import { matchupImpact, describeMatchup } from './matchup.js';
 import { weatherImpact, describeWeather } from './weather.js';
-import { describeEnvironment } from './odds.js';
+import { describeEnvironment, describeMovement, gameScript } from './odds.js';
 import { clamp, round, sortBy } from './util.js';
 
 /**
@@ -106,6 +106,51 @@ export function evaluatePlayerWeek(input) {
                 : (describeEnvironment(odds, neutral)?.text ?? `Team implied for ${round(odds.impliedTotal, 1)} points.`),
             tone: vegas.multiplier > 1.04 ? 'good' : vegas.multiplier < 0.96 ? 'bad' : 'neutral',
         });
+    }
+
+    // --- Game script ------------------------------------------------------
+    // A heavy favorite runs it out; a heavy underdog throws forty times. Both
+    // move fantasy production, in opposite directions, per position.
+    const script = gameScript(odds);
+    if (script && script.kind !== 'even') {
+        const pass = player.pos === 'WR' || player.pos === 'TE' || player.pos === 'QB';
+        const table = {
+            'heavy-favorite': pass ? 0.955 : 1.06,
+            favorite: pass ? 0.985 : 1.02,
+            'heavy-underdog': pass ? 1.05 : 0.93,
+            underdog: pass ? 1.02 : 0.975,
+        };
+        const mult = table[script.kind] ?? 1;
+        if (mult !== 1) {
+            multiplier *= mult;
+            factors.push({
+                kind: 'script',
+                label: 'Script',
+                multiplier: mult,
+                detail: script.text,
+                tone: mult > 1 ? 'good' : 'bad',
+            });
+        }
+    }
+
+    // --- Line movement ----------------------------------------------------
+    // A total that has fallen since opening reflects weather, injury or news a
+    // preseason projection has not absorbed.
+    const moves = describeMovement(odds);
+    const totalMove = moves.find((m) => m.kind === 'total');
+    if (totalMove && odds?.movement?.total) {
+        const change = odds.movement.total.change;
+        const mult = clamp(1 + change * 0.006, 0.94, 1.06);
+        if (Math.abs(mult - 1) > 0.005) {
+            multiplier *= mult;
+            factors.push({
+                kind: 'movement',
+                label: 'Line move',
+                multiplier: mult,
+                detail: totalMove.text,
+                tone: change > 0 ? 'good' : 'bad',
+            });
+        }
     }
 
     // --- Matchup ----------------------------------------------------------

@@ -17,13 +17,17 @@ import renderLeague from './views/league.js';
 import renderNews from './views/news.js';
 import renderStartSit from './views/startsit.js';
 import renderFinder from './views/finder.js';
+import renderVegas from './views/vegas.js';
 import { decodeOffer } from './share.js';
 import { fetchByeWeeks } from './schedule.js';
+import { createTradeValueScale } from './tradevalue.js';
+import { valuePlayer } from './valuation.js';
 
 const VIEWS = {
     trade: { render: renderTrade, title: 'Trade Calculator' },
     finder: { render: renderFinder, title: 'Trade Finder' },
     startsit: { render: renderStartSit, title: 'Start/Sit' },
+    vegas: { render: renderVegas, title: 'Vegas' },
     power: { render: renderPower, title: 'Power Rankings' },
     rankings: { render: renderRankings, title: 'My Rankings' },
     league: { render: renderLeague, title: 'League' },
@@ -47,6 +51,7 @@ export const app = {
     order: {},
     rankings: new Map(),
     ctx: null,
+    tradeValue: (v) => Math.round(v),
     view: 'trade',
     busy: false,
 
@@ -77,6 +82,17 @@ export const app = {
             actuals: this.actuals,
         });
         this.cfg = cfg;
+
+        // One market scale for the whole league, anchored to the most valuable
+        // player on the board, so every view quotes the same numbers.
+        const raw = [];
+        for (const pos of Object.keys(this.order)) {
+            (this.order[pos] || []).forEach((id, i) => {
+                const player = this.players[id];
+                if (player) raw.push(valuePlayer(player, i + 1, this.ctx).value);
+            });
+        }
+        this.tradeValue = createTradeValueScale(raw);
     },
 
     /** Persist the current board. */
