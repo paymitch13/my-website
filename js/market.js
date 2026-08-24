@@ -190,6 +190,21 @@ export function marketEdge({ marketRank, projectedRank, pos }) {
     };
 }
 
+/**
+ * The observed price distribution for this league shape, best first.
+ *
+ * This is the market's SPACING rather than its opinion of any individual: how
+ * much the best asset is worth against the twelfth, the thirtieth, the
+ * hundredth. Fed to the value scale so a player who sits Nth on this league's
+ * own board is priced at what an Nth-best asset actually costs, instead of at
+ * whatever an invented exponent produced.
+ */
+export function marketPriceCurve(snapshot) {
+    const byId = snapshot?.byId;
+    if (!byId?.size) return null;
+    return [...byId.values()].map((r) => r.value).sort((a, b) => b - a);
+}
+
 /** Every player the market and the projections disagree about, loudest first. */
 export function divergences(byId, projectedRankOf, { minStrength = 0.25, limit = 40 } = {}) {
     const out = [];

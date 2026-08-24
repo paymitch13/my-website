@@ -28,7 +28,7 @@ import { buildEntries } from './trade.js';
 import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
 import { faabModel } from './faab.js';
-import { fetchMarketValues } from './market.js';
+import { fetchMarketValues, marketPriceCurve } from './market.js';
 import { impliedTotalsOverWeeks, scheduleStrength, playoffOutlook, playoffWeeksFor } from './outlook.js';
 import { sortBy } from './util.js';
 
@@ -117,7 +117,9 @@ export const app = {
                 if (player) raw.push(valuePlayer(player, i + 1, this.ctx).value);
             });
         }
-        this.tradeValue = createTradeValueScale(raw);
+        // Calibrated against real prices where we have them: our board decides
+        // the ordering, the market decides how far apart the rungs are.
+        this.tradeValue = createTradeValueScale(raw, { marketCurve: marketPriceCurve(this.market) });
 
         // What a dollar of FAAB is worth, measured from this league's own
         // bidding. Rebuilt here rather than at sync because it depends on the
