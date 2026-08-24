@@ -84,7 +84,20 @@ for (const [pos, per] of Object.entries(POS)) {
         const ppg = 22 - i * 0.35;
         projections.push({
             player_id: id, player: { position: pos, team: 'KC' },
-            stats: { pts_half_ppr: Math.max(2, ppg) * 17, rush_yd: Math.max(10, ppg) * 100, gp: 17 },
+            stats: {
+                pts_half_ppr: Math.max(2, ppg) * 17,
+                gp: 17,
+                // A real stat line, so the yard and touchdown rows have
+                // something to render. Yards alone made the page look like it
+                // had no touchdown markets when it simply had no TD data.
+                ...(pos === 'QB'
+                    ? { pass_yd: 3800, pass_td: 26, pass_int: 11, rush_yd: 260, rush_td: 3 }
+                    : pos === 'RB'
+                        ? { rush_yd: Math.max(200, ppg * 70), rush_td: 7, rec: 40, rec_yd: 320, rec_td: 2 }
+                        : pos === 'WR' || pos === 'TE'
+                            ? { rec: 75, rec_yd: Math.max(300, ppg * 55), rec_td: 6, rush_yd: 20, rush_td: 0.2 }
+                            : { fgm: 24, xpm: 34, sack: 38, int: 12, ff: 9, def_td: 2 }),
+            },
         });
     }
 }
@@ -226,14 +239,40 @@ for (const v of views) {
 // --- The season ahead, which is the part that matters for trades -----------
 await page.click('#tabs .tab[data-view="vegas"]');
 await page.waitForTimeout(1500);
+// --- Vegas: two scopes, player lines, and where the numbers came from -------
+await page.setViewportSize({ width: 1280, height: 900 });
+await page.click('#tabs .tab[data-view="vegas"]');
+await page.waitForTimeout(3000);
 {
     const text = (await page.textContent('#view')) || '';
-    if (!/Rest of season/.test(text)) errors.push('vegas: no rest-of-season outlook');
-    if (!/Fantasy playoff weeks/.test(text)) errors.push('vegas: the weeks that decide leagues are not shown');
-    if (!/Best remaining schedules/.test(text)) errors.push('vegas: schedules are not ranked');
+    if (!/SOURCE/.test(text)) errors.push('vegas: does not say where the numbers came from');
+    if (!/DraftKings/.test(text)) errors.push('vegas: the book is not named');
+    if (!/this week/i.test(text)) errors.push('vegas: no weekly player lines');
+    // Yard and touchdown lines, not just points.
+    if (!/(Rec yds|Rush yds|Pass yds)/.test(text)) errors.push('vegas: no yardage lines for players');
+    if (!/(Rec TD|Rush TD|Pass TD)/.test(text)) errors.push('vegas: no touchdown lines for players');
     // The juice fixture is -125/+105, so the de-vigged total must differ from
     // the posted one and be labelled as such.
     if (!/de-vigged/i.test(text)) errors.push('vegas: the juice correction is applied but never shown');
+
+    const seasonBtn = await page.$('[data-scope="season"]');
+    if (!seasonBtn) {
+        errors.push('vegas: no rest-of-season toggle');
+    } else {
+        await seasonBtn.click();
+        await page.waitForTimeout(2500);
+        const seasonText = (await page.textContent('#view')) || '';
+        if (!/Rest of season/.test(seasonText)) errors.push('vegas: no season-long team totals');
+        if (!/Fantasy playoff weeks/.test(seasonText)) errors.push('vegas: the weeks that decide leagues are not shown');
+        if (!/Best remaining schedules/.test(seasonText)) errors.push('vegas: schedules are not ranked');
+        const o = await overflowOf();
+        if (o.scrolled > 0) errors.push(`vegas season: scrolls horizontally by ${o.scrolled}px`);
+        if (o.wide.length) errors.push(`vegas season: overflows — ${o.wide.join(', ')}`);
+        console.log(`  vegas: both scopes render, ${seasonText.trim().length} chars in season mode`);
+        // Back to weekly so later checks see the default.
+        await page.click('[data-scope="week"]');
+        await page.waitForTimeout(1500);
+    }
 }
 
 // --- Naming a player in the finder ------------------------------------------

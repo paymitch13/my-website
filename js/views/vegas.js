@@ -1,10 +1,13 @@
 // Vegas — the full slate, and what each line means for fantasy.
 
-import { loadOdds } from '../data.js';
+import { loadOdds, loadWeekContext } from '../data.js';
+import { loadSlateProps } from '../props.js';
+import { rosterStatLines, formatStat, describeSource, slateBooks } from '../statlines.js';
+import * as store from '../store.js';
 import { describeMovement, gameScript, fmtSpread, fmtMoneyline } from '../odds.js';
 import { slateAverage } from '../startsit.js';
 import { fetchWeatherForGames, describeWeather, weatherImpact } from '../weather.js';
-import { el, emptyState, fmtDelta, fmtPct, round, sortBy, spinnerRow, tag, tile } from '../ui.js';
+import { banner, el, emptyState, fmtDelta, fmtPct, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile } from '../ui.js';
 
 export default function renderVegas(app) {
     const root = el('div', {});
@@ -25,23 +28,97 @@ export default function renderVegas(app) {
         )
     );
 
-    const host = el('div', {});
-    root.append(host);
-    host.append(el('div', { class: 'card' }, spinnerRow('Loading lines and forecasts…')));
+    // This week or the whole way home. The same numbers answer two different
+    // questions -- a lineup question and a trade question -- and which one is
+    // being asked should be the reader's choice, not a guess.
+    let scope = store.state.settings.vegasScope === 'season' ? 'season' : 'week';
+    // Resolved up front rather than through a callback fired while the picker
+    // is being built: that ran paint() before its own `let` bindings existed.
+    const rosterTeams = app.league ? sortBy(app.league.teams, (t) => t.name.toLowerCase()) : [];
+    let roster =
+        rosterTeams.find((t) => t.ownerId && t.ownerId === app.userId) || rosterTeams[0] || null;
 
-    (async () => {
+    const host = el('div', {});
+    const seg = el(
+        'div',
+        { class: 'card card-tight' },
+        el(
+            'div',
+            { class: 'row' },
+            el('span', { class: 'tiny dim' }, 'SHOW'),
+            el(
+                'div',
+                { class: 'seg' },
+                ...[
+                    ['week', 'This week'],
+                    ['season', 'Rest of season'],
+                ].map(([key, label]) =>
+                    el(
+                        'button',
+                        {
+                            'data-scope': key,
+                            'aria-pressed': String(scope === key),
+                            onclick: () => {
+                                if (scope === key) return;
+                                scope = key;
+                                store.state.settings.vegasScope = key;
+                                store.save();
+                                // Keyed off the data attribute, not the label
+                                // text, so rewording a button cannot silently
+                                // break the toggle.
+                                for (const b of seg.querySelectorAll('[data-scope]')) {
+                                    b.setAttribute('aria-pressed', String(b.dataset.scope === key));
+                                }
+                                paint();
+                            },
+                        },
+                        label
+                    )
+                )
+            ),
+            el('div', { class: 'grow' }),
+            rosterPicker(rosterTeams, roster, (t) => { roster = t; paint(); })
+        )
+    );
+
+    root.append(seg, host);
+
+    let token = 0;
+    async function paint() {
+        const mine = ++token;
+        host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Loading lines and forecasts…')));
         try {
-            host.replaceChildren(await build(app));
+            const built = await build(app, { scope, roster });
+            if (mine !== token) return;
+            host.replaceChildren(built);
         } catch (err) {
+            if (mine !== token) return;
             console.error(err);
             host.replaceChildren(emptyState('⚠️', 'Could not load lines', err.message));
         }
-    })();
+    }
 
+    paint();
     return root;
 }
 
-async function build(app) {
+/** Whose players to show lines for. Without a league there is nobody to pick. */
+function rosterPicker(teams, selected, onPick) {
+    if (!teams.length) return null;
+    return el(
+        'select',
+        {
+            style: 'max-width:min(280px,100%)',
+            'aria-label': 'Whose players to show lines for',
+            onchange: (e) => onPick(teams.find((t) => String(t.rosterId) === e.target.value)),
+        },
+        ...teams.map((t) =>
+            el('option', { value: String(t.rosterId), selected: t.rosterId === selected?.rosterId }, t.name)
+        )
+    );
+}
+
+async function build(app, { scope = 'week', roster = null } = {}) {
     const week = app.league?.currentWeek;
     const season = app.league?.raw?.season || app.season;
     const odds = app.odds || (await loadOdds(week, season));
@@ -49,6 +126,25 @@ async function build(app) {
     const wrap = el('div', {});
     const games = odds?.games || [];
     const priced = games.filter((g) => Number.isFinite(g.overUnder));
+    const seasonScope = scope === 'season';
+
+    // Say where every number came from, before showing any of them.
+    const books = slateBooks(games);
+    const src = describeSource({ books });
+    wrap.append(
+        el(
+            'div',
+            { class: 'row', style: 'gap:8px;margin-bottom:14px' },
+            el('span', { class: 'tiny dim' }, 'SOURCE'),
+            el('span', { class: 'tag' }, seasonScope ? 'Sleeper projections + posted lines' : src.text),
+            books.length
+                ? el('span', { class: 'tiny dim' },
+                    books.length === 1
+                        ? `Lines from ${books[0]}. ESPN exposes one book for NFL right now; a second would show as a consensus automatically.`
+                        : `De-vigged consensus across ${books.length} books.`)
+                : el('span', { class: 'tiny dim' }, 'No book has posted this slate yet — numbers below are projections.')
+        )
+    );
 
     if (!priced.length) {
         wrap.append(
@@ -97,7 +193,7 @@ async function build(app) {
     // --- The season ahead, not just this week ------------------------------
     // Every posted line for the rest of the year is already downloaded for the
     // bye map. This is the part that matters for trades rather than lineups.
-    if (app.restOfSeason?.size) {
+    if (seasonScope && app.restOfSeason?.size) {
         const ros = sortBy([...app.restOfSeason.values()], (r) => r.rank);
         const playoffs = app.playoffSchedule?.size ? app.playoffSchedule : null;
 
@@ -139,6 +235,11 @@ async function build(app) {
         }
     }
 
+    // Player lines: yards and touchdowns, from both sources that have them.
+    if (roster?.players?.length) wrap.append(await playerLines(app, roster, { seasonScope, games }));
+
+    if (seasonScope) return wrap;
+
     const teamRows = [...odds.byTeam.values()].filter((c) => Number.isFinite(c.impliedTotal));
     const best = sortBy(teamRows, (c) => c.impliedTotal, -1).slice(0, 5);
     const worst = sortBy(teamRows, (c) => c.impliedTotal).slice(0, 5);
@@ -174,6 +275,123 @@ async function build(app) {
         )
     );
 
+    return wrap;
+}
+
+/**
+ * Yards and touchdowns per player.
+ *
+ * Every number in this app was a points total after the league's scoring had
+ * been applied, which hides the thing people actually argue about. "62
+ * receiving yards and half a touchdown" is a claim you can disagree with;
+ * "9.2 points" is not.
+ */
+async function playerLines(app, roster, { seasonScope, games }) {
+    const wrap = el('div', {});
+    const week = app.league?.currentWeek;
+    const seasonYear = app.league?.raw?.season || app.season;
+
+    // Weekly projections carry per-game numbers; the season row carries totals.
+    let weekly = null;
+    let marketProps = new Map();
+    if (!seasonScope) {
+        const ctx = await loadWeekContext(seasonYear, week, app.league?.lastPlayed ?? 0).catch(() => null);
+        weekly = ctx?.weekly || null;
+        marketProps = await loadSlateProps(games, app.players, { store }).catch(() => new Map());
+    }
+
+    const lines = rosterStatLines({
+        players: roster.players,
+        weekly,
+        projections: app.projections,
+        marketProps,
+        weeksLeft: app.ctx?.weeksLeft ?? null,
+        mode: seasonScope ? 'season' : 'week',
+    });
+
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {}, seasonScope ? `${roster.name} — rest of season` : `${roster.name} — this week`),
+            el('span', { class: 'hint' },
+                seasonScope
+                    ? 'projected yards and touchdowns still to come'
+                    : 'posted betting lines against the projection')
+        )
+    );
+
+    if (!lines.length) {
+        wrap.append(el('div', { class: 'card' }, el('p', { class: 'muted' }, 'No projected stat lines for this roster yet.')));
+        return wrap;
+    }
+
+    const anyMarket = lines.some((l) => l.hasMarket);
+    if (!seasonScope && !anyMarket) {
+        wrap.append(
+            banner(
+                'No player props are posted for this slate yet. Books put them up a few days before kickoff, ' +
+                'and none exist in preseason — the projected lines below stand in until then.',
+                'warn'
+            )
+        );
+    }
+
+    const card = el('div', { class: 'card' });
+    for (const line of lines.slice(0, 20)) {
+        card.append(
+            el(
+                'div',
+                { class: 'reason k-neutral', style: 'align-items:center' },
+                el(
+                    'div',
+                    { style: 'min-width:0;flex:1' },
+                    el(
+                        'div',
+                        { class: 'row', style: 'gap:8px' },
+                        posBadge(line.player.pos),
+                        el('span', { style: 'font-weight:600' }, playerLink(line.player)),
+                        line.hasMarket ? tag('priced', 'good') : null
+                    ),
+                    el(
+                        'div',
+                        { class: 'row', style: 'gap:14px;margin-top:4px' },
+                        ...line.rows.map((r) =>
+                            el(
+                                'span',
+                                { class: 'tiny' },
+                                el('span', { class: 'dim' }, `${r.label} `),
+                                seasonScope
+                                    ? el('span', { class: 'num' },
+                                        `${formatStat(r.key, r.remaining ?? r.total)}`)
+                                    : el(
+                                          'span',
+                                          {},
+                                          el('span', { class: 'num' }, formatStat(r.key, r.market ?? r.projected)),
+                                          r.market !== null && r.projected !== null && Math.abs(r.diff) > 0.05
+                                              ? el('span', { class: `tiny ${r.diff > 0 ? 'good' : 'bad'}` },
+                                                  ` (proj ${formatStat(r.key, r.projected)})`)
+                                              : null,
+                                          r.movement
+                                              ? el('span', { class: 'tiny warn' },
+                                                  ` ${r.movement.change > 0 ? '↑' : '↓'}${Math.abs(round(r.movement.change, 1))}`)
+                                              : null
+                                      )
+                            )
+                        )
+                    )
+                )
+            )
+        );
+    }
+    wrap.append(card);
+    wrap.append(
+        el('p', { class: 'tiny dim', style: 'margin:8px 0 0' },
+            seasonScope
+                ? `Rest-of-season totals: the projected per-game rate over the ${app.ctx?.weeksLeft ?? '—'} weeks left. Source: Sleeper projections.`
+                : 'Bold numbers are the posted line where a book has one, the projection otherwise. ' +
+                  '"proj" in brackets is what the projection says when the two differ; arrows are movement since the line opened.')
+    );
     return wrap;
 }
 
