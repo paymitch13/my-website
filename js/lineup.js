@@ -126,7 +126,7 @@ export function marginalValue(entries, slots, candidate) {
  * is if the starter goes down. `dropoff` is the points lost per week if the top
  * player at that position disappeared and the lineup were re-solved.
  */
-export function positionalReport(entries, slots, positions = ['QB', 'RB', 'WR', 'TE']) {
+export function positionalReport(entries, slots, positions = ['QB', 'RB', 'WR', 'TE'], { replacementPpg = null } = {}) {
     const base = optimizeLineup(entries, slots);
     const report = {};
 
@@ -146,10 +146,39 @@ export function positionalReport(entries, slots, positions = ['QB', 'RB', 'WR', 
             starting: startersAtPos.length,
             startingPoints: sum(startersAtPos, (s) => s.entry.score),
             best: best || null,
+            // The single best player at the position, in points. Rooms are not
+            // interchangeable at equal totals: three twelves and one
+            // twenty-four plus two spares average the same and trade nothing
+            // alike, because only one of them owns a piece anybody wants.
+            bestPoints: best ? best.score : 0,
+            // The weakest man actually in the lineup at this position. A room
+            // averaging fine can still have a hole in it: one twenty-four and
+            // one five averages the same as two fourteens, and only one of
+            // those teams is desperate for a second starter.
+            weakStarterPoints: startersAtPos.length
+                ? Math.min(...startersAtPos.map((s) => s.entry.score))
+                : 0,
             depth: atPos.slice(0, 5),
             // How much of the position's production hangs on one player.
             dropoff,
+            // Raw bench scoring, kept for display.
             benchDepth: sum(atPos.slice(startersAtPos.length, startersAtPos.length + 2), (e) => e.score),
+            // Bench scoring ABOVE REPLACEMENT, which is what is actually
+            // tradeable. Absolute points are not: a backup quarterback scores
+            // plenty and is worth nothing, because his owner can stream the
+            // same production off waivers for free.
+            benchAboveReplacement: replacementPpg
+                ? sum(
+                      atPos.slice(startersAtPos.length, startersAtPos.length + 3),
+                      (e) => Math.max(0, e.score - (replacementPpg[pos] ?? 0))
+                  )
+                : null,
+            // Per-slot starting production, so lineup SHAPE does not read as a
+            // hole: a team that starts a back in the flex has two starting
+            // receivers where others have three.
+            startingPerSlot: startersAtPos.length
+                ? sum(startersAtPos, (s) => s.entry.score) / startersAtPos.length
+                : 0,
         };
     }
 

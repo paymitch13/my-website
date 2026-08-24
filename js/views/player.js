@@ -6,7 +6,8 @@
 // look like for him.
 
 import { describeEnvironment } from '../odds.js';
-import { slateAverage } from '../startsit.js';
+import { slateAverage, vegasImpact } from '../startsit.js';
+import { describeSchedule } from '../outlook.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
 import { formatValue } from '../tradevalue.js';
@@ -116,7 +117,60 @@ export function openPlayerCard(app, player) {
     if (projRank) {
         tiles.append(tile('Projected rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'where the projection has him'));
     }
+    // The Vegas multiplier was computed for every Start/Sit decision and never
+    // shown as a number anywhere. It is the reason a projection gets moved, so
+    // it belongs on the card next to the projection it moves.
+    const slateNeutral = slateAverage(app.odds?.byTeam);
+    const impact = oddsCtx ? vegasImpact(oddsCtx.impliedTotal, player.pos, slateNeutral) : null;
+    if (impact?.known) {
+        tiles.append(
+            tile(
+                'Vegas',
+                `${impact.multiplier >= 1 ? '+' : ''}${Math.round((impact.multiplier - 1) * 100)}%`,
+                `${round(impact.impliedTotal, 1)} implied, slate average ${round(slateNeutral, 1)}`,
+                impact.multiplier > 1.04 ? 'good' : impact.multiplier < 0.96 ? 'bad' : ''
+            )
+        );
+    }
+    // The season ahead, not just Sunday. This is the argument that closes a
+    // trade: a receiver whose three playoff-week games are all shootouts is
+    // worth more than one whose are not, and no other free tool says so.
+    const ros = app.restOfSeason?.get(player.team) || null;
+    const playoffs = app.playoffSchedule?.get(player.team) || null;
+    if (ros?.games) {
+        tiles.append(
+            tile(
+                'Schedule',
+                `${round(ros.average, 1)}`,
+                `implied pts/game the rest of the way · ${ros.rank} of ${ros.of}`,
+                ros.edge > 0.6 ? 'good' : ros.edge < -0.6 ? 'bad' : ''
+            )
+        );
+    }
+    if (playoffs?.games) {
+        tiles.append(
+            tile(
+                'Playoff weeks',
+                `${round(playoffs.average, 1)}`,
+                `weeks ${playoffs.weeks.map((w) => w.week).join(', ')} · ${playoffs.rank} of ${playoffs.of}`,
+                playoffs.edge > 0.6 ? 'good' : playoffs.edge < -0.6 ? 'bad' : ''
+            )
+        );
+    }
     body.append(tiles);
+
+    const scheduleNote = describeSchedule(ros);
+    const playoffNote = describeSchedule(playoffs, { label: 'the fantasy playoffs' });
+    if (scheduleNote || playoffNote) {
+        body.append(
+            el(
+                'div',
+                { class: 'card card-tight', style: 'margin-bottom:18px' },
+                scheduleNote ? el('div', { class: 'small' }, scheduleNote) : null,
+                playoffNote ? el('div', { class: 'small', style: 'margin-top:6px' }, playoffNote) : null
+            )
+        );
+    }
 
     // --- Where you disagree with the projection ----------------------------
     if (posRank && projRank) {

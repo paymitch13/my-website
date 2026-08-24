@@ -67,19 +67,33 @@ export function buildNeutralEntries(players, ctx) {
  * @param {object} input.cfg        normalized league config
  * @param {object} input.ctx        valuation context
  * @param {Array}  input.teams      [{rosterId, name, owner, players, wins, losses, ties, pointsFor}]
- * @param {Array}  input.offers     [{rosterId, sending:[playerId], receiving?:[playerId]}]
+ * @param {Array}  input.offers     [{rosterId, sending:[playerId], receiving?:[playerId], faab?:number}]
  * @param {Map}    input.rankings   playerId -> positional rank
+ * @param {object} [input.faab]     faabModel() for this league, or null. Without
+ *   it cash in an offer is validated but priced at zero, which is the honest
+ *   answer when nothing is known about what a dollar buys here.
+ * @param {Function} [input.entriesFor] team -> valued entries. Defaults to the
+ *   user's board for every roster. The finder passes neutral entries for
+ *   everyone but the user, so "will they accept" is answered on their terms.
  * @param {Array}  [input.schedule] remaining schedule; omit to skip odds simulation
  * @returns {Promise<object>} async because the simulation runs in a worker
  */
 export async function evaluateTrade(input) {
-    const { cfg, ctx, teams, offers, rankings, schedule = null, iterations = 2000 } = input;
+    const {
+        cfg, ctx, teams, offers, rankings, schedule = null, iterations = 2000,
+        entriesFor = null, cache = null, faab = null,
+    } = input;
+
+    // How each roster is valued. Without an override every side is judged on
+    // the user's board, which is right for a calculator the user drives and
+    // wrong for predicting whether a counterparty accepts.
+    const valueRoster = entriesFor || ((team) => buildEntries(team.players, rankings, ctx));
 
     const byRoster = new Map(teams.map((t) => [t.rosterId, t]));
     const playerIndex = new Map();
     for (const t of teams) for (const p of t.players) playerIndex.set(p.id, { player: p, rosterId: t.rosterId });
 
-    const resolved = resolveOffers(offers);
+    const resolved = resolveOffers(offers, { cfg, byRoster });
     if (resolved.error) return { ok: false, error: resolved.error };
     const sides = resolved.sides;
 
@@ -90,23 +104,43 @@ export async function evaluateTrade(input) {
         if (!team) return { ok: false, error: `Unknown team in offer: ${side.rosterId}` };
 
         const sendingSet = new Set(side.sending);
-        const before = buildEntries(team.players, rankings, ctx);
+        const before = valueRoster(team);
         const kept = team.players.filter((p) => !sendingSet.has(p.id));
         const incoming = side.receiving
             .map((id) => playerIndex.get(id)?.player)
             .filter(Boolean);
-        const after = buildEntries([...kept, ...incoming], rankings, ctx);
+        // Value the post-trade roster on the SAME board as the pre-trade one,
+        // so the delta is the trade and not a change of yardstick.
+        const after = valueRoster({ ...team, players: [...kept, ...incoming] });
 
         const outEntries = before.filter((e) => sendingSet.has(e.player.id));
-        const inEntries = buildEntries(incoming, rankings, ctx);
+        const inEntries = after.filter((e) => incoming.some((p) => p.id === e.player.id));
 
         analysis.push({ side, team, before, after, outEntries, inEntries });
     }
 
     // --- 1. VALUE: the zero-sum ledger --------------------------------------
+    // Cash belongs here and nowhere else. It carries value -- it buys players
+    // off waivers -- but it scores no points, so it must not touch the lineup
+    // solve, the simulation, or the roster-crunch charge. A deal where you get
+    // $40 for a starter should read as positive value and negative lineup fit,
+    // and the verdict should say exactly that.
     for (const a of analysis) {
-        a.valueOut = sum(a.outEntries, (e) => e.value);
-        a.valueIn = sum(a.inEntries, (e) => e.value);
+        const priceOf = (dollars, team) =>
+            dollars > 0 && faab?.usable ? faab.valueOf(dollars, team) : 0;
+
+        a.faabOut = a.side.faabOut || 0;
+        a.faabIn = a.side.faabIn || 0;
+        a.faabValueOut = priceOf(a.faabOut, a.team);
+        // Cash arriving is worth what the RECEIVING team can do with it, which
+        // is not what it was worth to the sender: $20 to a manager holding $3
+        // buys a claim he could not otherwise win.
+        a.faabValueIn = priceOf(a.faabIn, a.team);
+
+        a.playerValueOut = sum(a.outEntries, (e) => e.value);
+        a.playerValueIn = sum(a.inEntries, (e) => e.value);
+        a.valueOut = a.playerValueOut + a.faabValueOut;
+        a.valueIn = a.playerValueIn + a.faabValueIn;
         a.valueNet = a.valueIn - a.valueOut;
     }
 
@@ -143,7 +177,7 @@ export async function evaluateTrade(input) {
     // --- 3. IMPACT: playoff and title odds, before vs after -----------------
     let odds = null;
     if (schedule && schedule.length && teams.length > 2) {
-        odds = await simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations });
+        odds = await simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations, valueRoster, cache });
         for (const a of analysis) {
             const o = odds.get(a.side.rosterId);
             a.playoffBefore = o.before.playoffOdds;
@@ -166,30 +200,79 @@ export async function evaluateTrade(input) {
         mode: odds ? 'full' : 'value',
         sides: scored,
         verdict,
-        reasons: buildReasons(scored, cfg, ctx, !!odds, iterations),
+        reasons: buildReasons(scored, cfg, ctx, !!odds, iterations, faab),
         leagueOdds: odds,
         weeksLeft: ctx.weeksLeft,
     };
 }
 
-/** Two-team offers can infer what each side receives; larger deals must be explicit. */
-function resolveOffers(offers) {
+/**
+ * Scratch space shared by many evaluations of the SAME league, schedule, board
+ * and iteration count -- which is exactly what a finder search is. Anything
+ * else changing (a different week, a re-ranked board, a re-synced league) needs
+ * a fresh cache, so make one per search and throw it away afterwards.
+ */
+export function createEvalCache() {
+    return { basePoints: new Map(), baseline: null };
+}
+
+/**
+ * Two-team offers can infer what each side receives; larger deals must be
+ * explicit. Cash is validated here too, against the real budgets, because a
+ * deal that cannot legally be sent is not a deal worth analysing.
+ */
+function resolveOffers(offers, { cfg = null, byRoster = null } = {}) {
     if (!offers || offers.length < 2) return { error: 'A trade needs at least two teams.' };
-    if (offers.some((o) => !o.sending || !o.sending.length)) {
-        return { error: 'Every team in the trade has to send at least one player.' };
+
+    // A player-for-cash trade is legal and common, so "sending" may be empty as
+    // long as the side is sending money instead.
+    const cash = (o) => Number(o.faab) || 0;
+    if (offers.some((o) => (!o.sending || !o.sending.length) && cash(o) <= 0)) {
+        return { error: 'Every team in the trade has to send a player or FAAB.' };
     }
+
+    for (const o of offers) {
+        const amount = cash(o);
+        if (amount === 0) continue;
+        if (cfg && !cfg.usesFaab) {
+            return { error: 'This league does not use FAAB, so cash cannot be traded.' };
+        }
+        if (amount < 0 || !Number.isInteger(amount)) {
+            return { error: 'FAAB has to be a whole number of dollars, and not negative.' };
+        }
+        const team = byRoster?.get(o.rosterId);
+        const budget = team?.faabRemaining;
+        if (Number.isFinite(budget) && amount > budget) {
+            return { error: `${team.name || `Roster ${o.rosterId}`} only has $${budget} of FAAB left.` };
+        }
+    }
+
     if (offers.length === 2) {
         return {
             sides: [
-                { ...offers[0], receiving: offers[0].receiving ?? offers[1].sending },
-                { ...offers[1], receiving: offers[1].receiving ?? offers[0].sending },
+                {
+                    ...offers[0],
+                    receiving: offers[0].receiving ?? offers[1].sending,
+                    faabIn: cash(offers[1]),
+                    faabOut: cash(offers[0]),
+                },
+                {
+                    ...offers[1],
+                    receiving: offers[1].receiving ?? offers[0].sending,
+                    faabIn: cash(offers[0]),
+                    faabOut: cash(offers[1]),
+                },
             ],
         };
     }
     if (offers.some((o) => !o.receiving)) {
         return { error: 'Trades with three or more teams must say who receives what.' };
     }
-    return { sides: offers };
+    // In a multi-team deal cash has to name its destination, so it is carried
+    // per side as a plain out-only amount plus whatever `faabIn` the caller set.
+    return {
+        sides: offers.map((o) => ({ ...o, faabOut: cash(o), faabIn: Number(o.faabIn) || 0 })),
+    };
 }
 
 /**
@@ -197,7 +280,7 @@ function resolveOffers(offers) {
  * share a seed so the two runs see identical weekly randomness -- the
  * difference between them is the trade, not sampling noise.
  */
-async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations }) {
+async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, iterations, valueRoster, cache = null }) {
     const overrideBefore = new Map();
     const overrideAfter = new Map();
     for (const a of analysis) {
@@ -205,11 +288,20 @@ async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, i
         overrideAfter.set(a.side.rosterId, a.lineupAfter.points);
     }
 
+    // Every roster the trade does not touch is solved identically on every
+    // call. Across a finder search that is hundreds of repeats of the same
+    // lineup solve, each one rebuilding the same valued entries first.
+    const basePoints = (t) => {
+        if (!cache) return optimizeLineup(valueRoster(t), cfg.starterSlots).points;
+        if (!cache.basePoints.has(t.rosterId)) {
+            cache.basePoints.set(t.rosterId, optimizeLineup(valueRoster(t), cfg.starterSlots).points);
+        }
+        return cache.basePoints.get(t.rosterId);
+    };
+
     const mk = (overrides) =>
         teams.map((t) => {
-            const points =
-                overrides.get(t.rosterId) ??
-                optimizeLineup(buildEntries(t.players, rankings, ctx), cfg.starterSlots).points;
+            const points = overrides.get(t.rosterId) ?? basePoints(t);
             const profile = teamScoringProfile(points);
             return {
                 rosterId: t.rosterId,
@@ -228,9 +320,15 @@ async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, i
         seed: DEFAULT_SIM_SEED,
         medianScoring: cfg.medianScoring,
     };
+    // The "before" run is the untouched league: identical for every candidate
+    // in a search, and half the simulation budget if it is repeated. The
+    // promise is cached, not the result, so concurrent callers share one run.
     // Both runs go to the worker together; they are independent.
+    const beforePromise = cache
+        ? (cache.baseline ||= runSimulation(mk(overrideBefore), schedule, opts))
+        : runSimulation(mk(overrideBefore), schedule, opts);
     const [before, after] = await Promise.all([
-        runSimulation(mk(overrideBefore), schedule, opts),
+        beforePromise,
         runSimulation(mk(overrideAfter), schedule, opts),
     ]);
 
@@ -350,12 +448,44 @@ function buildVerdict(sides, ctx, cfg, hasOdds) {
  * Plain-language reasoning. Every entry is derived from a number computed
  * above -- nothing here is decorative.
  */
-function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000) {
+function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000, faab = null) {
     const reasons = [];
     const wk = ctx.weeksLeft;
 
     for (const s of sides) {
         const name = s.team.name;
+
+        // Cash first when there is any, because it is the part of a deal
+        // people are least able to price in their heads, and because saying
+        // nothing about it while it moves the value bar is worse than useless.
+        if (s.faabIn > 0 || s.faabOut > 0) {
+            const net = s.faabIn - s.faabOut;
+            const gross = Math.abs(net);
+            const receiving = net > 0;
+            const worth = Math.abs(s.faabValueIn - s.faabValueOut);
+            const perWeek = worth / Math.max(1, wk);
+
+            const basis = faab?.usable
+                ? faab.source === 'observed'
+                    ? `The median winning bid in this league is $${faab.median} across ${faab.samples} claim${faab.samples === 1 ? '' : 's'}${faab.max ? `, and the highest was $${faab.max}` : ''}.`
+                    : 'Nobody has bid yet this season, so that is priced off the value left in the free-agent pool against the cash chasing it.'
+                : 'There is no bidding history to price it against yet, so it is carried at zero rather than guessed at.';
+
+            const budgetNote = Number.isFinite(s.team.faabRemaining)
+                ? ` ${name} ${receiving ? 'would hold' : 'would be left with'} $${Math.max(0, (s.team.faabRemaining ?? 0) + net)} of $${cfg.faabBudget}.`
+                : '';
+
+            reasons.push({
+                kind: receiving ? 'good' : 'warn',
+                team: s.team.rosterId,
+                weight: 1.5 + worth / 20,
+                title: `${name} ${receiving ? 'gets' : 'sends'} $${gross} of FAAB`,
+                detail: faab?.usable
+                    ? `That is worth about ${round(worth, 1)} rest-of-season points, roughly ${round(perWeek, 1)} a week. ${basis}` +
+                      ` It does nothing for this week's lineup, and it takes no roster spot.${budgetNote}`
+                    : `${basis}${budgetNote}`,
+            });
+        }
 
         if (Math.abs(s.lineupNet) >= 0.4) {
             const dir = s.lineupNet > 0 ? 'gains' : 'loses';
@@ -591,6 +721,59 @@ export function suggestAddOns({ cfg, ctx, giver, receiver, gap, limit = 4 }) {
             overshoot: c.closes > 1.35,
             rationale: rationaleFor(c),
         }));
+}
+
+/**
+ * Cash as the gap-closer, when the roster has no player who fits.
+ *
+ * This is the most common real sweetener there is, and the one the app could
+ * not propose: a giver whose only spare pieces are either useless or too good
+ * has nothing to offer, and the deal dies over a difference the two managers
+ * would happily settle in dollars. Cash is also the cleanest possible
+ * sweetener, because it costs the giver no lineup points at all.
+ *
+ * @param {object} input
+ * @param {object} input.faab   faabModel(), or null in a non-FAAB league
+ * @param {object} input.giver  the side that owes value
+ * @param {object} input.receiver
+ * @param {number} input.gap    value the giver needs to send
+ */
+export function suggestFaab({ faab, giver, receiver, gap }) {
+    if (!faab?.usable || !gap || gap <= 0) return null;
+
+    const budget = giver.team?.faabRemaining ?? 0;
+    const alreadySending = giver.faabOut || 0;
+    const spare = Math.max(0, budget - alreadySending);
+    if (spare < 1) return null;
+
+    // Price at the RECEIVER's rate: cash is only worth closing a gap with if it
+    // is worth something to the manager being handed it.
+    const perDollar = faab.valueOf(1, receiver.team);
+    if (!(perDollar > 0)) return null;
+
+    const ideal = Math.ceil(gap / perDollar);
+    const dollars = Math.min(ideal, spare);
+    if (dollars < 1) return null;
+
+    const value = faab.valueOf(dollars, receiver.team);
+    const closes = value / gap;
+    // Cash that barely dents the gap is not a proposal, it is a rounding error.
+    if (closes < 0.15) return null;
+
+    const perWeek = value / Math.max(1, faab.weeksLeft || 1);
+
+    return {
+        dollars,
+        value,
+        perWeek,
+        closes: Math.round(clamp(closes, 0, 2) * 100),
+        short: dollars < ideal,
+        remainingAfter: Math.max(0, budget - alreadySending - dollars),
+        rationale:
+            dollars < ideal
+                ? `$${dollars} is everything ${giver.team.name} has left. It covers ${Math.round(closes * 100)}% of the gap — about ${round(perWeek, 1)} pts/wk of waiver upgrade — without costing either lineup a point.`
+                : `$${dollars} closes the gap without costing ${giver.team.name} a single lineup point, and takes no roster spot on the other side. It is worth roughly ${round(perWeek, 1)} pts/wk of waiver upgrade to ${receiver.team.name}.`,
+    };
 }
 
 function rationaleFor(c) {

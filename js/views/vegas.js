@@ -1,15 +1,10 @@
 // Vegas — the full slate, and what each line means for fantasy.
 
 import { loadOdds } from '../data.js';
-import {
-    describeEnvironment, describeMovement, gameScript, fmtSpread, fmtMoneyline,
-} from '../odds.js';
+import { describeMovement, gameScript, fmtSpread, fmtMoneyline } from '../odds.js';
 import { slateAverage } from '../startsit.js';
 import { fetchWeatherForGames, describeWeather, weatherImpact } from '../weather.js';
-import { openSyncModal } from '../app.js';
-import {
-    banner, el, emptyState, fmtDelta, fmtPct, posBadge, round, sortBy, spinnerRow, tag, tile,
-} from '../ui.js';
+import { el, emptyState, fmtDelta, fmtPct, round, sortBy, spinnerRow, tag, tile } from '../ui.js';
 
 export default function renderVegas(app) {
     const root = el('div', {});
@@ -99,6 +94,51 @@ async function build(app) {
     );
 
     // --- Best and worst spots ----------------------------------------------
+    // --- The season ahead, not just this week ------------------------------
+    // Every posted line for the rest of the year is already downloaded for the
+    // bye map. This is the part that matters for trades rather than lineups.
+    if (app.restOfSeason?.size) {
+        const ros = sortBy([...app.restOfSeason.values()], (r) => r.rank);
+        const playoffs = app.playoffSchedule?.size ? app.playoffSchedule : null;
+
+        wrap.append(
+            el(
+                'div',
+                { class: 'section-head' },
+                el('h2', {}, 'Rest of season'),
+                el('span', { class: 'hint' }, `average implied points a game, weeks ${ros[0]?.weeks?.[0]?.week ?? ''}–18`)
+            )
+        );
+        wrap.append(
+            el(
+                'div',
+                { class: 'grid grid-2' },
+                scheduleCard('Best remaining schedules', ros.slice(0, 6), 'good', playoffs),
+                scheduleCard('Worst remaining schedules', ros.slice(-6).reverse(), 'bad', playoffs)
+            )
+        );
+
+        if (playoffs) {
+            const po = sortBy([...playoffs.values()], (r) => r.rank);
+            wrap.append(
+                el(
+                    'div',
+                    { class: 'section-head' },
+                    el('h2', {}, 'Fantasy playoff weeks'),
+                    el('span', { class: 'hint' }, `weeks ${po[0]?.weeks?.map((w) => w.week).join(', ') ?? ''} — the only ones that decide anything`)
+                )
+            );
+            wrap.append(
+                el(
+                    'div',
+                    { class: 'grid grid-2' },
+                    scheduleCard('Best playoff-week spots', po.slice(0, 6), 'good', null),
+                    scheduleCard('Worst playoff-week spots', po.slice(-6).reverse(), 'bad', null)
+                )
+            );
+        }
+    }
+
     const teamRows = [...odds.byTeam.values()].filter((c) => Number.isFinite(c.impliedTotal));
     const best = sortBy(teamRows, (c) => c.impliedTotal, -1).slice(0, 5);
     const worst = sortBy(teamRows, (c) => c.impliedTotal).slice(0, 5);
@@ -135,6 +175,30 @@ async function build(app) {
     );
 
     return wrap;
+}
+
+/** One column of teams ranked by the environment ahead of them. */
+function scheduleCard(title, rows, tone, playoffs) {
+    return el(
+        'div',
+        { class: 'card' },
+        el('h3', {}, title),
+        ...rows.map((r) =>
+            el(
+                'div',
+                { class: 'row', style: 'padding:6px 0;border-bottom:1px solid var(--line-soft);gap:8px' },
+                el('span', { class: 'tiny dim', style: 'min-width:22px' }, `${r.rank}`),
+                el('span', { style: 'font-weight:600;min-width:44px' }, r.team),
+                el('span', { class: 'tiny dim grow' }, `${r.games} games`),
+                playoffs?.get(r.team)
+                    ? el('span', { class: 'tiny dim', title: 'rank in the fantasy playoff weeks' },
+                        `pl ${playoffs.get(r.team).rank}`)
+                    : null,
+                el('span', { class: `num ${tone}` }, round(r.average, 1)),
+                el('span', { class: 'tiny dim', style: 'min-width:52px;text-align:right' }, fmtDelta(r.edge))
+            )
+        )
+    );
 }
 
 function spotCard(title, rows, tone, neutral) {
@@ -180,8 +244,23 @@ function gameCard(g, wx, neutral) {
         el(
             'div',
             { class: 'vegas-grid' },
-            vegasCell('Total', g.overUnder, g.movement?.total
-                ? `opened ${g.movement.total.open} (${fmtDelta(g.movement.total.change)})` : 'no movement data'),
+            vegasCell(
+                'Total',
+                g.overUnder,
+                g.movement?.total
+                    ? `opened ${g.movement.total.open} (${fmtDelta(g.movement.total.change)})`
+                    : 'no movement data'
+            ),
+            // The posted total is not the market's number when one side is
+            // priced higher. Every implied total below is computed off the
+            // de-vigged one, so it is shown rather than applied silently.
+            Number.isFinite(g.fairTotal) && Math.abs(g.fairTotal - g.overUnder) > 0.01
+                ? vegasCell(
+                      'Total, de-vigged',
+                      round(g.fairTotal, 2),
+                      `${g.overLean > 0.5 ? 'over' : 'under'} is juiced — the market sits ${g.fairTotal > g.overUnder ? 'above' : 'below'} the posted ${g.overUnder}`
+                  )
+                : null,
             vegasCell('Spread', g.detail || fmtSpread(g.spread), g.movement?.spread
                 ? `opened ${fmtSpread(g.movement.spread.open)} (home)` : ''),
             vegasCell(`${g.favorite || '—'} implied`, favImplied === null ? '—' : round(favImplied, 1),
@@ -197,6 +276,19 @@ function gameCard(g, wx, neutral) {
         moves.length
             ? el('div', { style: 'margin-top:10px' },
                 ...moves.map((m) => el('div', { class: `small ${m.tone === 'neutral' ? 'muted' : m.tone}` }, m.text)))
+            : null,
+        // A model and a market disagreeing is genuinely interesting and nothing
+        // else in the app can see it: one is an opinion, the other is money.
+        g.predictor?.notable
+            ? el('div', { class: 'small warn', style: 'margin-top:8px' },
+                `${g.predictor.text} That is a ${Math.abs(Math.round(g.predictor.gap * 100))}-point disagreement between the model and the money.`)
+            : g.predictor?.text
+                ? el('div', { class: 'small muted', style: 'margin-top:8px' }, `${g.predictor.text} Model and market agree.`)
+                : null,
+        g.consensus && g.consensus.providers > 1
+            ? el('div', { class: 'small muted', style: 'margin-top:8px' },
+                `${g.consensus.providers} books priced this game` +
+                (g.consensus.totalSpread > 0 ? `, and they disagree by ${round(g.consensus.totalSpread, 1)} on the total` : ' and they agree on the total') + '.')
             : null,
         wx && !wx.dome && !wx.unavailable
             ? el(

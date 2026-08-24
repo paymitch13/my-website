@@ -73,3 +73,39 @@ test('formatting is readable at every magnitude', () => {
     assert.equal(shortValue(8450), '8.5k');
     assert.equal(shortValue(420), '420');
 });
+
+test('the meter split and the printed values agree', () => {
+    // The bar used to be sized from raw points above replacement while the
+    // labels underneath quoted scaled values, so a 67/33 bar sat above text
+    // that read 72/28.
+    const scale = createTradeValueScale([120]);
+    const rawA = 100;
+    const rawB = 50;
+    const scaledA = scale(rawA);
+    const scaledB = scale(rawB);
+
+    const split = fairness(scaledA, scaledB);
+    const rawSplit = fairness(rawA, rawB);
+    assert.ok(
+        Math.abs(split.aShare - rawSplit.aShare) > 0.02,
+        'the two bases genuinely differ, which is why mixing them was visible'
+    );
+
+    // What the meter must use: the same numbers it prints.
+    const barPercent = split.aShare * 100;
+    const labelPercent = (scaledA / (scaledA + scaledB)) * 100;
+    assert.ok(Math.abs(barPercent - labelPercent) < 1e-9);
+});
+
+test('a value gap computed in scaled space reconciles with scaled parts', () => {
+    const scale = createTradeValueScale([120]);
+    const valueIn = 90;
+    const valueOut = 60;
+    // Right: difference of the scaled values.
+    const scaledGap = scale(valueIn) - scale(valueOut);
+    // Wrong: the raw difference pushed through a per-player convex curve.
+    const categoryError = scale(valueIn - valueOut);
+    assert.notEqual(scaledGap, categoryError);
+    // The correct gap is exactly what a listed add-on of that size would show.
+    assert.equal(scale(valueIn) - scaledGap, scale(valueOut));
+});

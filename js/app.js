@@ -9,6 +9,7 @@ import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
 import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, onPlayerClick } from './ui.js';
 import { openPlayerCard } from './views/player.js';
 import { loadSeasonTransactions, tradesOnly, newTradesSince } from './transactions.js';
+import { trendingAdds } from './news.js';
 
 import renderTrade from './views/trade.js';
 import renderPower from './views/power.js';
@@ -19,9 +20,15 @@ import renderStartSit from './views/startsit.js';
 import renderFinder from './views/finder.js';
 import renderVegas from './views/vegas.js';
 import { decodeOffer } from './share.js';
-import { fetchByeWeeks } from './schedule.js';
+import { loadSeasonOutlook } from './schedule.js';
 import { createTradeValueScale } from './tradevalue.js';
+import { optimizeLineup, teamScoringProfile } from './lineup.js';
+import { buildEntries } from './trade.js';
+import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
+import { faabModel } from './faab.js';
+import { impliedTotalsOverWeeks, scheduleStrength, playoffOutlook, playoffWeeksFor } from './outlook.js';
+import { sortBy } from './util.js';
 
 const VIEWS = {
     trade: { render: renderTrade, title: 'Trade Calculator' },
@@ -52,6 +59,11 @@ export const app = {
     rankings: new Map(),
     ctx: null,
     tradeValue: (v) => Math.round(v),
+    faab: null,
+    trendingAdds: null,
+    seasonSchedule: new Map(),
+    restOfSeason: new Map(),
+    playoffSchedule: new Map(),
     view: 'trade',
     busy: false,
 
@@ -80,6 +92,9 @@ export const app = {
             weeksLeft: Math.max(1, this.league?.weeksLeft ?? 14),
             projections: this.projections,
             actuals: this.actuals,
+            // Rest-of-season value should reflect the rest of the season's
+            // environment, not just this week's.
+            scheduleStrength: this.restOfSeason,
         });
         this.cfg = cfg;
 
@@ -93,6 +108,48 @@ export const app = {
             });
         }
         this.tradeValue = createTradeValueScale(raw);
+
+        // What a dollar of FAAB is worth, measured from this league's own
+        // bidding. Rebuilt here rather than at sync because it depends on the
+        // board and the valuation context, both of which change when the user
+        // re-ranks, and a stale rate would price cash off last week's opinion.
+        this.faab = this.league
+            ? faabModel({
+                  cfg,
+                  teams: this.league.teams,
+                  transactions: this.transactions,
+                  players: this.players,
+                  ctx: this.ctx,
+                  rankings: this.rankings,
+                  freeAgents: this.freeAgentEntries(),
+                  entriesFor: (team) => buildEntries(team.players, this.rankings, this.ctx),
+              })
+            : null;
+    },
+
+    /**
+     * Everyone in the player database nobody rosters, valued on the user's
+     * board. This is what FAAB actually buys, so it is what cash is priced
+     * against before the league has bid enough to measure a rate directly.
+     */
+    freeAgentEntries({ limit = 60 } = {}) {
+        if (!this.league || !this.players) return [];
+        const rostered = new Set();
+        for (const t of this.league.teams) for (const p of t.players) rostered.add(p.id);
+
+        const out = [];
+        for (const [id, player] of Object.entries(this.players)) {
+            if (rostered.has(id)) continue;
+            const rank = this.rankings.get(id);
+            // Unranked players are the long tail of the database -- practice
+            // squads and retirees -- not waiver targets.
+            if (rank === undefined || rank >= 900) continue;
+            if (player.pos === 'K' || player.pos === 'DEF') continue;
+            const v = valuePlayer(player, rank, this.ctx);
+            if (v.value <= 0) continue;
+            out.push({ player, posRank: rank, score: v.effectivePpg, value: v.value, detail: v });
+        }
+        return sortBy(out, (e) => e.value, -1).slice(0, limit);
     },
 
     /** Persist the current board. */
@@ -171,18 +228,36 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         // can blend in what players have actually done and pull this week's
         // game lines.
         const teamsById = new Map(app.league.teams.map((t) => [t.rosterId, t]));
-        const [actuals, odds, transactions, byeWeeks] = await Promise.all([
+        const [actuals, odds, transactions, outlook, trending] = await Promise.all([
             app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
             data.loadOdds(app.league.currentWeek, app.league.raw.season),
             loadSeasonTransactions(leagueId, app.league.currentWeek, { teamsById, players: app.players }).catch(() => []),
-            fetchByeWeeks(app.league.raw.season).catch(() => new Map()),
+            loadSeasonOutlook(app.league.raw.season, store).catch(() => ({ byes: new Map(), schedule: new Map() })),
+            // Waiver demand: what the league at large is chasing right now, and
+            // therefore what a contested claim is about to cost.
+            trendingAdds().catch(() => new Map()),
         ]);
         app.actuals = actuals;
         app.odds = odds;
         app.transactions = transactions;
-        app.byeWeeks = byeWeeks;
+        app.byeWeeks = outlook.byes;
+        app.trendingAdds = trending;
+
+        // Every posted line for the rest of the season, from the same pass that
+        // produced the bye map. A player on the offense with the best remaining
+        // implied totals is worth more than one whose schedule collapses in
+        // November, and nothing in the app used to know that.
+        app.seasonSchedule = outlook.schedule;
+        app.restOfSeason = scheduleStrength(
+            impliedTotalsOverWeeks(outlook.schedule, { from: app.league.currentWeek, to: 18 })
+        );
+        app.playoffSchedule = playoffOutlook(outlook.schedule, playoffWeeksFor(app.league.cfg));
 
         app.rebuild();
+        // Playoff odds drive buyer/seller posture in the Trade Finder. They
+        // used to be computed only when the Power Rankings view was opened, so
+        // going straight to the finder silently lost every posture tag.
+        app.powerOdds = await computePlayoffOdds().catch(() => null);
         updateChip();
         if (!silent) toast(`Synced ${app.league.cfg.name}`, 'good');
         watchForTrades();
@@ -234,6 +309,36 @@ export function watchForTrades() {
             /* polling is best-effort */
         }
     }, TRADE_POLL_MS);
+}
+
+/**
+ * A single cheap simulation of the current league, purely to get each team's
+ * playoff odds. Runs in the worker, so it does not block the first paint.
+ */
+async function computePlayoffOdds() {
+    const league = app.league;
+    if (!league?.schedule?.length) return null;
+
+    const simTeams = league.teams.map((t) => {
+        const points = optimizeLineup(buildEntries(t.players, app.rankings, app.ctx), league.cfg.starterSlots).points;
+        const profile = teamScoringProfile(points);
+        return {
+            rosterId: t.rosterId,
+            wins: t.wins || 0,
+            losses: t.losses || 0,
+            ties: t.ties || 0,
+            pointsFor: t.pointsFor || 0,
+            mu: profile.mu,
+            sigma: profile.sigma,
+        };
+    });
+
+    const res = await runSimulation(simTeams, league.schedule, {
+        iterations: 800,
+        playoffTeams: league.cfg.playoffTeams,
+        medianScoring: league.cfg.medianScoring,
+    });
+    return new Map(res.map((r) => [r.rosterId, r.playoffOdds]));
 }
 
 export function disconnectLeague() {
@@ -410,6 +515,13 @@ async function boot() {
                 el('button', { class: 'btn btn-primary', onclick: () => location.reload() }, 'Reload')
             )
         );
+        // The message is useless if the tabs still invite a click: every view
+        // behind them is about players nobody has, and the honest state is
+        // "come back when this loads", not eight empty screens.
+        for (const btn of document.querySelectorAll('#tabs .tab')) {
+            btn.disabled = true;
+            btn.setAttribute('aria-disabled', 'true');
+        }
         return;
     }
 

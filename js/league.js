@@ -142,6 +142,20 @@ export function normalizeLeague(league, opts = {}) {
         // extra weekly matchup against the league median, 0 otherwise. Teams in
         // such a league therefore play two games a week, and both count.
         medianScoring: settings.league_average_match === 1,
+
+        // --- Waivers ---------------------------------------------------------
+        // Sleeper: waiver_type 0 = rolling waivers, 1 = reverse standings,
+        // 2 = FAAB. Cash is only a tradeable asset in the third case, and every
+        // FAAB feature in the app is gated on `usesFaab` rather than on the
+        // budget being non-zero -- a rolling-waiver league can still carry a
+        // stale waiver_budget in its settings.
+        faabBudget: settings.waiver_budget ?? 0,
+        waiverType: settings.waiver_type ?? 0,
+        usesFaab: settings.waiver_type === 2 && (settings.waiver_budget ?? 0) > 0,
+        waiverDay: settings.waiver_day_of_week ?? null,
+        waiverClearDays: settings.waiver_clear_days ?? null,
+        tradeDeadline: settings.trade_deadline ?? null,
+
         raw: league || null,
     };
 }

@@ -4,9 +4,15 @@
 // and they should survive a refresh without an account, a server or a login.
 
 const KEY = 'ffc:state:v1';
-const PLAYERS_KEY = 'ffc:players:v1';
+// v2 adds espnId. Every cached database from v1 lacks it, and a player
+// without it silently has no betting market, so the cache has to be rebuilt
+// rather than merged.
+const PLAYERS_KEY = 'ffc:players:v2';
 const SNAPSHOT_KEY = 'ffc:power-snapshots:v1';
 const PROJECTIONS_KEY = 'ffc:projections:v1';
+const BYES_KEY = 'ffc:byes:v1';
+const OUTLOOK_KEY = 'ffc:outlook:v1';
+const ATHLETES_KEY = 'ffc:espn-athletes:v1';
 
 const DEFAULTS = {
     username: '',
@@ -91,6 +97,56 @@ export function cacheProjections(season, projections) {
     return write(PROJECTIONS_KEY, { at: Date.now(), season: String(season), projections });
 }
 
+/**
+ * Bye weeks never change once a season's schedule is published, so they are
+ * cached for the season with no expiry. Refetching them meant eleven ESPN
+ * requests -- about 2.4MB -- on every league sync, including the silent
+ * re-syncs the trade poller triggers.
+ */
+export function loadCachedByes(season) {
+    const cached = read(BYES_KEY, null);
+    if (!cached || cached.season !== String(season) || !cached.byes) return null;
+    return new Map(Object.entries(cached.byes));
+}
+
+export function cacheByes(season, byeMap) {
+    return write(BYES_KEY, { at: Date.now(), season: String(season), byes: Object.fromEntries(byeMap) });
+}
+
+// --- Season outlook --------------------------------------------------------
+//
+// Byes plus every posted line for the rest of the season, from the same one
+// pass. Lines do move, so this expires -- but not weekly: an eleven-week
+// average of implied totals barely notices a half-point drift in one game, and
+// re-scanning the season on every visit to spot that would be absurd.
+const OUTLOOK_TTL = 3 * 24 * 60 * 60 * 1000;
+
+export function loadCachedOutlook(season) {
+    const cached = read(OUTLOOK_KEY, null);
+    if (!cached || cached.season !== String(season)) return null;
+    if (Date.now() - (cached.at || 0) > OUTLOOK_TTL) return null;
+    return {
+        byes: new Map(Object.entries(cached.byes || {})),
+        schedule: new Map(
+            Object.entries(cached.schedule || {}).map(([week, games]) => [
+                Number(week),
+                new Map(Object.entries(games)),
+            ])
+        ),
+    };
+}
+
+export function cacheOutlook(season, { byes, schedule }) {
+    return write(OUTLOOK_KEY, {
+        at: Date.now(),
+        season: String(season),
+        byes: Object.fromEntries(byes),
+        schedule: Object.fromEntries(
+            [...(schedule || new Map())].map(([week, games]) => [week, Object.fromEntries(games)])
+        ),
+    });
+}
+
 // --- Power ranking history -------------------------------------------------
 
 /** Keeps the last 20 weekly snapshots so the board can show movement arrows. */
@@ -119,4 +175,26 @@ export function previousSnapshot(leagueId, week, preset = 'balanced') {
         .filter((s) => s.week < week && (s.preset ?? 'balanced') === preset)
         .sort((a, b) => a.week - b.week);
     return snaps.length ? snaps[snaps.length - 1] : null;
+}
+
+
+// --- ESPN athlete names ----------------------------------------------------
+//
+// Sleeper carries `espn_id` for only about a quarter of currently rostered
+// skill players, so matching a betting market to a fantasy roster needs a name
+// for the rest -- one small request per athlete. A name does not change, so
+// every lookup is remembered forever and the cost decays to nothing after the
+// first week or two of a season.
+
+let athleteCache = null;
+const athletes = () => (athleteCache ||= read(ATHLETES_KEY, {}));
+
+export const getAthleteName = (espnId) => athletes()[String(espnId)]?.name ?? null;
+export const getAthletePos = (espnId) => athletes()[String(espnId)]?.pos ?? null;
+
+export function setAthlete(espnId, { name, pos }) {
+    if (!espnId || !name) return;
+    const all = athletes();
+    all[String(espnId)] = { name, pos: pos || null };
+    write(ATHLETES_KEY, all);
 }

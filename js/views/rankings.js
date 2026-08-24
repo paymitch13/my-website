@@ -4,7 +4,7 @@ import { RANKABLE, autoTiers, fromCsv, nudge, reorder, toCsv } from '../rankings
 import { valuePlayer } from '../valuation.js';
 import { scoringLabel } from '../league.js';
 import * as store from '../store.js';
-import { banner, download, el, emptyState, modal, playerCell, round, toast } from '../ui.js';
+import { banner, download, el, emptyState, modal, playerCell, toast } from '../ui.js';
 import { formatValue } from '../tradevalue.js';
 
 const POS_LABEL = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', DEF: 'D/ST' };
@@ -46,6 +46,22 @@ export default function renderRankings(app) {
         root.append(
             banner('Not connected to a league yet — values assume a standard 12-team, half-PPR setup. Connect a Sleeper league to make them exact.', 'warn')
         );
+    }
+
+    // Nothing below can run without a valuation context. That only happens when
+    // the player database never downloaded, and the boot screen already says so
+    // -- but the tab is still there to click, and throwing at it is not an
+    // answer.
+    if (!app.ctx || !app.players) {
+        root.append(
+            emptyState(
+                '📡',
+                'Player data has not loaded',
+                'Rankings need the player database and season projections. Reload once you are back online.',
+                el('button', { class: 'btn btn-primary', onclick: () => location.reload() }, 'Reload')
+            )
+        );
+        return root;
     }
 
     // Never let the numbers be silently synthetic.

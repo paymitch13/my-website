@@ -153,8 +153,18 @@ export function modal({ title, body, footer, onClose, width }) {
 /**
  * Searchable player picker. `players` is an array of {player, subtitle, value}.
  * Resolves with the chosen entry, or null if dismissed.
+ *
+ * `formatValue` exists because there are two number scales in this app -- raw
+ * points above replacement, and the convex market scale -- and a player must
+ * never show one here and the other a click later. This module cannot import
+ * the app singleton that holds the scale, so the caller supplies the formatter.
  */
-export function pickPlayer({ title, entries, emptyText = 'Nobody available.' }) {
+export function pickPlayer({
+    title,
+    entries,
+    emptyText = 'Nobody available.',
+    formatValue: fmt = (v) => round(v, 0),
+}) {
     return new Promise((resolve) => {
         let settled = false;
         const finish = (v) => {
@@ -187,7 +197,7 @@ export function pickPlayer({ title, entries, emptyText = 'Nobody available.' }) 
                         playerCell(e.player, { rank: e.posRank }),
                         el('div', { class: 'grow' }),
                         e.value !== undefined
-                            ? el('span', { class: 'num small', style: 'color:var(--accent)' }, round(e.value, 0))
+                            ? el('span', { class: 'num small', style: 'color:var(--accent)' }, fmt(e.value))
                             : null
                     )
                 );

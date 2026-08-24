@@ -108,6 +108,11 @@ export default function renderLeague(app) {
                             el('th', { class: 'right hide-sm' }, 'PA'),
                             el('th', { class: 'right' }, 'Lineup'),
                             el('th', { class: 'right' }, 'vs avg'),
+                            // Remaining budget is a real strategic dimension
+                            // nobody tracks: it says who can still win a claim
+                            // and who cannot, and it is what makes the cash
+                            // numbers in the calculator mean anything.
+                            cfg.usesFaab ? el('th', { class: 'right hide-sm' }, 'FAAB') : null,
                             el('th', {}, 'Weak spot')
                         )
                     ),
@@ -129,6 +134,16 @@ export default function renderLeague(app) {
                                 el('td', { class: 'num right small hide-sm' }, round(a.team.pointsAgainst, 0)),
                                 el('td', { class: 'num right' }, round(a.lineup.points, 1)),
                                 el('td', { class: `num right small ${diff >= 0 ? 'good' : 'bad'}` }, fmtDelta(diff)),
+                                cfg.usesFaab
+                                    ? el(
+                                          'td',
+                                          {
+                                              class: `num right small ${(a.team.faabRemaining ?? 0) <= 5 ? 'bad' : ''}`,
+                                              title: `$${a.team.faabUsed ?? 0} of $${cfg.faabBudget} spent`,
+                                          },
+                                          `$${a.team.faabRemaining ?? 0}`
+                                      )
+                                    : null,
                                 el('td', {}, weakest ? posBadge(weakest[0]) : '—')
                             );
                             tr.addEventListener('click', () => showRoster(app, a));
@@ -137,7 +152,12 @@ export default function renderLeague(app) {
                     )
                 )
             ),
-            el('p', { class: 'tiny dim', style: 'margin:12px 0 0' }, 'Lineup is the optimal starting total per week under your rankings. Click a row for the full roster.')
+            el(
+                'p',
+                { class: 'tiny dim', style: 'margin:12px 0 0' },
+                'Lineup is the optimal starting total per week under your rankings. Click a row for the full roster.',
+                cfg.usesFaab ? ' FAAB is what each manager has left to bid with — a team near zero cannot answer a waiver run, and cash is worth less in their hands.' : ''
+            )
         )
     );
 

@@ -5,13 +5,15 @@
 // ledger, and says so plainly rather than pretending the missing analysis is
 // there.
 
-import { evaluateTrade, suggestAddOns, suggestPackages } from '../trade.js';
+import { evaluateTrade, suggestAddOns, suggestPackages, suggestFaab } from '../trade.js';
 import { valuePlayer } from '../valuation.js';
 import { slotLabel, scoringLabel } from '../league.js';
-import { openSyncModal } from '../app.js';
+import { openSyncModal, connectLeague } from '../app.js';
 import * as store from '../store.js';
 import { byeConflicts } from '../schedule.js';
-import { formatValue } from '../tradevalue.js';
+import { formatValue, fairness } from '../tradevalue.js';
+import { offerUrl } from '../share.js';
+import { bidHistory, waiverTargets, estimateBid } from '../faab.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
     playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -35,17 +37,44 @@ export default function renderTrade(app) {
         )
     );
 
+    // A pasted link names the league it came from. Roster ids are meaningless
+    // without it, so offer the one-click sync rather than showing an empty
+    // calculator to somebody who followed a link about a specific deal.
+    const linkedLeague = app.pendingOffer?.leagueId || null;
+
     if (!connected) {
+        root.append(
+            linkedLeague
+                ? el(
+                      'div',
+                      { class: 'banner banner-warn' },
+                      el('span', { class: 'grow' }, 'This trade link is for a league you have not synced yet. Connect it to see roster fit, schedule and playoff odds for the deal.'),
+                      el('button', { class: 'btn btn-sm btn-primary', onclick: () => connectLeague(linkedLeague) }, 'Sync that league')
+                  )
+                : el(
+                      'div',
+                      { class: 'banner banner-warn' },
+                      el('span', { class: 'grow' }, 'Not connected to a league. You can still compare player values, but roster fit, schedule and playoff odds need a synced league.'),
+                      el('button', { class: 'btn btn-sm btn-primary', onclick: openSyncModal }, 'Connect Sleeper')
+                  )
+        );
+        root.append(quickMode(app));
+        return root;
+    }
+
+    // Connected, but to a different league than the link describes. Silently
+    // matching roster 3 against whatever roster 3 is here would render a deal
+    // between the wrong two teams and look authoritative doing it.
+    if (linkedLeague && String(linkedLeague) !== String(app.league.cfg.id)) {
         root.append(
             el(
                 'div',
                 { class: 'banner banner-warn' },
-                el('span', { class: 'grow' }, 'Not connected to a league. You can still compare player values, but roster fit, schedule and playoff odds need a synced league.'),
-                el('button', { class: 'btn btn-sm btn-primary', onclick: openSyncModal }, 'Connect Sleeper')
+                el('span', { class: 'grow' }, `This trade link is from a different league than ${app.league.cfg.name}. Switch to it to load the deal.`),
+                el('button', { class: 'btn btn-sm btn-primary', onclick: () => connectLeague(linkedLeague) }, 'Switch league')
             )
         );
-        root.append(quickMode(app));
-        return root;
+        app.pendingOffer = null;
     }
 
     // ---- Full mode --------------------------------------------------------
@@ -54,8 +83,8 @@ export default function renderTrade(app) {
     // Start on the user's own roster: they are one side of almost every trade
     // they evaluate.
     const mine = teams.find((t) => t.ownerId && t.ownerId === app.userId);
-    const stateA = { team: mine || teams[0], sending: [] };
-    const stateB = { team: teams.find((t) => t.rosterId !== stateA.team.rosterId) || teams[0], sending: [] };
+    const stateA = { team: mine || teams[0], sending: [], faab: 0 };
+    const stateB = { team: teams.find((t) => t.rosterId !== stateA.team.rosterId) || teams[0], sending: [], faab: 0 };
 
     // A link from the finder, or pasted from a league chat, pre-fills the deal.
     const shared = app.pendingOffer;
@@ -66,8 +95,10 @@ export default function renderTrade(app) {
             const owned = (team, ids) => ids.filter((id) => team.players.some((p) => p.id === id));
             stateA.team = a;
             stateA.sending = owned(a, shared.aSend);
+            stateA.faab = Math.min(shared.aFaab || 0, a.faabRemaining ?? 0);
             stateB.team = b;
             stateB.sending = owned(b, shared.bSend);
+            stateB.faab = Math.min(shared.bFaab || 0, b.faabRemaining ?? 0);
         }
         app.pendingOffer = null;
     }
@@ -119,6 +150,9 @@ export default function renderTrade(app) {
                 onchange: (e) => {
                     side.team = teams.find((t) => String(t.rosterId) === e.target.value);
                     side.sending = [];
+                    // A different roster has a different budget, so any cash
+                    // already dialled in may no longer be legal to send.
+                    side.faab = 0;
                     paintPanels();
                     resultHost.replaceChildren();
                 },
@@ -173,7 +207,82 @@ export default function renderTrade(app) {
                 'button',
                 { class: 'btn btn-sm', style: 'margin-top:10px;width:100%', onclick: () => addPlayer(side) },
                 '+ Add player'
-            )
+            ),
+            faabRow(side)
+        );
+    }
+
+    /**
+     * Cash on this side of the deal. Only rendered in a FAAB league, because in
+     * a rolling-waiver league there is nothing to send and a disabled stepper
+     * is just clutter.
+     *
+     * The counterparty's remaining budget is shown as well: knowing they have
+     * $2 left tells you cash will not move them, and that is the single most
+     * useful fact about the other side's wallet.
+     */
+    function faabRow(side) {
+        const cfg = app.league.cfg;
+        if (!cfg.usesFaab) return null;
+
+        const budget = side.team.faabRemaining ?? 0;
+
+        const input = el('input', {
+            type: 'number',
+            min: '0',
+            max: String(budget),
+            step: '1',
+            value: String(side.faab),
+            style: 'width:78px;text-align:center',
+            'aria-label': `FAAB sent by ${side.team.name}`,
+        });
+        const minus = el('button', {
+            class: 'btn btn-sm', style: 'padding:4px 10px', 'aria-label': 'Send less FAAB',
+        }, '−');
+        const plus = el('button', {
+            class: 'btn btn-sm', style: 'padding:4px 10px', 'aria-label': 'Send more FAAB',
+        }, '+');
+        const budgetLine = el('div', { class: 'tiny dim', style: 'margin-top:4px' });
+        const worthLine = el('div', { class: 'tiny', style: 'margin-top:4px;color:var(--accent)' });
+
+        // Updated IN PLACE rather than by repainting the panel. Repainting from
+        // inside the input's own change handler tears out the element the
+        // browser is mid-blur on, which throws -- and it also stole focus on
+        // every keystroke, so holding the stepper was unusable.
+        function sync(next) {
+            side.faab = Math.max(0, Math.min(budget, Math.round(next) || 0));
+            if (input.value !== String(side.faab)) input.value = String(side.faab);
+            minus.disabled = side.faab <= 0;
+            plus.disabled = side.faab >= budget;
+            budgetLine.textContent = budget > 0
+                ? `$${budget - side.faab} of $${cfg.faabBudget} would be left`
+                : 'No budget left to send';
+            worthLine.textContent = side.faab > 0 && app.faab?.usable
+                ? `worth about ${round(app.faab.valueOf(side.faab, side.team), 1)} rest-of-season points`
+                : '';
+            // The old analysis described a different trade.
+            resultHost.replaceChildren();
+        }
+
+        input.addEventListener('change', () => sync(Number(input.value)));
+        input.addEventListener('input', () => sync(Number(input.value)));
+        minus.addEventListener('click', () => sync(side.faab - 1));
+        plus.addEventListener('click', () => sync(side.faab + 1));
+        sync(side.faab);
+
+        return el(
+            'div',
+            { style: 'margin-top:12px' },
+            el(
+                'div',
+                { class: 'row', style: 'gap:6px' },
+                el('span', { class: 'tiny dim grow' }, 'FAAB'),
+                minus,
+                input,
+                plus
+            ),
+            budgetLine,
+            worthLine
         );
     }
 
@@ -194,6 +303,9 @@ export default function renderTrade(app) {
             title: `${side.team.name} sends…`,
             entries,
             emptyText: 'Every player on this roster is already in the deal.',
+            // The picker and the panel show the same player one click apart.
+            // They have to be the same number.
+            formatValue: (v) => formatValue(app.tradeValue(v)),
         });
         if (!chosen) return;
         side.sending.push(chosen.player.id);
@@ -219,8 +331,11 @@ export default function renderTrade(app) {
     }
 
     function evaluate() {
-        if (!stateA.sending.length || !stateB.sending.length) {
-            toast('Add at least one player to each side.', 'bad');
+        // A player-for-cash trade is a real trade, so a side sending only money
+        // is complete. A side sending nothing at all is not.
+        const empty = (s) => !s.sending.length && !(s.faab > 0);
+        if (empty(stateA) || empty(stateB)) {
+            toast('Each side has to send a player or some FAAB.', 'bad');
             return;
         }
         if (stateA.team.rosterId === stateB.team.rosterId) {
@@ -238,9 +353,10 @@ export default function renderTrade(app) {
                 rankings: app.rankings,
                 schedule: app.league.schedule,
                 iterations: store.state.settings.simIterations || 2000,
+                faab: app.faab,
                 offers: [
-                    { rosterId: stateA.team.rosterId, sending: stateA.sending },
-                    { rosterId: stateB.team.rosterId, sending: stateB.sending },
+                    { rosterId: stateA.team.rosterId, sending: stateA.sending, faab: stateA.faab },
+                    { rosterId: stateB.team.rosterId, sending: stateB.sending, faab: stateB.faab },
                 ],
             });
 
@@ -271,9 +387,14 @@ function renderResult(app, result, repaint) {
     const wrap = el('div', {});
     const [a, b] = result.sides;
 
-    // Verdict banner
-    const totalIn = Math.abs(a.valueIn) + Math.abs(b.valueIn) || 1;
-    const shareA = Math.max(4, (Math.abs(a.valueIn) / totalIn) * 100);
+    // Verdict banner.
+    // The meter and the numbers printed under it must be the same quantity.
+    // Splitting the bar on raw points while labelling it with scaled values put
+    // 67/33 above text that read 72/28.
+    const scaledA = app.tradeValue(a.valueIn);
+    const scaledB = app.tradeValue(b.valueIn);
+    const split = fairness(scaledA, scaledB);
+    const shareA = Math.max(4, Math.min(96, split.aShare * 100));
 
     wrap.append(
         el(
@@ -304,8 +425,37 @@ function renderResult(app, result, repaint) {
             el(
                 'div',
                 { class: 'meter-labels' },
-                el('span', {}, `${a.team.name} receives ${formatValue(app.tradeValue(a.valueIn))}`),
-                el('span', {}, `${formatValue(app.tradeValue(b.valueIn))} to ${b.team.name}`)
+                el('span', {}, `${a.team.name} receives ${formatValue(scaledA)}`),
+                el('span', {}, `${formatValue(scaledB)} to ${b.team.name}`)
+            ),
+            // A trade you cannot send is a trade that does not happen. The
+            // link carries the league, both sides and any cash, so pasting it
+            // in the league chat reproduces exactly this deal.
+            el(
+                'div',
+                { class: 'row', style: 'margin-top:14px' },
+                el(
+                    'button',
+                    {
+                        class: 'btn btn-sm',
+                        onclick: () => {
+                            const url = offerUrl({
+                                leagueId: app.league?.cfg?.id ?? null,
+                                aRoster: a.team.rosterId,
+                                aSend: a.side.sending,
+                                aFaab: a.faabOut || 0,
+                                bRoster: b.team.rosterId,
+                                bSend: b.side.sending,
+                                bFaab: b.faabOut || 0,
+                            });
+                            navigator.clipboard?.writeText(url).then(
+                                () => toast('Trade link copied — paste it in your league chat', 'good'),
+                                () => toast(url, '')
+                            );
+                        },
+                    },
+                    'Copy link to this trade'
+                )
             )
         )
     );
@@ -393,22 +543,39 @@ function renderResult(app, result, repaint) {
         )
     );
 
+    // What the cash actually buys, whenever cash is in the deal. A dollar
+    // figure means nothing on its own; the players it could claim, at prices
+    // this league has actually paid, is the thing a manager can judge.
+    const cashSide = result.sides.find((s) => (s.faabIn || 0) > 0);
+    if (cashSide && app.faab?.usable) wrap.append(cashBuysCard(app, cashSide));
+
     // How to actually get this accepted
     const loser = result.sides.find((s) => s.team.rosterId === result.verdict.loser);
     const winner = result.sides.find((s) => s.team.rosterId === result.verdict.winner);
     if (loser && winner && result.verdict.gap > 0.08) {
+        // The gap has to be computed in the SAME space it is displayed in.
+        // Pushing a difference through a per-player convex curve anchored to
+        // the league's best player is a category error: the result cannot be
+        // reconciled against the add-on values printed right beneath it.
         const gap = Math.max(1, winner.valueNet);
+        const scaledGap = Math.max(
+            0,
+            app.tradeValue(winner.valueIn) - app.tradeValue(winner.valueOut)
+        );
         const picks = suggestAddOns({ cfg: app.league.cfg, ctx: app.ctx, giver: winner, receiver: loser, gap, limit: 4 });
         const packages = suggestPackages({ cfg: app.league.cfg, ctx: app.ctx, giver: winner, receiver: loser, gap, limit: 2 });
+        // Cash is often the only thing that closes a gap cleanly: it costs the
+        // giver no lineup points and takes no roster spot on the other side.
+        const cash = suggestFaab({ faab: app.faab, giver: winner, receiver: loser, gap });
 
-        if (picks.length || packages.length) {
+        if (picks.length || packages.length || cash) {
             wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'How to get this accepted')));
             const card = el('div', { class: 'card' });
             card.append(
                 el(
                     'p',
                     { class: 'muted small' },
-                    `${loser.team.name} is short about ${formatValue(app.tradeValue(gap))} in value. These are players ${winner.team.name} can most afford to lose that ${loser.team.name} can most use:`
+                    `${loser.team.name} is short about ${formatValue(scaledGap)} in value. These are players ${winner.team.name} can most afford to lose that ${loser.team.name} can most use:`
                 )
             );
 
@@ -432,6 +599,37 @@ function renderResult(app, result, repaint) {
                                 { class: 'tiny dim nowrap' },
                                 `+${p.gainToReceiver} pts/wk to ${loser.team.name.split(' ')[0]} · −${p.costToGiver} to give up`
                             )
+                        )
+                    )
+                );
+            }
+
+            if (cash) {
+                card.append(
+                    el(
+                        'div',
+                        { class: 'suggest' },
+                        el(
+                            'div',
+                            { class: 'suggest-main' },
+                            el(
+                                'div',
+                                { class: 'row', style: 'gap:8px' },
+                                el('span', { class: 'chip', style: 'padding:4px 10px;font-weight:700' }, `$${cash.dollars} FAAB`),
+                                el('span', { class: 'tiny dim' }, `${winner.team.name} would have $${cash.remainingAfter} left`)
+                            ),
+                            el('div', { class: 'suggest-why' }, cash.rationale)
+                        ),
+                        el(
+                            'div',
+                            { class: 'suggest-meta' },
+                            cash.short ? tag(`closes ~${cash.closes}%`, 'warn') : tag('costs no points', 'good'),
+                            // On the market scale, like the gap right above it.
+                            // Quoting cash in raw points beside a gap quoted in
+                            // market value gives the reader two numbers that
+                            // cannot be reconciled.
+                            el('div', { class: 'tiny dim nowrap' },
+                                `${formatValue(Math.max(0, app.tradeValue(loser.valueIn + cash.value) - app.tradeValue(loser.valueIn)))} in value`)
                         )
                     )
                 );
@@ -481,6 +679,113 @@ function gradeBlock(side) {
         el('div', { class: `grade ${gradeClass(side.grade.letter)}` }, side.grade.letter),
         el('div', { class: 'tiny dim', style: 'margin-top:4px;max-width:90px' }, side.team.name)
     );
+}
+
+/**
+ * The waiver wire, from the point of view of the manager being handed money.
+ *
+ * "$40" is not a fact anybody can weigh against a running back. "$40, and here
+ * is what it claims, at what this league has actually paid" is.
+ */
+function cashBuysCard(app, side) {
+    const cfg = app.league.cfg;
+    const model = app.faab;
+    const history = bidHistory(model);
+    const entries = side.after;
+    const targets = waiverTargets({
+        freeAgents: app.freeAgentEntries(),
+        entries,
+        cfg,
+        trending: app.trendingAdds || null,
+        limit: 5,
+    });
+
+    const card = el('div', { class: 'card' });
+
+    card.append(
+        el(
+            'p',
+            { class: 'muted small', style: 'margin-top:0' },
+            `${side.team.name} would take on $${side.faabIn}, leaving $${(side.team.faabRemaining ?? 0) + side.faabIn - (side.faabOut || 0)} to bid with. `,
+            history
+                ? `This league has settled ${history.samples} claim${history.samples === 1 ? '' : 's'} at a median of $${history.median}, and nobody has paid more than $${history.max} — ${history.richest.player.name}.`
+                : 'Nobody has bid yet this season, so the prices below are modelled rather than observed.'
+        )
+    );
+
+    if (targets.length) {
+        card.append(el('h3', { style: 'margin-top:16px' }, 'What it could claim'));
+        for (const t of targets) {
+            const estimate = estimateBid(model, t);
+            card.append(
+                el(
+                    'div',
+                    { class: 'suggest' },
+                    el(
+                        'div',
+                        { class: 'suggest-main' },
+                        playerCell(t.player, { rank: t.posRank }),
+                        el(
+                            'div',
+                            { class: 'suggest-why' },
+                            `Adds ${round(t.gain, 1)} pts/wk to this lineup`,
+                            t.demand > 0 ? ` · ${t.demand.toLocaleString()} adds across Sleeper today` : ''
+                        )
+                    ),
+                    el(
+                        'div',
+                        { class: 'suggest-meta' },
+                        estimate
+                            ? tag(`~$${estimate.dollars}${estimate.capped ? '+' : ''}`, estimate.dollars <= side.faabIn ? 'good' : 'warn')
+                            : null,
+                        el('div', { class: 'tiny dim nowrap' },
+                            estimate && estimate.dollars <= side.faabIn ? 'affordable with this cash' : 'more than this cash covers')
+                    )
+                )
+            );
+        }
+    } else {
+        card.append(
+            el('p', { class: 'muted small' },
+                'Nothing on the wire would crack this lineup right now, which is the honest case against taking cash for a starter.')
+        );
+    }
+
+    if (history?.tiers?.length) {
+        card.append(el('h3', { style: 'margin-top:18px' }, 'What this league pays'));
+        card.append(
+            el(
+                'div',
+                { class: 'table-scroll' },
+                el(
+                    'table',
+                    { class: 'table' },
+                    el('thead', {}, el('tr', {},
+                        el('th', {}, 'Tier'),
+                        el('th', { class: 'right' }, 'Claims'),
+                        el('th', { class: 'right' }, 'Median'),
+                        el('th', { class: 'right' }, 'Most paid'),
+                        el('th', { class: 'hide-sm' }, 'Priciest')
+                    )),
+                    el('tbody', {}, ...history.tiers.map((t) =>
+                        el('tr', {},
+                            el('td', { class: 'small' }, t.label),
+                            el('td', { class: 'num right small' }, t.count),
+                            el('td', { class: 'num right small' }, `$${t.median}`),
+                            el('td', { class: 'num right small' }, `$${t.max}`),
+                            el('td', { class: 'small hide-sm ellipsis' }, t.topPlayer.name)
+                        )
+                    ))
+                )
+            )
+        );
+    }
+
+    return el('div', {},
+        el('div', { class: 'section-head' },
+            el('h2', {}, 'What the cash buys'),
+            el('span', { class: 'hint' }, 'free agents ranked by what they add to THIS lineup')),
+        card);
 }
 
 function lineupCard(app, side) {
@@ -577,6 +882,7 @@ function quickMode(app) {
         const chosen = await pickPlayer({
             title: 'Add a player',
             entries: pool().filter((e) => !taken.has(e.player.id)),
+            formatValue: (v) => formatValue(app.tradeValue(v)),
         });
         if (!chosen) return;
         list.push(chosen);
@@ -593,7 +899,7 @@ function quickMode(app) {
                     { class: 'chip' },
                     posBadge(e.player.pos),
                     el('span', { class: 'grow' }, playerLink(e.player)),
-                    el('span', { class: 'num tiny', style: 'color:var(--accent)' }, round(e.value, 0)),
+                    el('span', { class: 'num tiny', style: 'color:var(--accent)' }, formatValue(app.tradeValue(e.value))),
                     el(
                         'button',
                         {
@@ -618,9 +924,11 @@ function quickMode(app) {
     }
 
     function paint() {
-        const va = sideA.reduce((s, e) => s + e.value, 0);
-        const vb = sideB.reduce((s, e) => s + e.value, 0);
-        const total = va + vb || 1;
+        // Scaled, like everything else on screen. Summing raw points here and
+        // printing market values in the chips above put two different scales
+        // in one panel and made the split disagree with the pieces.
+        const va = sideA.reduce((s, e) => s + app.tradeValue(e.value), 0);
+        const vb = sideB.reduce((s, e) => s + app.tradeValue(e.value), 0);
 
         wrap.replaceChildren(
             el(
@@ -642,7 +950,7 @@ function quickMode(app) {
         const receivesA = vb;
         const receivesB = va;
         const diff = receivesA - receivesB;
-        const pctGap = Math.abs(diff) / Math.max(receivesA, receivesB);
+        const pctGap = fairness(receivesA, receivesB).gap;
         const label = pctGap < 0.07 ? 'Even' : `${diff > 0 ? 'Side A' : 'Side B'} wins the value`;
         const tone = pctGap < 0.07 ? 'neutral' : pctGap < 0.2 ? 'warn' : 'bad';
 
@@ -654,7 +962,7 @@ function quickMode(app) {
                 el(
                     'div',
                     { class: 'headline' },
-                    `Side A receives ${round(receivesA, 0)}, Side B receives ${round(receivesB, 0)} rest-of-season points above replacement — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
+                    `Side A receives ${formatValue(receivesA)}, Side B receives ${formatValue(receivesB)} in trade value — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
                 ),
                 el(
                     'div',

@@ -62,6 +62,23 @@ export function injuryReport({ cfg, ctx, teams, rankings }) {
  * league on the platform, which is the closest thing to a real-time signal that
  * something happened to a player.
  */
+/**
+ * Raw add counts, playerId -> adds in the window.
+ *
+ * The same call the news feed makes, exposed as a lookup, because waiver
+ * demand is the closest available proxy for what the next contested claim will
+ * cost -- and pricing cash without it means pricing it as though nobody else
+ * is bidding.
+ */
+export async function trendingAdds({ hours = 24, limit = 60 } = {}) {
+    const rows = await api.getTrending('add', hours, limit).catch(() => []);
+    const out = new Map();
+    for (const row of rows || []) {
+        if (row?.player_id) out.set(row.player_id, row.count ?? 0);
+    }
+    return out;
+}
+
 export async function trendingReport(players, teams, { hours = 24, limit = 30 } = {}) {
     const [adds, drops] = await Promise.all([
         api.getTrending('add', hours, limit).catch(() => []),

@@ -3,6 +3,8 @@
 import { buildStartSitReport, evaluatePlayerWeek, lineupChanges, slateAverage } from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
 import { fetchWeatherForGames } from '../weather.js';
+import { loadSlateProps } from '../props.js';
+import * as store from '../store.js';
 import { loadWeekContext, loadOdds } from '../data.js';
 import { isOnBye } from '../schedule.js';
 import { slotLabel } from '../league.js';
@@ -11,6 +13,13 @@ import {
     banner, el, emptyState, fmtDelta, playerLink, posBadge, round, sortBy,
     spinnerRow, tag, tile,
 } from '../ui.js';
+
+/** Readable names for the market keys, for the movement line. */
+const PROP_LABEL = {
+    pass_yd: 'pass yds', pass_td: 'pass TDs', pass_att: 'attempts', pass_int: 'INTs',
+    rush_yd: 'rush yds', rush_td: 'rush TDs', rush_att: 'carries',
+    rec_yd: 'rec yds', rec_td: 'rec TDs', rec: 'receptions',
+};
 
 export default function renderStartSit(app) {
     const root = el('div', {});
@@ -109,7 +118,15 @@ async function build(app, team) {
     const weekly = weekCtx.weekly;
     const games = odds?.games || [];
     const oddsByTeam = odds?.byTeam || new Map();
-    const weatherByHome = await fetchWeatherForGames(games);
+
+    // Posted player markets, which are a second projection with money behind
+    // it. Preseason and early in a week there are none, and that is a normal
+    // state rather than a failure -- everything below simply falls back to the
+    // consensus projection it already had.
+    const [weatherByHome, marketProps] = await Promise.all([
+        fetchWeatherForGames(games),
+        loadSlateProps(games, app.players, { store }).catch(() => new Map()),
+    ]);
 
     const defenseProfiles = buildDefenseProfiles(weekCtx.weeklyStats, cfg.scoring);
     const defenseRanks = {};
@@ -128,6 +145,7 @@ async function build(app, team) {
             defenseRanks,
             weeksLeft: Math.max(1, app.league.weeksLeft),
             onBye: isOnBye(app.byeWeeks, player.team, currentWeek),
+            marketRow: marketProps.get(player.id) || null,
         })
     );
 
@@ -306,12 +324,74 @@ async function build(app, team) {
                 el(
                     'div',
                     { class: 'row', style: 'gap:6px' },
-                    ...report.benchedByBye.map((e) =>
+                    // The guard above and the list here have to be the same
+                    // field: they were not, so the section threw whenever it
+                    // was the section that had something to say.
+                    ...report.unavailable.map((e) =>
                         el('span', { class: 'chip', style: 'padding:4px 8px' }, posBadge(e.player.pos), playerLink(e.player))
                     )
                 )
             )
         );
+    }
+
+    // --- Where the market disagrees with the projection --------------------
+    // Everything else on this page descends from one consensus projection.
+    // These are the players the betting market prices differently, and that is
+    // the most actionable single thing a start/sit tool can say: the people
+    // with money at risk are not where the projection is.
+    const disagreements = sortBy(
+        evaluations.filter((e) => e.marketDisagreement),
+        (e) => Math.abs(e.marketDisagreement.share),
+        -1
+    ).slice(0, 6);
+
+    if (disagreements.length) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'section-head' },
+                el('h2', {}, 'Where Vegas disagrees'),
+                el('span', { class: 'hint' }, 'posted player props against the projection')
+            )
+        );
+        const card = el('div', { class: 'card' });
+        for (const ev of disagreements) {
+            const d = ev.marketDisagreement;
+            const moves = Object.entries(ev.marketMovement || {});
+            card.append(
+                el(
+                    'div',
+                    { class: `reason k-${d.direction === 'higher' ? 'good' : 'warn'}`, style: 'align-items:center' },
+                    el(
+                        'div',
+                        { style: 'min-width:0;flex:1' },
+                        el(
+                            'div',
+                            { class: 'row', style: 'gap:8px' },
+                            posBadge(ev.player.pos),
+                            el('span', { style: 'font-weight:600' }, playerLink(ev.player)),
+                            ev.opponent ? el('span', { class: 'tiny dim' }, `vs ${ev.opponent}`) : null
+                        ),
+                        el('div', { class: 'r-detail' },
+                            d.text,
+                            moves.length
+                                ? ` Lines have moved since open: ${moves
+                                      .map(([k, m]) => `${PROP_LABEL[k] || k} ${m.change > 0 ? '+' : ''}${round(m.change, 1)}`)
+                                      .join(', ')}.`
+                                : '')
+                    ),
+                    el(
+                        'div',
+                        { class: 'num nowrap', style: 'text-align:right' },
+                        el('div', { class: d.direction === 'higher' ? 'good' : 'bad' },
+                            `${d.share > 0 ? '+' : ''}${Math.round(d.share * 100)}%`),
+                        el('div', { class: 'tiny dim' }, `${round(d.market, 1)} vs ${round(d.projection, 1)}`)
+                    )
+                )
+            );
+        }
+        wrap.append(card);
     }
 
     // --- Slate weather -----------------------------------------------------

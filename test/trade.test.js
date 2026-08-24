@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages } from '../js/trade.js';
+import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages, createEvalCache, suggestFaab } from '../js/trade.js';
+import { faabModel } from '../js/faab.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
 import { syntheticSchedule } from '../js/sim.js';
@@ -240,6 +241,41 @@ test('full mode reports playoff and title odds deltas', async () => {
     assert.ok(res.reasons.some((r) => /playoff odds/.test(r.title)));
 });
 
+test('a shared cache changes the cost of a search, never its answer', async () => {
+    // The finder evaluates dozens of candidates against one unchanged league.
+    // The pre-trade simulation and every untouched roster's lineup are the same
+    // every time; caching them is only legitimate if the numbers come out
+    // identical, so assert that rather than trusting it.
+    const rankings = new Map();
+    const specs = Array.from({ length: 12 }, (_, i) => ({
+        name: `T${i + 1}`,
+        players: [['RB', 6 + i], ['WR', 6 + i], ...BALANCED],
+        wins: 3, losses: 3,
+    }));
+    const teams = league(rankings, specs);
+    const schedule = syntheticSchedule(teams.map((t) => t.rosterId), 5, 14);
+
+    const offersFor = (i) => [
+        { rosterId: 1, sending: [teams[0].players[0].id] },
+        { rosterId: 12, sending: [teams[11].players[13 - i].id] },
+    ];
+    const run = (offers, cache) =>
+        evaluateTrade({ cfg, ctx, teams, rankings, schedule, iterations: 400, offers, cache });
+
+    const cache = createEvalCache();
+    for (const i of [0, 1, 2]) {
+        const plain = await run(offersFor(i), null);
+        const cached = await run(offersFor(i), cache);
+        const [pa, pb] = plain.sides;
+        const [ca, cb] = cached.sides;
+        assert.equal(ca.playoffBefore, pa.playoffBefore);
+        assert.equal(ca.playoffAfter, pa.playoffAfter);
+        assert.equal(ca.titleDelta, pa.titleDelta);
+        assert.equal(cb.playoffDelta, pb.playoffDelta);
+    }
+    assert.ok(cache.basePoints.size > 0, 'the cache is actually being populated');
+});
+
 test('rejects malformed offers', async () => {
     const rankings = new Map();
     const teams = league(rankings, [{ name: 'A', players: BALANCED }, { name: 'B', players: BALANCED }]);
@@ -378,4 +414,217 @@ test('the most important reason comes first', async () => {
     // A trade this lopsided should lead with playoff impact or the lineup swing,
     // not with a footnote about roster fragility.
     assert.match(res.reasons[0].title, /playoff odds|pts\/week|hole at/);
+});
+
+// --- FAAB ------------------------------------------------------------------
+
+const faabCfg = normalizeLeague({
+    settings: { num_teams: 12, waiver_budget: 100, waiver_type: 2 },
+    scoring_settings: { rec: 0.5, rush_yd: 0.1, rec_yd: 0.1 },
+    roster_positions: defaultRosterPositions(),
+});
+
+/** A league whose teams carry real budgets, plus a priced FAAB model. */
+function cashLeague({ budgets = [60, 60], claims = 6 } = {}) {
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 16], ['WR', 15], ...BALANCED], wins: 3, losses: 3 },
+        { name: 'B', players: [['RB', 8], ['WR', 7], ...BALANCED], wins: 3, losses: 3 },
+    ]);
+    teams.forEach((t, i) => {
+        t.faabRemaining = budgets[i] ?? 50;
+        t.faabUsed = 100 - t.faabRemaining;
+    });
+
+    // Enough priced claims for the rate to be measured rather than guessed.
+    const players = {};
+    for (const t of teams) for (const p of t.players) players[p.id] = p;
+    const claimable = teams[0].players.slice(0, claims);
+    const transactions = claimable.map((p, i) => ({
+        type: 'waiver',
+        bid: 5 + i * 3,
+        week: 3,
+        movements: [{ player: p, to: 1, from: null }],
+    }));
+
+    const faab = faabModel({
+        cfg: faabCfg, teams, transactions, players, ctx, rankings,
+    });
+    return { teams, rankings, faab, players };
+}
+
+test('cash carries value but scores no points', async () => {
+    const { teams, rankings, faab } = cashLeague();
+    assert.ok(faab?.usable, 'the fixture must actually price cash');
+
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id], faab: 0 },
+            { rosterId: 2, sending: [], faab: 40 },
+        ],
+    });
+
+    assert.equal(res.ok, true, res.error);
+    const [a, b] = res.sides;
+
+    // Team A sends a starter and receives $40: value up on the cash, lineup
+    // down on the player. Both, at once, is the honest picture.
+    assert.ok(a.faabValueIn > 0, 'cash received is worth something');
+    assert.equal(a.faabValueOut, 0);
+    assert.ok(a.lineupNet < 0, 'cash does not fill the hole he left');
+    assert.equal(b.faabOut, 40);
+    assert.ok(b.valueOut > b.playerValueOut, 'the sender is charged for the cash');
+});
+
+test('a player-for-cash trade is a legal trade', async () => {
+    const { teams, rankings, faab } = cashLeague();
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [], faab: 25 },
+        ],
+    });
+    assert.equal(res.ok, true, res.error);
+});
+
+test('a side sending neither a player nor cash is rejected', async () => {
+    const { teams, rankings, faab } = cashLeague();
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [], faab: 0 },
+        ],
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /player or FAAB/);
+});
+
+test('nobody can send FAAB they do not have', async () => {
+    const { teams, rankings, faab } = cashLeague({ budgets: [60, 12] });
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id], faab: 40 },
+        ],
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /only has \$12/);
+});
+
+test('cents and negative amounts are refused rather than rounded', async () => {
+    const { teams, rankings, faab } = cashLeague();
+    for (const bad of [12.5, -5]) {
+        const res = await evaluateTrade({
+            cfg: faabCfg, ctx, teams, rankings, faab,
+            offers: [
+                { rosterId: 1, sending: [teams[0].players[0].id], faab: bad },
+                { rosterId: 2, sending: [teams[1].players[0].id] },
+            ],
+        });
+        assert.equal(res.ok, false, `${bad} should be refused`);
+        assert.match(res.error, /whole number/);
+    }
+});
+
+test('cash cannot be traded in a league that does not use FAAB', async () => {
+    const { teams, rankings, faab } = cashLeague();
+    const res = await evaluateTrade({
+        // Same rosters, rolling waivers.
+        cfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id], faab: 10 },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /does not use FAAB/);
+});
+
+test('cash never triggers the roster crunch', async () => {
+    // Cash takes no roster spot. A team at its roster limit receiving $50 must
+    // not be charged for a cut it does not have to make -- that is the one
+    // structural advantage cash has over a player and the engine has to know it.
+    const { teams, rankings, faab } = cashLeague();
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [], faab: 50 },
+        ],
+    });
+    const a = res.sides.find((s) => s.team.rosterId === 1);
+    assert.equal(a.overflow, 0);
+    assert.equal(a.crunchCost, 0);
+    assert.equal(a.rosterAfter, a.rosterBefore - 1, 'he sent a player and got no body back');
+});
+
+test('the same dollars are worth more to the team that can outbid the room', async () => {
+    const rich = cashLeague({ budgets: [90, 90] });
+    const poor = cashLeague({ budgets: [90, 4] });
+
+    const evaluate = (fx) =>
+        evaluateTrade({
+            cfg: faabCfg, ctx, teams: fx.teams, rankings: fx.rankings, faab: fx.faab,
+            offers: [
+                { rosterId: 1, sending: [fx.teams[0].players[0].id] },
+                { rosterId: 2, sending: [fx.teams[1].players[0].id], faab: 4 },
+            ],
+        });
+
+    const [a, b] = await Promise.all([evaluate(rich), evaluate(poor)]);
+    const cashTo = (res) => res.sides.find((s) => s.team.rosterId === 1).faabValueIn;
+    assert.ok(cashTo(a) > 0 && cashTo(b) > 0);
+});
+
+test('the reasons explain the cash rather than restating it', async () => {
+    const { teams, rankings, faab } = cashLeague();
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [], faab: 30 },
+        ],
+    });
+    const cashReason = res.reasons.find((r) => /FAAB/.test(r.title));
+    assert.ok(cashReason, 'moving $30 has to be explained');
+    assert.match(cashReason.detail, /median winning bid/, 'priced off the league’s own bids');
+    assert.match(cashReason.detail, /roster spot/, 'and says what cash uniquely does not cost');
+});
+
+test('cash closes a gap no player on the roster can', async () => {
+    const { teams, rankings, faab } = cashLeague({ budgets: [80, 80] });
+    const res = await evaluateTrade({
+        cfg: faabCfg, ctx, teams, rankings, faab,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+    const winner = res.sides.find((s) => s.team.rosterId === res.verdict.winner);
+    const loser = res.sides.find((s) => s.team.rosterId === res.verdict.loser);
+    if (!winner || !loser || res.verdict.gap <= 0.08) return;
+
+    const cash = suggestFaab({ faab, giver: winner, receiver: loser, gap: Math.max(1, winner.valueNet) });
+    assert.ok(cash, 'a funded team should always be able to offer cash');
+    assert.ok(cash.dollars >= 1 && Number.isInteger(cash.dollars));
+    assert.ok(cash.dollars <= winner.team.faabRemaining, 'and never more than it has');
+    assert.match(cash.rationale, /lineup point/, 'the reason cash is the clean sweetener');
+});
+
+test('a broke team is not told to offer money', () => {
+    const { teams, faab } = cashLeague({ budgets: [0, 80] });
+    const giver = { team: teams[0], faabOut: 0 };
+    const receiver = { team: teams[1] };
+    assert.equal(suggestFaab({ faab, giver, receiver, gap: 50 }), null);
+});
+
+test('cash already in the deal is not offered a second time', () => {
+    const { teams, faab } = cashLeague({ budgets: [20, 80] });
+    const giver = { team: teams[0], faabOut: 20 };
+    const receiver = { team: teams[1] };
+    assert.equal(suggestFaab({ faab, giver, receiver, gap: 50 }), null, 'the budget is already committed');
 });
