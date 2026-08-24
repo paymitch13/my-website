@@ -406,3 +406,262 @@ test('a package never sends and receives the same player', async () => {
         assert.equal(new Set(t.gives.map((e) => e.player.id)).size, t.gives.length, 'no duplicate pieces');
     }
 });
+
+// --- Naming a player -------------------------------------------------------
+//
+// The open search infers what I need from roster shape. Naming a player is a
+// different question -- I have declared the need, and the answer is a price.
+
+/** A league where team 2 owns a clear stud and team 1 has pieces to pay with. */
+function targetLeague() {
+    const { projections, mk, rank } = pool();
+    const teams = [];
+    const add = (rosterId, name, spec) => {
+        const players = spec.map(([pos, ppg]) => mk(pos, ppg));
+        teams.push({ rosterId, name, players, wins: 3, losses: 3, ties: 0, pointsFor: 700 });
+    };
+    add(1, 'Me', [
+        ['QB', 18], ['RB', 15], ['RB', 14], ['RB', 13], ['RB', 12],
+        ['WR', 12], ['WR', 11], ['WR', 10], ['TE', 9], ['K', 7], ['DEF', 6],
+    ]);
+    add(2, 'Star Owner', [
+        ['QB', 17], ['WR', 26], ['WR', 8], ['WR', 7], ['RB', 7], ['RB', 6],
+        ['TE', 8], ['K', 7], ['DEF', 6],
+    ]);
+    for (let i = 3; i <= 10; i++) {
+        add(i, `Team ${i}`, [
+            ['QB', 16], ['RB', 12], ['RB', 11], ['WR', 13], ['WR', 12], ['WR', 11],
+            ['TE', 8], ['K', 6], ['DEF', 6],
+        ]);
+    }
+    const rankings = rank(teams);
+    const star = teams[1].players.find((p) => p.pos === 'WR' && p.name === 'WR-26');
+    return { teams, rankings, projections, star, mine: teams[0] };
+}
+
+test('naming a target answers what he would cost', async () => {
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        want: [star.id],
+        iterations: 80, limits: { stage2Keep: 60, stage3Keep: 3 },
+    });
+
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.mode, 'target');
+    const all = [...res.trades, ...res.others];
+    assert.ok(all.length, 'a funded roster should be able to make an offer');
+
+    for (const t of all) {
+        assert.ok(t.gets.some((e) => e.player.id === star.id), 'every package has to contain him');
+        assert.equal(t.other.rosterId, 2, 'and go to the man who owns him');
+        assert.ok(t.theirGain > 0, 'and be one they would actually take');
+    }
+});
+
+test('the cheapest acceptable offer is ranked first', async () => {
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        want: [star.id],
+        iterations: 80, limits: { stage2Keep: 60, stage3Keep: 4 },
+    });
+
+    const all = [...res.trades, ...res.others];
+    // "What would it take" wants the least painful version at the top, and the
+    // cost to my lineup is exactly how painful it is.
+    const best = all[0];
+    for (const t of all) assert.ok(best.myGain >= t.myGain - 1e-9, 'the top offer must be the one that costs me least');
+});
+
+test('an offer that costs me lineup points is shown, not hidden', async () => {
+    // The open search drops anything that lowers my odds. Asking what a player
+    // costs and being shown nothing because every version costs something is
+    // not an answer -- the cost IS the answer.
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        want: [star.id],
+        schedule: syntheticSchedule(teams.map((t) => t.rosterId), 7, 14),
+        iterations: 100, limits: { stage2Keep: 40, stage3Keep: 4 },
+    });
+    assert.ok([...res.trades, ...res.others].length, 'a price exists even when it is a steep one');
+});
+
+test('naming a player I already have is refused with a reason', async () => {
+    const { teams, rankings, projections, mine } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, want: [mine.players[1].id], iterations: 50,
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /already have him/);
+});
+
+test('two targets on different rosters is refused as a three-team trade', async () => {
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const other = teams[2].players[0];
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, want: [star.id, other.id], iterations: 50,
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /three-team/);
+});
+
+test('a player nobody rosters is refused rather than silently returning nothing', async () => {
+    const { teams, rankings, projections } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, want: ['not-a-player'], iterations: 50,
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /not on a roster/);
+});
+
+// --- Shopping a player ------------------------------------------------------
+
+test('offering a player searches the whole league for what comes back', async () => {
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const bait = teams[0].players.find((p) => p.pos === 'RB');
+
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        offer: [bait.id],
+        requireMutualGain: false,
+        iterations: 80, limits: { stage2Keep: 80, stage3Keep: 3 },
+    });
+
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.mode, 'offer');
+    const all = [...res.trades, ...res.others];
+    assert.ok(all.length, 'a startable back should draw some interest');
+    for (const t of all) {
+        assert.ok(t.gives.some((e) => e.player.id === bait.id), 'every offer has to contain the bait');
+    }
+    // The whole league is in play, not one counterparty.
+    assert.ok(new Set(all.map((t) => t.other.rosterId)).size >= 1);
+});
+
+test('shopping a stud can bring back two starters', async () => {
+    // One good player back is not the only answer to "what can I get for him".
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    // The RB-rich team's best back: the piece a rebuilding team would want
+    // quantity for.
+    const stud = teams[0].players.filter((p) => p.pos === 'RB')[0];
+
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        offer: [stud.id], requireMutualGain: false,
+        iterations: 60, limits: { stage2Keep: 120, stage3Keep: 2 },
+    });
+    const all = [...res.trades, ...res.others];
+    assert.ok(all.some((t) => t.gets.length === 2), 'one for two must be reachable');
+});
+
+test('offering somebody else’s player is refused', async () => {
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, offer: [teams[1].players[0].id], iterations: 50,
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /your own roster/);
+});
+
+test('naming both sides fixes the target and the bait together', async () => {
+    const { teams, rankings, projections, star, mine } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const bait = mine.players.find((p) => p.pos === 'RB');
+
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        want: [star.id], offer: [bait.id],
+        iterations: 80, limits: { stage2Keep: 60, stage3Keep: 3 },
+    });
+
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.mode, 'target+offer');
+    const all = [...res.trades, ...res.others];
+    assert.ok(all.length, '"here is my piece, what else do I add" has to have an answer');
+    for (const t of all) {
+        assert.ok(t.gives.some((e) => e.player.id === bait.id), 'the named bait is in every package');
+        assert.ok(t.gets.some((e) => e.player.id === star.id), 'and so is the target');
+    }
+});
+
+test('what it takes means the CHEAPEST package, not every superset of it', async () => {
+    // Losing a player can never raise my optimal lineup, so once an offer is
+    // accepted every superset of it costs me more and buys me nothing. The
+    // search used to list four versions of the same deal, identical in both
+    // gain columns, with the extra bodies thrown in free.
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, want: [star.id],
+        iterations: 60, limits: { stage2Keep: 200, stage3Keep: 3 },
+    });
+
+    const all = [...res.trades, ...res.others];
+    const sets = all.map((t) => new Set(t.gives.map((e) => e.player.id)));
+    for (let i = 0; i < sets.length; i++) {
+        for (let j = 0; j < sets.length; j++) {
+            if (i === j) continue;
+            const strictSuperset =
+                sets[i].size > sets[j].size && [...sets[j]].every((id) => sets[i].has(id));
+            assert.ok(
+                !strictSuperset,
+                `offer ${i} sends everything offer ${j} sends and more, for the same player`
+            );
+        }
+    }
+});
+
+test('an extra piece has to buy something on the get side too', async () => {
+    // The mirror of the give-side rule: taking an extra body back that leaves
+    // my lineup exactly where it was is a roster spot spent on nothing.
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, want: [star.id],
+        iterations: 60, limits: { stage2Keep: 200, stage3Keep: 2 },
+    });
+
+    const all = [...res.trades, ...res.others];
+    const key = (t) => t.gives.map((e) => e.player.id).sort().join('+');
+    const byGive = new Map();
+    for (const t of all) {
+        const k = key(t);
+        if (!byGive.has(k)) byGive.set(k, []);
+        byGive.get(k).push(t);
+    }
+    for (const group of byGive.values()) {
+        const solo = group.find((t) => t.gets.length === 1);
+        if (!solo) continue;
+        for (const bigger of group.filter((t) => t.gets.length > 1)) {
+            assert.ok(
+                bigger.myGain > solo.myGain,
+                `taking ${bigger.gets.length} back for the same price must beat taking 1 ` +
+                    `(${bigger.myGain.toFixed(2)} vs ${solo.myGain.toFixed(2)})`
+            );
+        }
+    }
+});
+
+test('a package never sends and receives the same player, in any mode', async () => {
+    const { teams, rankings, projections, star } = targetLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, want: [star.id],
+        iterations: 60, limits: { stage2Keep: 80, stage3Keep: 2 },
+    });
+    for (const t of [...res.trades, ...res.others]) {
+        const give = new Set(t.gives.map((e) => e.player.id));
+        for (const g of t.gets) assert.ok(!give.has(g.player.id));
+    }
+});

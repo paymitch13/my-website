@@ -35,19 +35,25 @@ const packageKey = (c) =>
  * @param {Map}    input.rankings     the user's board
  * @param {Array}  [input.schedule]
  * @param {Map}    [input.odds]       rosterId -> playoff odds, for posture
+ * @param {Array}  [input.want]       player ids I am trying to acquire. Pins the
+ *   counterparty to whoever owns them and every package to include them, which
+ *   turns the search from "find me a deal" into "what would this cost".
+ * @param {Array}  [input.offer]      player ids I am willing to send. Every
+ *   package includes them; the search fills in the rest.
  * @param {object} [input.limits]
  */
 export async function findTrades(input) {
     const {
         cfg, ctx, teams, myRosterId, rankings, schedule = null,
         playoffOdds = null, iterations = 1200,
+        want = [], offer = [],
         limits = {},
     } = input;
 
     // Generous by default: the funnel exists to make the search affordable, not
     // to hide what it found. Everything that survives stage 2 is returned; only
     // the top slice gets the expensive odds simulation.
-    const { stage2Keep = 150, stage3Keep = 25 } = limits;
+    const { stage2Keep = 150, stage3Keep = 25, maxPieces = 3 } = limits;
     const { requireMutualGain = true, minGain = 0.05 } = input;
 
     const me = teams.find((t) => t.rosterId === myRosterId);
@@ -72,131 +78,250 @@ export async function findTrades(input) {
     });
 
     const mine = needsMap.get(myRosterId);
+
+    // --- Named players ------------------------------------------------------
+    // A target changes what the search IS. Instead of inferring what I need
+    // from roster shape, I have declared it, so stage 1's whole job -- guessing
+    // which positions two teams might match on -- is skipped for that
+    // counterparty. Nobody wants to be told their target is unavailable because
+    // a need heuristic did not pick that position.
+    const named = resolveNamed({ want, offer, mine, needsMap, others, myRosterId });
+    if (named.error) return { ok: false, error: named.error };
+
+    const { wantEntries, offerEntries, targetTeam, targetNeeds } = named;
+    const targeted = wantEntries.length > 0;
+    const shopping = offerEntries.length > 0;
+
     const pairs = [];
+    if (targeted) {
+        // One counterparty, no position filter: they own the player.
+        pairs.push({ other: targetTeam, theirs: targetNeeds, score: Infinity, pinned: true });
+    } else {
+        for (const other of others) {
+            const theirs = needsMap.get(other.rosterId);
+            if (!theirs) continue;
 
-    for (const other of others) {
-        const theirs = needsMap.get(other.rosterId);
-        if (!theirs) continue;
+            // What I need that they can spare, and what they need that I can
+            // spare. Falling back to relative shape when there is no absolute
+            // match is what keeps a strong roster -- above average everywhere,
+            // short of nothing -- from being told that no trade in the league
+            // exists. It only widens what gets LOOKED at; stage 2 still has to
+            // find a deal that improves both lineups before anything is
+            // proposed.
+            const iWant = orRelative(matchingPositions(mine, theirs), mine, theirs);
+            const theyWant = orRelative(matchingPositions(theirs, mine), theirs, mine);
+            if (!iWant.length || !theyWant.length) continue;
 
-        // What I need that they can spare, and what they need that I can spare.
-        // Falling back to relative shape when there is no absolute match is
-        // what keeps a strong roster -- above average everywhere, short of
-        // nothing -- from being told that no trade in the league exists. It
-        // only widens what gets LOOKED at; stage 2 still has to find a deal
-        // that improves both lineups before anything is proposed.
-        const iWant = orRelative(matchingPositions(mine, theirs), mine, theirs);
-        const theyWant = orRelative(matchingPositions(theirs, mine), theirs, mine);
-        if (!iWant.length || !theyWant.length) continue;
-
-        for (const want of iWant.slice(0, 4)) {
-            for (const give of theyWant.slice(0, 4)) {
-                // Same-position deals are the most common shape there is --
-                // my WR3 plus a piece for your WR1 -- and were forbidden
-                // outright. They are allowed now; stage 2's mutual-gain filter
-                // is what decides whether they are any good.
-                pairs.push({ other, theirs, wantPos: want.pos, givePos: give.pos, score: want.score + give.score });
+            for (const wantPos of iWant.slice(0, 4)) {
+                for (const givePos of theyWant.slice(0, 4)) {
+                    // Same-position deals are the most common shape there is --
+                    // my WR3 plus a piece for your WR1 -- and were forbidden
+                    // outright. They are allowed now; stage 2's mutual-gain
+                    // filter is what decides whether they are any good.
+                    pairs.push({
+                        other,
+                        theirs,
+                        wantPos: wantPos.pos,
+                        givePos: givePos.pos,
+                        score: wantPos.score + givePos.score,
+                    });
+                }
             }
         }
     }
 
     // --- Stage 2: lineup solve, both directions ----------------------------
     const candidates = [];
+    const myBase = mine.lineup.points;
+    const forcedGiveIds = new Set(offerEntries.map((e) => e.player.id));
+
+    /**
+     * Solve both lineups for one candidate package and keep it if it works.
+     * Returns the gains either way, so a bigger package can be measured against
+     * the smaller one it is built on.
+     */
+    function consider({ other, theirs, gives, gets, mustBeat = null, mustBeatMine = null, pinned = false }) {
+        const giveIds = new Set(gives.map((e) => e.player.id));
+        const getIds = new Set(gets.map((e) => e.player.id));
+        // A package that sends and receives the same man is not a package.
+        for (const id of getIds) if (giveIds.has(id)) return null;
+
+        const myAfter = optimizeLineup(
+            [...mine.entries.filter((e) => !giveIds.has(e.player.id)), ...gets],
+            cfg.starterSlots
+        ).points;
+        const theirAfter = optimizeLineup(
+            [...theirs.entries.filter((e) => !getIds.has(e.player.id)), ...gives],
+            cfg.starterSlots
+        ).points;
+
+        const myGain = myAfter - myBase;
+        const theirGain = theirAfter - theirBaseOf(theirs);
+        const gains = { myGain, theirGain };
+
+        // A named target is a declared want. "This costs you 1.2 points a week
+        // of lineup" is the ANSWER to what it would take, not a reason to hide
+        // the offer -- so the my-gain gate is dropped and the cost is reported.
+        if (!pinned && myGain <= minGain) return gains;
+        if (requireMutualGain && theirGain <= minGain) return gains;
+        // A bigger package has to buy something, on whichever side grew. An
+        // extra piece that leaves the lineup exactly where the smaller version
+        // left it is a body moved for nothing, and listing four of those above
+        // the deal they are variations of is worse than not finding them.
+        if (mustBeat && theirGain <= mustBeat.theirGain + minGain) return gains;
+        if (mustBeatMine && myGain <= mustBeatMine.myGain + minGain) return gains;
+
+        candidates.push({
+            other,
+            // Kept as arrays throughout so multi-player packages are a
+            // first-class shape rather than a special case.
+            gives,
+            gets,
+            give: gives[0],
+            get: gets[0],
+            myGain,
+            theirGain,
+            // Why this partner: the shape of their roster, so a card can say
+            // "thin at RB, deep at WR" instead of asking the reader to take the
+            // pairing on faith.
+            theirNeed: biggestNeed(theirs),
+            theirSurplus: biggestSurplus(theirs),
+            jointGain: myGain + theirGain,
+            neutralGap: sum(gets, (e) => e.value) - sum(gives, (e) => e.value),
+            mutual: theirGain > minGain,
+            pinned,
+        });
+        return gains;
+    }
+
+    const baseCache = new Map();
+    function theirBaseOf(theirs) {
+        if (!baseCache.has(theirs)) baseCache.set(theirs, theirs.lineup.points);
+        return baseCache.get(theirs);
+    }
+
     for (const pair of sortBy(pairs, (p) => p.score, -1)) {
         const { other, theirs } = pair;
 
+        if (targeted) {
+            searchForTarget(other, theirs);
+            continue;
+        }
+
+        // What I can send: pinned to the named players when there are any, so
+        // "here is my trade bait, what can I get" is answered with offers that
+        // actually contain the bait.
+        const offers = shopping
+            ? offerEntries
+            : mine.entries.filter((e) => e.player.pos === pair.givePos && TRADEABLE.has(e.player.pos));
         const targets = theirs.entries.filter(
-            (e) => e.player.pos === pair.wantPos && TRADEABLE.has(e.player.pos)
-        );
-        const offers = mine.entries.filter(
-            (e) => e.player.pos === pair.givePos && TRADEABLE.has(e.player.pos)
+            (e) =>
+                TRADEABLE.has(e.player.pos) &&
+                (shopping || e.player.pos === pair.wantPos)
         );
         if (!targets.length || !offers.length) continue;
 
-        const myBase = mine.lineup.points;
-        const theirBase = theirs.lineup.points;
+        if (shopping) {
+            // The give side is settled, so the search is over what comes back.
+            for (const target of sortBy(targets, (e) => e.value, -1).slice(0, 10)) {
+                const solo = consider({ other, theirs, gives: offerEntries, gets: [target] });
+
+                // One good player back is not the only answer to "what can I
+                // get for him". Two starters for one stud is the same
+                // consolidation trade read from the other end, and a team
+                // shopping a star is often the team that wants quantity.
+                if (solo && sum(offerEntries, (e) => e.value) > target.value * 1.15) {
+                    for (const second of cheapest(theirs.entries, [target], 4)) {
+                        consider({
+                            other, theirs, gives: offerEntries, gets: [target, second],
+                            mustBeatMine: solo,
+                        });
+                    }
+                }
+            }
+            continue;
+        }
 
         for (const target of sortBy(targets, (e) => e.value, -1).slice(0, 8)) {
-            for (const offer of sortBy(offers, (e) => e.value, -1).slice(0, 8)) {
-                if (offer.player.id === target.player.id) continue;
+            for (const give of sortBy(offers, (e) => e.value, -1).slice(0, 8)) {
+                if (give.player.id === target.player.id) continue;
 
                 // 1-for-1
-                const solo = consider([offer], [target]);
+                const solo = consider({ other, theirs, gives: [give], gets: [target] });
 
                 // 2-for-1 consolidation: two of my pieces for one of theirs.
                 // This is the trade that wins leagues, and the value model was
                 // built to price it -- the convex curve exists precisely so a
                 // stud beats two good players -- but the search could not
                 // produce one. The second piece comes from my surplus.
-                if (target.value > offer.value * 1.15) {
-                    for (const second of sweeteners(mine.entries, [offer, target], 5)) {
+                if (target.value > give.value * 1.15) {
+                    for (const second of cheapest(mine.entries, [give, target], 5)) {
                         // The extra piece has to buy something. A second player
                         // who leaves their lineup exactly where the one-for-one
                         // left it is a player given away for nothing, and the
                         // search was proposing five of those in a row above the
                         // deal they were variations of.
-                        consider([offer, second], [target], solo);
+                        consider({ other, theirs, gives: [give, second], gets: [target], mustBeat: solo });
                     }
                 }
             }
         }
+    }
 
-        /** Extra pieces I can most afford to include, cheapest useful first. */
-        function sweeteners(entries, exclude, limit) {
-            const skip = new Set(exclude.map((e) => e.player.id));
-            return sortBy(
-                entries.filter(
-                    (e) => !skip.has(e.player.id) && TRADEABLE.has(e.player.pos) && e.value > 0
-                ),
-                (e) => e.value
-            ).slice(0, limit);
-        }
+    /**
+     * What it would take to pry a named player loose.
+     *
+     * This is a different question from "find me a deal", and it wants a
+     * different search: the return is fixed, so the whole job is building the
+     * cheapest package of MY players that gets them to yes. Packages are
+     * enumerated rather than grown greedily, because the cheapest acceptable
+     * offer is often not the one built from my most obvious trade chip.
+     */
+    function searchForTarget(other, theirs) {
+        const pool = sortBy(
+            mine.entries.filter(
+                (e) =>
+                    TRADEABLE.has(e.player.pos) &&
+                    !forcedGiveIds.has(e.player.id) &&
+                    e.value > 0
+            ),
+            (e) => e.value,
+            -1
+        ).slice(0, 12);
 
-        /**
-         * Solve both lineups for one candidate package and keep it if it works.
-         * Returns the gains either way, so a bigger package can be measured
-         * against the smaller one it is built on.
-         */
-        function consider(giveEntries, getEntries, mustBeat = null) {
-            const giveIds = new Set(giveEntries.map((e) => e.player.id));
-            const getIds = new Set(getEntries.map((e) => e.player.id));
+        const targetValue = sum(wantEntries, (e) => e.value);
 
-            const myAfter = optimizeLineup(
-                [...mine.entries.filter((e) => !giveIds.has(e.player.id)), ...getEntries],
-                cfg.starterSlots
-            ).points;
-            const theirAfter = optimizeLineup(
-                [...theirs.entries.filter((e) => !getIds.has(e.player.id)), ...giveEntries],
-                cfg.starterSlots
-            ).points;
+        // Minimal packages only.
+        //
+        // Losing a player can never RAISE my optimal lineup, so any superset of
+        // an offer they have already accepted costs me more and buys me
+        // nothing -- it is strictly dominated. Enumerating subsets without
+        // pruning them produced four versions of the same deal, identical in
+        // both gain columns, with the extra bodies thrown in for free. Since
+        // packages are visited smallest first, an accepted set can prune every
+        // superset that follows it.
+        const accepted = [];
+        const dominated = (ids) => accepted.some((set) => [...set].every((id) => ids.has(id)));
 
-            const myGain = myAfter - myBase;
-            const theirGain = theirAfter - theirBase;
-            const gains = { myGain, theirGain };
+        for (const gives of packagesOf(pool, offerEntries, maxPieces)) {
+            const ids = new Set(gives.map((e) => e.player.id));
+            if (dominated(ids)) continue;
 
-            if (myGain <= minGain) return gains;
-            if (requireMutualGain && theirGain <= minGain) return gains;
-            if (mustBeat && theirGain <= mustBeat.theirGain + minGain) return gains;
+            const solo = consider({ other, theirs, gives, gets: wantEntries, pinned: true });
+            if (!solo) continue;
+            if (solo.theirGain > minGain) accepted.push(ids);
 
-            candidates.push({
-                other,
-                // Kept as arrays throughout so multi-player packages are a
-                // first-class shape rather than a special case.
-                gives: giveEntries,
-                gets: getEntries,
-                give: giveEntries[0],
-                get: getEntries[0],
-                myGain,
-                theirGain,
-                // Why this partner: the shape of their roster, so a card can
-                // say "thin at RB, deep at WR" instead of asking the reader to
-                // take the pairing on faith.
-                theirNeed: biggestNeed(theirs),
-                theirSurplus: biggestSurplus(theirs),
-                jointGain: myGain + theirGain,
-                neutralGap: sum(getEntries, (e) => e.value) - sum(giveEntries, (e) => e.value),
-                mutual: theirGain > minGain,
-            });
-            return gains;
+            // Overpaying badly is a signal, not a result. If my package is
+            // worth far more than the man I am chasing, the realistic version
+            // of the deal has something coming back the other way.
+            if (sum(gives, (e) => e.value) > targetValue * 1.2) {
+                for (const filler of cheapest(theirs.entries, wantEntries, 3)) {
+                    consider({
+                        other, theirs, gives, gets: [...wantEntries, filler],
+                        pinned: true, mustBeatMine: solo,
+                    });
+                }
+            }
         }
     }
 
@@ -204,7 +329,7 @@ export async function findTrades(input) {
     // pairings.
     const seen = new Set();
     const unique = [];
-    for (const c of sortBy(candidates, (x) => x.jointGain, -1)) {
+    for (const c of sortBy(candidates, (x) => (targeted ? x.myGain : x.jointGain), -1)) {
         const key = packageKey(c);
         if (seen.has(key)) continue;
         seen.add(key);
@@ -215,7 +340,18 @@ export async function findTrades(input) {
     if (!shortlist.length) {
         // Same shape whether or not anything was found, so callers never have
         // to guard for missing fields.
-        return { ok: true, trades: [], others: [], scanned: pairs.length, shortlisted: 0, simulated: 0, rejected: 0 };
+        return {
+            ok: true,
+            trades: [],
+            others: [],
+            scanned: pairs.length,
+            shortlisted: 0,
+            simulated: 0,
+            rejected: 0,
+            mode: modeOf(targeted, shopping),
+            want: wantEntries,
+            offer: offerEntries,
+        };
     }
 
     // --- Stage 3: full evaluation with the odds simulation ------------------
@@ -269,12 +405,18 @@ export async function findTrades(input) {
     // side likes it. Lineup points can rise while odds fall -- giving up depth
     // that mattered in a specific week, for instance -- and the odds are the
     // number that actually decides the season.
-    const worthSending = evaluated.filter((e) => {
-        if (e.myTitleDelta === null && e.myPlayoffDelta === null) return true;
-        const title = e.myTitleDelta ?? 0;
-        const playoff = e.myPlayoffDelta ?? 0;
-        return title >= -0.0005 && playoff >= -0.0005;
-    });
+    //
+    // A NAMED TARGET is exempt. Asking what a player would cost and being shown
+    // nothing because every version of the deal costs something is not an
+    // answer; the cost is the answer, and it is reported on every card.
+    const worthSending = targeted
+        ? evaluated
+        : evaluated.filter((e) => {
+              if (e.myTitleDelta === null && e.myPlayoffDelta === null) return true;
+              const title = e.myTitleDelta ?? 0;
+              const playoff = e.myPlayoffDelta ?? 0;
+              return title >= -0.0005 && playoff >= -0.0005;
+          });
 
     const ranked = sortBy(
         worthSending,
@@ -301,6 +443,94 @@ export async function findTrades(input) {
         shortlisted: shortlist.length,
         simulated: evaluated.length,
         rejected: evaluated.length - worthSending.length,
+        mode: modeOf(targeted, shopping),
+        want: wantEntries,
+        offer: offerEntries,
+    };
+}
+
+const modeOf = (targeted, shopping) =>
+    targeted && shopping ? 'target+offer' : targeted ? 'target' : shopping ? 'offer' : 'open';
+
+/** The pieces I can most afford to add, cheapest useful first. */
+function cheapest(entries, exclude, limit) {
+    const skip = new Set(exclude.map((e) => e.player.id));
+    return sortBy(
+        entries.filter((e) => !skip.has(e.player.id) && TRADEABLE.has(e.player.pos) && e.value > 0),
+        (e) => e.value
+    ).slice(0, limit);
+}
+
+/**
+ * Every package of up to `max` pieces drawn from `pool`, always containing
+ * `forced`.
+ *
+ * Enumerated rather than grown greedily. The cheapest package a counterparty
+ * will accept is frequently not the one built outward from my most obvious
+ * trade chip -- two mid-round pieces they can start often beat one better
+ * player they cannot -- and a greedy walk never sees that.
+ */
+export function packagesOf(pool, forced = [], max = 3) {
+    const base = [...forced];
+    const slots = Math.max(0, max - base.length);
+    const out = [];
+    if (base.length) out.push(base);
+
+    const walk = (start, current) => {
+        if (current.length) out.push([...base, ...current]);
+        if (current.length >= slots) return;
+        for (let i = start; i < pool.length; i++) walk(i + 1, [...current, pool[i]]);
+    };
+    if (slots > 0) walk(0, []);
+
+    // Smallest first. Callers prune supersets of an offer that already worked,
+    // and that pruning is only correct if the smaller one was seen first.
+    return sortBy(out, (p) => p.length);
+}
+
+/**
+ * Turn the player ids a user typed into entries, and refuse the combinations
+ * that cannot mean anything.
+ *
+ * Every failure here is a sentence a person can act on. "Unknown player" tells
+ * nobody anything; "you already have him" and "that would be a three-team
+ * trade" tell them exactly what to change.
+ */
+function resolveNamed({ want, offer, mine, needsMap, others, myRosterId }) {
+    const offerEntries = [];
+    for (const id of offer || []) {
+        const entry = mine.entries.find((e) => e.player.id === id);
+        if (!entry) return { error: 'You can only offer players on your own roster.' };
+        offerEntries.push(entry);
+    }
+
+    if (!want?.length) return { wantEntries: [], offerEntries };
+
+    const owners = new Map();
+    const wantEntries = [];
+    for (const id of want) {
+        if (mine.entries.some((e) => e.player.id === id)) {
+            return { error: 'You already have him — pick a player on another roster.' };
+        }
+        const owner = others.find((t) => t.players.some((p) => p.id === id));
+        if (!owner) return { error: 'That player is not on a roster in this league.' };
+        const theirs = needsMap.get(owner.rosterId);
+        const entry = theirs?.entries.find((e) => e.player.id === id);
+        if (!entry) return { error: 'That player could not be valued.' };
+        owners.set(owner.rosterId, owner);
+        wantEntries.push(entry);
+    }
+
+    if (owners.size > 1) {
+        return { error: 'Those players are on different rosters, which would be a three-team trade.' };
+    }
+
+    const targetTeam = [...owners.values()][0];
+    return {
+        wantEntries,
+        offerEntries,
+        targetTeam,
+        targetNeeds: needsMap.get(targetTeam.rosterId),
     };
 }
 

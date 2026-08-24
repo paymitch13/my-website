@@ -236,6 +236,49 @@ await page.waitForTimeout(1500);
     if (!/de-vigged/i.test(text)) errors.push('vegas: the juice correction is applied but never shown');
 }
 
+// --- Naming a player in the finder ------------------------------------------
+// The engine tests prove the search honours a target. Only the browser proves a
+// manager can actually name one and read the price.
+await page.setViewportSize({ width: 1280, height: 900 });
+await page.click('#tabs .tab[data-view="finder"]');
+await page.waitForTimeout(2500);
+{
+    const targetBtn = await page.$('button:has-text("Target a player")');
+    if (!targetBtn) {
+        errors.push('finder: no way to name a target');
+    } else {
+        await targetBtn.click();
+        await page.waitForSelector('.pick', { timeout: 5000 });
+        const picked = (await page.textContent('.pick')) || '';
+        await page.click('.pick');
+        await page.waitForTimeout(4000);
+
+        const text = (await page.textContent('#view')) || '';
+        if (!/What it takes to get/.test(text)) {
+            errors.push('finder: naming a target did not reframe the results as a price');
+        }
+        if (!/I WANT/.test(text)) errors.push('finder: the named target is not shown back');
+        // The picker must offer somebody, and it must not offer my own players.
+        if (!picked.trim()) errors.push('finder: the target picker was empty');
+
+        const o = await overflowOf();
+        if (o.scrolled > 0) errors.push(`finder target: scrolls horizontally by ${o.scrolled}px`);
+        if (o.wide.length) errors.push(`finder target: overflows — ${o.wide.join(', ')}`);
+        console.log(`  finder target: "${picked.trim().slice(0, 30)}" priced, ${text.trim().length} chars`);
+
+        // Removing the chip has to put the open search back.
+        const x = await page.$('.chip button.x');
+        if (x) {
+            await x.click();
+            await page.waitForTimeout(3500);
+            const back = (await page.textContent('#view')) || '';
+            if (/What it takes to get/.test(back)) errors.push('finder: removing the target did not restore the open search');
+        } else {
+            errors.push('finder: the named target cannot be removed');
+        }
+    }
+}
+
 // --- FAAB, which only exists in the UI --------------------------------------
 // The engine tests price cash; only the browser can say whether a manager can
 // actually put it in a deal.

@@ -7,8 +7,10 @@ import { byeConflicts } from '../schedule.js';
 import { openSyncModal } from '../app.js';
 import * as store from '../store.js';
 import { encodeOffer, offerUrl } from '../share.js';
+import { valuePlayer } from '../valuation.js';
+import { formatValue } from '../tradevalue.js';
 import {
-    banner, el, emptyState, fmtDelta, fmtPctDelta, playerLink, posBadge,
+    banner, el, emptyState, fmtDelta, fmtPctDelta, pickPlayer, playerLink, posBadge,
     sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
@@ -47,13 +49,24 @@ export default function renderFinder(app) {
 
     let requireMutual = store.state.settings.finderMutualOnly !== false;
 
+    // Named players. Empty means the open search: infer what I need from roster
+    // shape. Naming somebody replaces the inference with a declaration, which
+    // is a different and usually better-informed question.
+    let want = [];
+    let offer = [];
+
     const host = el('div', {});
+    const chips = el('div', {});
     const picker = el(
         'select',
         {
             style: 'max-width:min(340px,100%)',
             onchange: (e) => {
                 mine = teams.find((t) => String(t.rosterId) === e.target.value);
+                // Named players belong to the roster they were named from.
+                want = [];
+                offer = [];
+                paintChips();
                 run();
             },
         },
@@ -87,10 +100,109 @@ export default function renderFinder(app) {
                     'Balanced only'
                 ),
                 el('button', { class: 'btn btn-sm', onclick: () => run() }, 'Search again')
-            )
+            ),
+            el(
+                'div',
+                { class: 'row', style: 'margin-top:12px;gap:8px' },
+                el('button', { class: 'btn btn-sm', onclick: addWant }, '＋ Target a player'),
+                el('button', { class: 'btn btn-sm', onclick: addOffer }, '＋ Offer a player'),
+                el('span', { class: 'tiny dim grow' },
+                    'Name a player to ask what he would cost, or name your own to ask what he would fetch.')
+            ),
+            chips
         ),
         host
     );
+
+    /** The named players, as removable chips, so the search is legible. */
+    function paintChips() {
+        chips.replaceChildren();
+        if (!want.length && !offer.length) return;
+
+        const row = (label, tone, list, drop) =>
+            list.length
+                ? el(
+                      'div',
+                      { class: 'row', style: 'gap:6px;margin-top:10px' },
+                      el('span', { class: `tiny ${tone}`, style: 'min-width:64px' }, label),
+                      ...list.map((p) =>
+                          el(
+                              'span',
+                              { class: 'chip', style: 'padding:4px 8px' },
+                              posBadge(p.pos),
+                              el('span', {}, p.name),
+                              el('button', {
+                                  class: 'x',
+                                  title: `Remove ${p.name}`,
+                                  onclick: () => { drop(p.id); paintChips(); run(); },
+                              }, '✕')
+                          )
+                      )
+                  )
+                : null;
+
+        chips.append(
+            row('I WANT', 'good', want, (id) => { want = want.filter((p) => p.id !== id); }),
+            row('I’LL SEND', 'bad', offer, (id) => { offer = offer.filter((p) => p.id !== id); })
+        );
+    }
+
+    async function addWant() {
+        // Everyone in the league except my own roster: the point is to name
+        // somebody I do not have.
+        const mineIds = new Set(mine.players.map((p) => p.id));
+        const entries = [];
+        for (const t of teams) {
+            if (t.rosterId === mine.rosterId) continue;
+            for (const p of t.players) {
+                if (mineIds.has(p.id)) continue;
+                const posRank = app.rankings.get(p.id) ?? 999;
+                entries.push({
+                    player: p,
+                    posRank,
+                    subtitle: t.name,
+                    value: valuePlayer(p, posRank, app.ctx).value,
+                });
+            }
+        }
+        const chosen = await pickPlayer({
+            title: 'Who do you want?',
+            entries: sortBy(entries.filter((e) => !want.some((w) => w.id === e.player.id)), (e) => e.value, -1),
+            emptyText: 'Nobody else is rostered in this league.',
+            formatValue: (v) => formatValue(app.tradeValue(v)),
+        });
+        if (!chosen) return;
+        // One counterparty at a time: two targets on different rosters is a
+        // three-team trade, and saying so after the search wastes a click.
+        const owner = teams.find((t) => t.players.some((p) => p.id === chosen.player.id));
+        if (want.length && owner && !want.every((w) => owner.players.some((p) => p.id === w.id))) {
+            toast('Pick targets from one roster — two owners would be a three-team trade.', 'bad');
+            return;
+        }
+        want.push(chosen.player);
+        paintChips();
+        run();
+    }
+
+    async function addOffer() {
+        const taken = new Set(offer.map((p) => p.id));
+        const entries = mine.players
+            .filter((p) => !taken.has(p.id))
+            .map((p) => {
+                const posRank = app.rankings.get(p.id) ?? 999;
+                return { player: p, posRank, value: valuePlayer(p, posRank, app.ctx).value };
+            });
+        const chosen = await pickPlayer({
+            title: 'Who are you willing to send?',
+            entries: sortBy(entries, (e) => e.value, -1),
+            emptyText: 'Every player on this roster is already in the offer.',
+            formatValue: (v) => formatValue(app.tradeValue(v)),
+        });
+        if (!chosen) return;
+        offer.push(chosen.player);
+        paintChips();
+        run();
+    }
 
     let token = 0;
     async function run() {
@@ -98,7 +210,10 @@ export default function renderFinder(app) {
         const target = mine;
         host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Searching every roster — needs, lineups, then full simulations…')));
         try {
-            const built = await build(app, target, requireMutual);
+            const built = await build(app, target, requireMutual, {
+                want: want.map((p) => p.id),
+                offer: offer.map((p) => p.id),
+            });
             if (mineNow !== token) return;
             host.replaceChildren(built);
         } catch (err) {
@@ -112,7 +227,7 @@ export default function renderFinder(app) {
     return root;
 }
 
-async function build(app, me, requireMutual = true) {
+async function build(app, me, requireMutual = true, named = { want: [], offer: [] }) {
     const { cfg, currentWeek, lastPlayed, raw, teams, schedule } = app.league;
 
     const wrap = el('div', {});
@@ -130,6 +245,8 @@ async function build(app, me, requireMutual = true) {
         playoffOdds,
         iterations: Math.min(store.state.settings.simIterations || 2000, 1200),
         requireMutualGain: requireMutual,
+        want: named.want,
+        offer: named.offer,
     });
 
     if (!res.ok) {
@@ -137,33 +254,71 @@ async function build(app, me, requireMutual = true) {
         return wrap;
     }
 
+    const targeted = res.mode === 'target' || res.mode === 'target+offer';
+    const shopping = res.mode === 'offer' || res.mode === 'target+offer';
+    const wantNames = (res.want || []).map((e) => e.player.name).join(' and ');
+    const offerNames = (res.offer || []).map((e) => e.player.name).join(' and ');
+
     wrap.append(
         el(
             'div',
             { class: 'tiles' },
-            tile('Pairings explored', res.scanned ?? 0, 'positions where you and a rival match up'),
-            tile('Offers that work', res.shortlisted ?? 0, requireMutual ? 'both lineups improve' : 'your lineup improves'),
+            targeted
+                ? tile('Packages priced', res.shortlisted ?? 0, `offers that get them to say yes for ${wantNames}`)
+                : tile('Pairings explored', res.scanned ?? 0, 'positions where you and a rival match up'),
+            targeted
+                ? tile('Cheapest costs you', res.trades[0] || res.others[0]
+                    ? `${fmtDelta((res.trades[0] || res.others[0]).myGain)}`
+                    : '—', 'pts/wk to your lineup')
+                : tile('Offers that work', res.shortlisted ?? 0, requireMutual ? 'both lineups improve' : 'your lineup improves'),
             tile('Recommended', res.trades.length, 'after the full season simulation')
         )
     );
 
-    // --- Best available trades ---------------------------------------------
-    wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Best available trades'),
-        el('span', { class: 'hint' }, 'their side shown on neutral values')));
+    // --- The headline -------------------------------------------------------
+    // A named player changes the question from "find me a deal" to "what would
+    // this cost", so the answer has to be worded as a price rather than as a
+    // recommendation.
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {},
+                targeted ? `What it takes to get ${wantNames}`
+                    : shopping ? `What ${offerNames} could bring back`
+                    : 'Best available trades'),
+            el('span', { class: 'hint' },
+                targeted ? 'cheapest acceptable offer first' : 'their side shown on neutral values')
+        )
+    );
 
-    if (!res.trades.length) {
+    if (!res.trades.length && !res.others.length) {
         wrap.append(
             el(
                 'div',
                 { class: 'card' },
                 el('p', { class: 'muted' },
-                    'No deal in this league improves both rosters right now. That usually means your team is ',
-                    'shaped like everyone else’s — the finder only proposes trades the other manager has a ',
-                    'reason to accept.')
+                    targeted
+                        ? `Nothing on your roster gets ${res.want[0]?.player.name}'s owner to yes. ` +
+                          'That is an answer: he is either untouchable or the price is a piece you do not have. ' +
+                          'Turning off "Balanced only" will show the offers they would still turn down.'
+                        : shopping
+                            ? `Nobody in the league improves their lineup by taking ${offerNames}. ` +
+                              'Turning off "Balanced only" will show what they would say no to.'
+                            : 'No deal in this league improves both rosters right now. That usually means your team is ' +
+                              'shaped like everyone else’s — the finder only proposes trades the other manager has a ' +
+                              'reason to accept.')
             )
         );
+    } else if (!res.trades.length) {
+        wrap.append(
+            el('div', { class: 'card' },
+                el('p', { class: 'muted' },
+                    'Nothing survived the season simulation, but the packages below did improve the lineups. ' +
+                    'They are listed with lineup numbers only.'))
+        );
     } else {
-        for (const t of res.trades) wrap.append(tradeCard(app, me, t));
+        for (const t of res.trades) wrap.append(tradeCard(app, me, t, { targeted }));
     }
 
     if (res.others?.length) {
@@ -285,7 +440,7 @@ function rosterShape(t) {
     return bits.length ? el('div', { class: 'tiny dim' }, bits.join(' · ')) : null;
 }
 
-function tradeCard(app, me, t) {
+function tradeCard(app, me, t, { targeted = false } = {}) {
     const theirName = t.other.name;
     const accept = acceptanceNote(t, theirName);
 
@@ -314,8 +469,11 @@ function tradeCard(app, me, t) {
             'div',
             { class: 'finder-numbers' },
             el('div', { class: 'fn' },
-                el('div', { class: 'k' }, 'Your lineup'),
-                el('div', { class: 'v good num' }, `${fmtDelta(t.myGain)} pts/wk`)),
+                // With a named target the lineup number is the PRICE, and a
+                // price that is negative is still the answer to the question
+                // that was asked.
+                el('div', { class: 'k' }, targeted ? 'Cost to your lineup' : 'Your lineup'),
+                el('div', { class: `v num ${t.myGain >= 0 ? 'good' : 'bad'}` }, `${fmtDelta(t.myGain)} pts/wk`)),
             t.myPlayoffDelta !== null
                 ? el('div', { class: 'fn' },
                     el('div', { class: 'k' }, 'Your playoff odds'),

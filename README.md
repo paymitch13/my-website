@@ -142,6 +142,42 @@ found" and rendering one was the wrong trade-off. A **Balanced only** toggle con
 the other side must gain too — on by default, because those are the offers that get accepted,
 but a lopsided offer is still worth seeing before you send it.
 
+### Naming a player
+
+The open search infers what you need from roster shape. Naming a player replaces
+the inference with a declaration, which is a better-informed question and gets a
+different kind of answer.
+
+**Target a player** — *"what would it take to get him?"* The counterparty is
+pinned to whoever owns him, stage 1's position guessing is skipped entirely
+(nobody wants to be told their target is unavailable because a need heuristic
+did not pick that position), and the whole job becomes building the cheapest
+package of your players that gets them to yes.
+
+Packages are **enumerated, not grown greedily** — the cheapest acceptable offer
+is frequently not the one built outward from your most obvious trade chip, and a
+greedy walk never sees that. Two mid-round pieces they can start often beat one
+better player they cannot.
+
+Then they are **pruned to the minimal ones**. Losing a player can never raise
+your optimal lineup, so once an offer is accepted every superset of it costs you
+more and buys you nothing. Without that pruning the search returned 150
+"packages" that were four versions of the same deal with free bodies attached;
+with it, five genuinely distinct offers, cheapest first, and four times faster.
+
+A targeted search is also **exempt from the odds filter** that governs the open
+search. Asking what a player costs and being shown nothing because every version
+of the deal costs something is not an answer — the cost is the answer, and it is
+on every card as *Cost to your lineup*.
+
+**Offer a player** — *"what could he bring back?"* The give side is pinned and
+the whole league is searched for the return, including one-for-two: a team
+shopping a star is often the team that wants quantity, and that is the same
+consolidation trade read from the other end.
+
+Both at once — *"here's my piece, what else do I need to add?"* — fixes the
+target and the bait together and fills in the difference.
+
 ### What counts as "they have something to sell"
 
 Surplus is measured as bench depth **above replacement** relative to positional dropoff, not as
@@ -459,7 +495,7 @@ swing in implied points is worth a few percent of value, not ten, and a test pin
 ## Development
 
 ```bash
-npm test          # 290 engine tests, no dependencies
+npm test          # 303 engine tests, no dependencies
 npm run smoke     # browser check: boots the app, visits every tab at four widths
 ```
 
