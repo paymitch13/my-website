@@ -89,6 +89,8 @@ everywhere, and asymptotically equal to points-above-replacement for genuine sta
 | `js/outlook.js` | Rest-of-season and playoff-week game environments |
 | `js/props.js` | Player props, de-vigged totals, ESPN's model, the player join |
 | `js/faab.js` | What a dollar of FAAB is worth, from this league's own bids |
+| `js/statlines.js` | Yards and touchdowns, projection against posted line |
+| `js/critique.js` | An honest audit of one roster |
 | `js/simclient.js` | Simulation worker client, with a synchronous fallback |
 
 The lineup solver places players best-first into the most restrictive slot they qualify for.
@@ -123,6 +125,43 @@ the close calls — decisions within 2.5 points, which are the only ones actuall
 There is a fifth adjustment when the market has posted one: **player props**, scored under the
 league's own rules and blended with the projection. Where the two disagree materially, the
 report says so outright — see [Player props](#player-props-as-a-second-projection).
+
+## Roster Check
+
+Every other tab answers a question you brought to it. This one goes looking: it reads a roster
+the way a rival manager would and says what is wrong with it, because the weaknesses somebody
+else can see are the ones that cost you games.
+
+Three rules, and they are the whole design:
+
+1. **No finding without a number.** *"Weak at running back"* is a horoscope. *"3.4 points a week
+   below the league at running back, 11th of 12"* is a fact somebody can check and argue with.
+   A test asserts every finding contains a digit.
+2. **No finding without a fix.** A critique that stops at the diagnosis is just an insult. Every
+   item names the move that addresses it and links to the tab where you can make it. A test
+   asserts every finding carries one, and the browser check counts fixes against findings on the
+   real page.
+3. **Flattery is not feedback.** A roster with nothing wrong is told so in one line, not padded
+   out with invented problems — and a roster with real problems does not get them softened.
+
+What it looks for:
+
+| | What it catches |
+|---|---|
+| **Holes** | Below the league per starting slot, sized in points a week and ranked |
+| **Weak starters** | A monster and a waiver body average the same as two real ones and are not the same team |
+| **No ceiling** | Fine everywhere, elite nowhere — the roster that wins the weeks it is supposed to and loses the ones it needs to steal |
+| **Fragility** | One man carrying a position, measured against how exposed the rest of the league is |
+| **Stranded depth** | Startable players who will never start for you: a trade asset being stored as a hobby |
+| **Dead weight** | Roster spots on players below what waivers give away free |
+| **Bye pile-ups** | Several starters out in one week, and worse when it is a playoff week |
+| **Schedule** | Starters on offences with a rough run home, and separately a bad fantasy playoff draw |
+| **Posture** | A good roster with bad odds is told to buy; a bad one with none is told to sell |
+
+Fragility is league-relative on purpose. Every roster in every league starts exactly one
+quarterback and one tight end, so losing either always costs the whole position — that is the
+format, not a flaw, and an earlier version flagged it for all twelve managers as though it were
+a finding. It only counts now when this roster is half again as exposed as its opponents.
 
 ## Trade Finder
 

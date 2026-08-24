@@ -239,6 +239,27 @@ for (const v of views) {
 // --- The season ahead, which is the part that matters for trades -----------
 await page.click('#tabs .tab[data-view="vegas"]');
 await page.waitForTimeout(1500);
+// --- Roster Check: it has to actually criticise something ------------------
+await page.setViewportSize({ width: 1280, height: 900 });
+await page.click('#tabs .tab[data-view="critique"]');
+await page.waitForTimeout(2500);
+{
+    const text = (await page.textContent('#view')) || '';
+    if (!/Lineup strength/.test(text)) errors.push('critique: no verdict tiles');
+    if (!/(What a rival sees|Nothing to criticise)/.test(text)) errors.push('critique: no findings section');
+    // Rule 2 of the design: every criticism carries the move that fixes it.
+    const fixes = await page.$eval('#view', (n) => (n.textContent.match(/FIX/g) || []).length);
+    const problems = await page.$eval('#view', (n) =>
+        (n.textContent.match(/Fix this|Worth fixing|Worth knowing/g) || []).length);
+    if (problems > 0 && fixes < problems) {
+        errors.push(`critique: ${problems} findings but only ${fixes} fixes — every criticism needs a move`);
+    }
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`critique: scrolls horizontally by ${o.scrolled}px`);
+    if (o.wide.length) errors.push(`critique: overflows — ${o.wide.join(', ')}`);
+    console.log(`  critique: ${problems} findings, ${fixes} fixes, ${text.trim().length} chars`);
+}
+
 // --- Vegas: two scopes, player lines, and where the numbers came from -------
 await page.setViewportSize({ width: 1280, height: 900 });
 await page.click('#tabs .tab[data-view="vegas"]');

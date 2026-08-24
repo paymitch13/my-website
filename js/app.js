@@ -18,6 +18,7 @@ import renderLeague from './views/league.js';
 import renderNews from './views/news.js';
 import renderStartSit from './views/startsit.js';
 import renderFinder from './views/finder.js';
+import renderCritique from './views/critique.js';
 import renderVegas from './views/vegas.js';
 import { decodeOffer } from './share.js';
 import { loadSeasonOutlook } from './schedule.js';
@@ -33,6 +34,7 @@ import { sortBy } from './util.js';
 const VIEWS = {
     trade: { render: renderTrade, title: 'Trade Calculator' },
     finder: { render: renderFinder, title: 'Trade Finder' },
+    critique: { render: renderCritique, title: 'Roster Check' },
     startsit: { render: renderStartSit, title: 'Start/Sit' },
     vegas: { render: renderVegas, title: 'Vegas' },
     power: { render: renderPower, title: 'Power Rankings' },
