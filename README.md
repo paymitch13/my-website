@@ -85,7 +85,10 @@ everywhere, and asymptotically equal to points-above-replacement for genuine sta
 | `js/finder.js` | Three-stage trade search across the whole league |
 | `js/needs.js` | Per-roster need and surplus by position |
 | `js/usage.js` | Usage trends and touchdown dependence |
-| `js/schedule.js` | Bye weeks |
+| `js/schedule.js` | Bye weeks, and every posted line for the rest of the season |
+| `js/outlook.js` | Rest-of-season and playoff-week game environments |
+| `js/props.js` | Player props, de-vigged totals, ESPN's model, the player join |
+| `js/faab.js` | What a dollar of FAAB is worth, from this league's own bids |
 | `js/simclient.js` | Simulation worker client, with a synchronous fallback |
 
 The lineup solver places players best-first into the most restrictive slot they qualify for.
@@ -117,8 +120,9 @@ explained — and disagreed with:
 The output is a recommended lineup, a diff against what you currently have set in Sleeper, and
 the close calls — decisions within 2.5 points, which are the only ones actually in doubt.
 
-Individual player props would be a natural fifth input, but no free, CORS-open source for them
-exists, so they are not part of this rather than being faked.
+There is a fifth adjustment when the market has posted one: **player props**, scored under the
+league's own rules and blended with the projection. Where the two disagree materially, the
+report says so outright — see [Player props](#player-props-as-a-second-projection).
 
 ## Trade Finder
 
@@ -218,6 +222,59 @@ A suggestion now has to satisfy all three:
 Ranking by (2) minus (1) with a penalty on (3) surfaces genuine surplus-for-need swaps, which
 are the deals that really get done. Two-player packages are offered when no single player fits.
 
+## FAAB is a real asset
+
+Cash is a tradeable asset in a FAAB league and almost no calculator prices it, because the
+honest answer is league-specific. A dollar is worth nothing where nobody bids and a great deal
+where the wire is a bloodbath, so any fixed rate is wrong everywhere except by accident.
+
+**The rate is measured from the league's own behaviour.** Every waiver claim of the season
+carries its winning bid, and the app already downloads them for the transaction feed. Regressing
+bid against the claimed player's value — least squares **through the origin**, because a $0 bid
+buys nothing and a fitted intercept would either invent free value or charge an entry fee for
+the first dollar — gives this league's own points-per-dollar.
+
+Before four priced claims exist, a **market-clearing rate** stands in: the marginal lineup value
+sitting in the free-agent pool divided by the cash chasing it. Usable value, not raw value —
+twelve identical waiver receivers are not worth twelve times one receiver, and `marginalValue`
+is exactly the function that knows the difference.
+
+Two adjustments the raw rate cannot express:
+
+- **Time.** FAAB expires worthless. A dollar in week 3 has eleven weeks to cash in the player it
+  wins; the same dollar in week 14 has two.
+- **Concavity.** A team holding $4 cannot win a contested claim, so its money is nearly
+  worthless to it and to a trade partner. A team at $90 has more than it can plausibly spend.
+
+Through the engine, cash enters **the value ledger and nothing else**. It never touches the
+lineup solve, the season simulation, or the roster-crunch charge — so getting $40 for a starter
+reads as positive value and negative lineup fit, and the verdict says exactly that. Taking no
+roster spot is its one structural advantage and the engine knows it. Cash arriving is priced at
+the **receiver's** rate, because $20 to a manager holding $3 buys a claim he could not otherwise
+win.
+
+`suggestFaab` proposes cash when no player on the roster closes the gap. That is the most common
+real-world sweetener there is and the one the app could not previously make, and it is the
+cleanest one available: it costs the giver no lineup points at all.
+
+### What the cash buys
+
+A dollar figure means nothing on its own. "$40" is not something a manager can weigh against a
+running back; "$40, and here is what it claims, at prices this league has actually paid" is.
+
+- **Free agents ranked by marginal lineup gain to the specific team receiving the cash.** $20 to
+  a team with a hole at running back buys a real upgrade; the same $20 to a team with no holes
+  buys a bench body. When nothing on the wire would crack that lineup, the card says so — which
+  is the honest case against taking cash for a starter.
+- **Bid history bucketed by how good the claimed player was**, because $30 for a weekly starter
+  and $30 for a handcuff are different facts. Median, ceiling, and who the priciest claim was.
+- **Estimates never quote a price this league has never paid.** The fit is a line through a
+  handful of points; extrapolating past the observed range invents prices nobody here has seen.
+- **Live waiver demand** from the trending endpoint, because pricing cash without knowing what
+  the league is chasing prices it as though nobody else is bidding.
+- **A remaining-budget column in the standings.** It says who can still win a claim, and it is
+  what makes the cash numbers in the calculator mean anything.
+
 ## Trade log
 
 Completed trades across the season are pulled from Sleeper and shown as a league trade log, with
@@ -296,20 +353,85 @@ Every posted market on the slate, and what each one is good for in fantasy:
 ESPN also reports whether the venue is indoors, which is authoritative in a way a hardcoded
 stadium table cannot be: it handles relocations, new roofs and neutral-site games.
 
-Implied total, game script and total movement all feed Start/Sit as separate, individually
-reported adjustments. None of them touch season-long trade value — a single week's line says
-nothing about a player's rest-of-season worth, and letting it move trade grades would be wrong.
+### What the scoreboard does not carry
+
+The scoreboard endpoint gives the total and the spread but not the **juice** on them, and a
+total posted at −120 over is not the total it appears to be — the market's real expectation sits
+above the number. ESPN's core API carries the priced pair, and de-vigging it recovers the number
+the market actually believes. Implied team totals are the single input the whole Start/Sit
+engine hangs on, so half a point of free precision is worth the request. Verified live across 22
+priced games: corrections of 0.04 to 0.17 points, folded all the way through to each team's
+context rather than left in a second copy that disagrees with the first.
+
+The same API carries **ESPN's own win-probability model**, which is a model rather than a
+market. Its value is precisely that it is independent: when the model and the moneyline diverge
+by more than five points that is genuinely interesting, and nothing else in the app can see it.
+
+Providers are parsed as a list rather than indexed at `[0]`. ESPN returns one book today and the
+shape supports more, so a consensus and a book-disagreement measure arrive free the moment a
+second one appears.
+
+### Player props, as a second projection
+
+Every other number in this app descends from one source: Sleeper's consensus projection. A
+posted player prop is a number produced by people with money at risk.
+
+Props come back in markets — passing yards, receptions, rushing touchdowns — that map directly
+onto the stat keys a league's `scoring_settings` already uses, so a market line is scored by the
+league's own rules with the same dot product that prices a projection. No special casing.
+
+Where the market and the projection disagree materially, **Start/Sit says so outright**, with
+the line movement since open. That is the most actionable single line a start/sit tool can
+print. Disagreement is measured relative to the projection, because two points apart on a
+20-point quarterback is noise and two points apart on a 5-point tight end is the whole decision.
+
+Two things that would otherwise have failed silently:
+
+- Sleeper carries `espn_id` for only about **23%** of currently rostered skill players — Kyle
+  Pitts and Bucky Irving both lack it — so an id-only join would have had no market for three
+  quarters of a roster while appearing to work. Names fill the rest in, normalized past "D.J."
+  vs "DJ" and the suffixes the two databases punctuate differently, and every resolution is
+  cached permanently because a player's name does not change.
+- **One lonely market is not a projection.** A receiving-yards line with no touchdown market is
+  a fact about receiving yards; scoring it as a whole projection would systematically
+  under-project everyone whose other markets have not been posted yet.
+
+Props are not posted in preseason, so the app degrades to the consensus projection it already
+had — which is a normal state, not an error.
+
+### The season ahead, not just Sunday
+
+The Vegas tab used to load only the current week, which makes it a lineup tool. Trades are not
+about this week.
+
+ESPN posts lines for **every week of the season in advance** — verified: weeks 1, 2, 8, 15 and
+17 all come back fully priced — and the bye-week sweep was already fetching one scoreboard
+payload per week and throwing `payload.events` away. Parsing what was already on the wire turns
+a bye map into a rest-of-season outlook at no additional network cost:
+
+- **Rest-of-season implied totals** per team, ranked. Byes are skipped rather than counted as a
+  zero: a team with a week-9 bye does not have a worse offense.
+- **Fantasy playoff weeks specifically**, read from the league's own `playoff_week_start`. A team
+  can be fine all year and collapse in weeks 15–17, and those are the only weeks that decide
+  anything. "His three playoff-week games are all against top-five scoring environments" is the
+  argument that closes a trade.
 
 ### On using Vegas for value
 
-Vegas is excellent at predicting how many points a team scores in a **specific game**. It is a
-poor **season-long** signal, and the season projections already price in team quality and
-offensive environment. So odds drive the weekly views and are deliberately kept out of trade
-value.
+This is the one place the app changed its mind.
+
+A **single week's** line still says nothing about a player's rest-of-season worth, and letting it
+move trade grades would be wrong. But a **season-long average** of implied totals is a different
+quantity, and it is real: a back on the offense with the league's best remaining schedule is
+worth more than an equal back whose schedule collapses in November.
+
+So rest-of-season schedule strength does feed trade value, deliberately gently. Lines eleven
+weeks out are real information but they are not Sunday's information — they move, players get
+hurt, and a season-long average of soft numbers is a weaker signal than a posted line. A 10%
+swing in implied points is worth a few percent of value, not ten, and a test pins that down.
 
 ## Deliberate non-features
 
-- **Player props** — every source needs a paid key, and a key in a static site is a public key.
 - **Divisions in playoff seeding** — Sleeper exposes them, the simulator seeds purely on record
   and points for. Correct for most leagues, wrong for divisional ones.
 - **Draft picks in offers** — picks are parsed and shown in the trade log, but cannot yet be put
@@ -326,16 +448,37 @@ value.
 - **There is no news wire.** No free, CORS-open NFL wire service exists, so instead of faking
   headlines the feed is built from live signals Sleeper does expose: injury designations,
   waiver-wire momentum, league transactions and in-progress scoring.
+- **Player props depend on a name join for most players.** Sleeper's `espn_id` covers about a
+  quarter of rostered skill players, so the rest are matched on normalized name and position.
+  That is reliable for the players anybody trades and can miss an obscure one; a player with no
+  match simply keeps his consensus projection.
+- **FAAB is priced from a small sample early.** The rate is fitted from this league's own
+  winning bids, and before four priced claims exist it falls back to a market-clearing estimate.
+  Both are stated on screen rather than presented as a single confident number.
 
 ## Development
 
 ```bash
-npm test          # 209 engine tests, no dependencies
+npm test          # 290 engine tests, no dependencies
 npm run smoke     # browser check: boots the app, visits every tab at four widths
 ```
 
-`npm test` covers the engine — valuation, lineups, simulation, needs, the finder funnel,
-trade evaluation. It is the fast loop and it has no dependencies.
+`npm test` covers the engine — valuation, lineups, simulation, needs, the finder funnel, trade
+evaluation, FAAB pricing, the betting markets and the season outlook. It also runs two lints
+that exist because of bugs that actually shipped:
+
+- **Display scale.** There are two number scales in this app — raw points above replacement and
+  the convex market value — and both are plain numbers that look identical in source. The picker
+  once rendered one and the panel behind it rendered the other, so choosing a player changed his
+  number from 47 to 6,240 with a single click. The lint asserts no render site prints a raw
+  value, and is itself verified to catch that exact regression.
+- **Imports.** `node --check` parses a file without resolving anything in it, so a view could
+  call an identifier it never imported, pass every syntax check, and throw the moment a user
+  opened that tab. The views cannot simply be imported in Node to find out, because they reach
+  `app.js` and its `document` access, so the lint reads the imports and the exports and compares
+  them.
+
+It is the fast loop and it has no dependencies.
 
 `npm run smoke` is the slow one: it serves the real files, fulfils every Sleeper, ESPN and
 weather request from a fixture so the run is hermetic and repeatable, then boots the app and

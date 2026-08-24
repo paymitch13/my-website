@@ -20,13 +20,14 @@ import renderStartSit from './views/startsit.js';
 import renderFinder from './views/finder.js';
 import renderVegas from './views/vegas.js';
 import { decodeOffer } from './share.js';
-import { loadByeWeeks } from './schedule.js';
+import { loadSeasonOutlook } from './schedule.js';
 import { createTradeValueScale } from './tradevalue.js';
 import { optimizeLineup, teamScoringProfile } from './lineup.js';
 import { buildEntries } from './trade.js';
 import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
 import { faabModel } from './faab.js';
+import { impliedTotalsOverWeeks, scheduleStrength, playoffOutlook, playoffWeeksFor } from './outlook.js';
 import { sortBy } from './util.js';
 
 const VIEWS = {
@@ -60,6 +61,9 @@ export const app = {
     tradeValue: (v) => Math.round(v),
     faab: null,
     trendingAdds: null,
+    seasonSchedule: new Map(),
+    restOfSeason: new Map(),
+    playoffSchedule: new Map(),
     view: 'trade',
     busy: false,
 
@@ -88,6 +92,9 @@ export const app = {
             weeksLeft: Math.max(1, this.league?.weeksLeft ?? 14),
             projections: this.projections,
             actuals: this.actuals,
+            // Rest-of-season value should reflect the rest of the season's
+            // environment, not just this week's.
+            scheduleStrength: this.restOfSeason,
         });
         this.cfg = cfg;
 
@@ -221,11 +228,11 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         // can blend in what players have actually done and pull this week's
         // game lines.
         const teamsById = new Map(app.league.teams.map((t) => [t.rosterId, t]));
-        const [actuals, odds, transactions, byeWeeks, trending] = await Promise.all([
+        const [actuals, odds, transactions, outlook, trending] = await Promise.all([
             app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
             data.loadOdds(app.league.currentWeek, app.league.raw.season),
             loadSeasonTransactions(leagueId, app.league.currentWeek, { teamsById, players: app.players }).catch(() => []),
-            loadByeWeeks(app.league.raw.season, store).catch(() => new Map()),
+            loadSeasonOutlook(app.league.raw.season, store).catch(() => ({ byes: new Map(), schedule: new Map() })),
             // Waiver demand: what the league at large is chasing right now, and
             // therefore what a contested claim is about to cost.
             trendingAdds().catch(() => new Map()),
@@ -233,8 +240,18 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         app.actuals = actuals;
         app.odds = odds;
         app.transactions = transactions;
-        app.byeWeeks = byeWeeks;
+        app.byeWeeks = outlook.byes;
         app.trendingAdds = trending;
+
+        // Every posted line for the rest of the season, from the same pass that
+        // produced the bye map. A player on the offense with the best remaining
+        // implied totals is worth more than one whose schedule collapses in
+        // November, and nothing in the app used to know that.
+        app.seasonSchedule = outlook.schedule;
+        app.restOfSeason = scheduleStrength(
+            impliedTotalsOverWeeks(outlook.schedule, { from: app.league.currentWeek, to: 18 })
+        );
+        app.playoffSchedule = playoffOutlook(outlook.schedule, playoffWeeksFor(app.league.cfg));
 
         app.rebuild();
         // Playoff odds drive buyer/seller posture in the Trade Finder. They

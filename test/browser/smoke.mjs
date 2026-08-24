@@ -32,6 +32,42 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, r));
 const port = server.address().port;
 
+// A full season of priced games, so the rest-of-season and playoff-week
+// outlooks are exercised rather than skipped. ESPN really does post lines for
+// every week in advance -- weeks 1, 2, 8, 15 and 17 all come back priced.
+const NFL_TEAMS = ['KC', 'BUF', 'SF', 'DAL', 'PHI', 'MIA', 'CIN', 'DET', 'LAR', 'BAL', 'NYJ', 'CLE', 'ARI', 'NE', 'TEN', 'CAR'];
+const scoreboardFor = (week) => ({
+    week: { number: week, teamsOnBye: week >= 4 && week <= 14 ? [{ abbreviation: NFL_TEAMS[week % NFL_TEAMS.length] }] : [] },
+    events: Array.from({ length: NFL_TEAMS.length / 2 }, (_, i) => {
+        const home = NFL_TEAMS[i * 2];
+        const away = NFL_TEAMS[i * 2 + 1];
+        return {
+            id: `${week}${i}`,
+            date: new Date(Date.now() + 86400000).toISOString(),
+            week: { number: week },
+            competitions: [{
+                id: `${week}${i}`,
+                neutralSite: false,
+                venue: { indoor: i % 3 === 0 },
+                odds: [{
+                    overUnder: 40 + i * 2,
+                    spread: -(i + 1),
+                    details: `${home} -${i + 1}`,
+                    overOdds: -110,
+                    underOdds: -110,
+                    homeTeamOdds: { favorite: true, moneyLine: -150, spreadOdds: -110, team: { abbreviation: home } },
+                    awayTeamOdds: { favorite: false, moneyLine: 130, spreadOdds: -110, team: { abbreviation: away } },
+                }],
+                competitors: [
+                    { homeAway: 'home', team: { abbreviation: home } },
+                    { homeAway: 'away', team: { abbreviation: away } },
+                ],
+            }],
+        };
+    }),
+});
+
+
 // --- Fixtures --------------------------------------------------------------
 const POS = { QB: 2, RB: 5, WR: 6, TE: 2, K: 1, DEF: 1 };
 const players = {};
@@ -42,7 +78,7 @@ for (const [pos, per] of Object.entries(POS)) {
         const id = `f${++n}`;
         players[id] = {
             player_id: id, first_name: pos, last_name: `Player ${i + 1}`,
-            position: pos, fantasy_positions: [pos], team: 'KC', age: 25,
+            position: pos, fantasy_positions: [pos], team: NFL_TEAMS[n % NFL_TEAMS.length], age: 25,
             injury_status: null, active: true, search_rank: n,
         };
         const ppg = 22 - i * 0.35;
@@ -106,7 +142,21 @@ const fixtures = [
     [/\/league\/L1$/, () => json(league)],
     [/\/user\//, () => json({ user_id: 'u1', display_name: 'Manager 1' })],
     [/players\/nfl\/trending/, () => json([])],
-    [/site\.api\.espn/, () => json({ events: [], week: {} })],
+    [/site\.api\.espn.*scoreboard/, (url) => {
+        const week = Number(new URL(url).searchParams.get('week')) || 7;
+        return json(scoreboardFor(week));
+    }],
+    [/sports\.core\.api\.espn.*propBets/, () => json({ count: 0, items: [] })],
+    [/sports\.core\.api\.espn.*predictor/, () => json({ gameProjection: 64.2, matchupQuality: 70 })],
+    [/sports\.core\.api\.espn.*\/odds/, () => json({
+        count: 1,
+        items: [{
+            provider: { name: 'DraftKings' },
+            overUnder: 44.5, spread: -3, overOdds: -125, underOdds: +105,
+            homeTeamOdds: { favorite: true, moneyLine: -155, spreadOdds: -110 },
+            awayTeamOdds: { favorite: false, moneyLine: 130, spreadOdds: -110 },
+        }],
+    })],
     [/open-meteo/, () => json({ hourly: {} })],
 ];
 
@@ -120,7 +170,7 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.
 await page.route('**', (route) => {
     const u = route.request().url();
     if (u.includes(`localhost:${port}`) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
-    for (const [re, make] of fixtures) if (re.test(u)) return route.fulfill(make());
+    for (const [re, make] of fixtures) if (re.test(u)) return route.fulfill(make(u));
     return route.fulfill(json({}));
 });
 
@@ -171,6 +221,19 @@ for (const v of views) {
     if (o.scrolled > 0) errors.push(`${v}: page scrolls horizontally by ${o.scrolled}px`);
     if (o.wide.length) errors.push(`${v}: content overflows its box — ${o.wide.join(', ')}`);
     if (text.trim().length < 80) errors.push(`${v}: rendered almost nothing (${text.trim().length} chars)`);
+}
+
+// --- The season ahead, which is the part that matters for trades -----------
+await page.click('#tabs .tab[data-view="vegas"]');
+await page.waitForTimeout(1500);
+{
+    const text = (await page.textContent('#view')) || '';
+    if (!/Rest of season/.test(text)) errors.push('vegas: no rest-of-season outlook');
+    if (!/Fantasy playoff weeks/.test(text)) errors.push('vegas: the weeks that decide leagues are not shown');
+    if (!/Best remaining schedules/.test(text)) errors.push('vegas: schedules are not ranked');
+    // The juice fixture is -125/+105, so the de-vigged total must differ from
+    // the posted one and be labelled as such.
+    if (!/de-vigged/i.test(text)) errors.push('vegas: the juice correction is applied but never shown');
 }
 
 // --- FAAB, which only exists in the UI --------------------------------------

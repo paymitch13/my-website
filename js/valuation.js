@@ -322,6 +322,7 @@ export function createValuationContext(cfg, {
     discount = 0.85,
     projections = null,
     actuals = null,
+    scheduleStrength = null,
 } = {}) {
     const replacement = replacementRanks(cfg);
     const curves = buildCurves({ cfg, projections, actuals, week });
@@ -344,6 +345,16 @@ export function createValuationContext(cfg, {
         projections,
         actuals,
         ppgAtRank,
+        /**
+         * How much a team's remaining schedule is worth, as a multiplier.
+         *
+         * Rest-of-season value should reflect the rest of the season's
+         * environment. Absent an outlook this is 1 for everyone, which is
+         * exactly what the app did before the lines for future weeks were
+         * being read at all.
+         */
+        scheduleMultiplier: (team) => scheduleStrength?.get(team)?.multiplier ?? 1,
+        scheduleStrength,
         // True when values are grounded in real projections rather than the
         // fallback model. Surfaced in the UI so the numbers are never
         // silently synthetic.
@@ -376,7 +387,11 @@ export function valuePlayer(player, posRank, ctx) {
     // Depth still counts for something; see softplusPar.
     const effectivePar = softplusPar(parPerGame);
 
-    const ros = effectivePar * ctx.weeksLeft * avail;
+    // The schedule ahead of him, not just the talent. A back on the offense
+    // with the league's best remaining implied totals is worth more than an
+    // equal back whose schedule collapses in November.
+    const schedule = ctx.scheduleMultiplier ? ctx.scheduleMultiplier(player.team) : 1;
+    const ros = effectivePar * ctx.weeksLeft * avail * schedule;
 
     let value = ros;
     if (ctx.dynasty) {

@@ -7,6 +7,7 @@
 
 import { describeEnvironment } from '../odds.js';
 import { slateAverage, vegasImpact } from '../startsit.js';
+import { describeSchedule } from '../outlook.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
 import { formatValue } from '../tradevalue.js';
@@ -131,7 +132,45 @@ export function openPlayerCard(app, player) {
             )
         );
     }
+    // The season ahead, not just Sunday. This is the argument that closes a
+    // trade: a receiver whose three playoff-week games are all shootouts is
+    // worth more than one whose are not, and no other free tool says so.
+    const ros = app.restOfSeason?.get(player.team) || null;
+    const playoffs = app.playoffSchedule?.get(player.team) || null;
+    if (ros?.games) {
+        tiles.append(
+            tile(
+                'Schedule',
+                `${round(ros.average, 1)}`,
+                `implied pts/game the rest of the way · ${ros.rank} of ${ros.of}`,
+                ros.edge > 0.6 ? 'good' : ros.edge < -0.6 ? 'bad' : ''
+            )
+        );
+    }
+    if (playoffs?.games) {
+        tiles.append(
+            tile(
+                'Playoff weeks',
+                `${round(playoffs.average, 1)}`,
+                `weeks ${playoffs.weeks.map((w) => w.week).join(', ')} · ${playoffs.rank} of ${playoffs.of}`,
+                playoffs.edge > 0.6 ? 'good' : playoffs.edge < -0.6 ? 'bad' : ''
+            )
+        );
+    }
     body.append(tiles);
+
+    const scheduleNote = describeSchedule(ros);
+    const playoffNote = describeSchedule(playoffs, { label: 'the fantasy playoffs' });
+    if (scheduleNote || playoffNote) {
+        body.append(
+            el(
+                'div',
+                { class: 'card card-tight', style: 'margin-bottom:18px' },
+                scheduleNote ? el('div', { class: 'small' }, scheduleNote) : null,
+                playoffNote ? el('div', { class: 'small', style: 'margin-top:6px' }, playoffNote) : null
+            )
+        );
+    }
 
     // --- Where you disagree with the projection ----------------------------
     if (posRank && projRank) {

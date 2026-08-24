@@ -11,6 +11,7 @@ const PLAYERS_KEY = 'ffc:players:v2';
 const SNAPSHOT_KEY = 'ffc:power-snapshots:v1';
 const PROJECTIONS_KEY = 'ffc:projections:v1';
 const BYES_KEY = 'ffc:byes:v1';
+const OUTLOOK_KEY = 'ffc:outlook:v1';
 const ATHLETES_KEY = 'ffc:espn-athletes:v1';
 
 const DEFAULTS = {
@@ -110,6 +111,40 @@ export function loadCachedByes(season) {
 
 export function cacheByes(season, byeMap) {
     return write(BYES_KEY, { at: Date.now(), season: String(season), byes: Object.fromEntries(byeMap) });
+}
+
+// --- Season outlook --------------------------------------------------------
+//
+// Byes plus every posted line for the rest of the season, from the same one
+// pass. Lines do move, so this expires -- but not weekly: an eleven-week
+// average of implied totals barely notices a half-point drift in one game, and
+// re-scanning the season on every visit to spot that would be absurd.
+const OUTLOOK_TTL = 3 * 24 * 60 * 60 * 1000;
+
+export function loadCachedOutlook(season) {
+    const cached = read(OUTLOOK_KEY, null);
+    if (!cached || cached.season !== String(season)) return null;
+    if (Date.now() - (cached.at || 0) > OUTLOOK_TTL) return null;
+    return {
+        byes: new Map(Object.entries(cached.byes || {})),
+        schedule: new Map(
+            Object.entries(cached.schedule || {}).map(([week, games]) => [
+                Number(week),
+                new Map(Object.entries(games)),
+            ])
+        ),
+    };
+}
+
+export function cacheOutlook(season, { byes, schedule }) {
+    return write(OUTLOOK_KEY, {
+        at: Date.now(),
+        season: String(season),
+        byes: Object.fromEntries(byes),
+        schedule: Object.fromEntries(
+            [...(schedule || new Map())].map(([week, games]) => [week, Object.fromEntries(games)])
+        ),
+    });
 }
 
 // --- Power ranking history -------------------------------------------------
