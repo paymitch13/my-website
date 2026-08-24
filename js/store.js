@@ -147,6 +147,34 @@ export function cacheOutlook(season, { byes, schedule }) {
     });
 }
 
+// --- Market values ---------------------------------------------------------
+//
+// What players cost in real leagues, keyed by league SHAPE rather than by
+// league id: the same twelve-team half-PPR redraft numbers serve every such
+// league, and a superflex snapshot must never be handed to a one-quarterback
+// one. Values move on a scale of days, so this is cached hard -- a fresh fetch
+// on every visit would be a lot of traffic to learn nothing.
+const MARKET_KEY = 'ffc:market:v1';
+const MARKET_TTL = 12 * 60 * 60 * 1000;
+
+export function loadCachedMarket(key) {
+    const cached = read(MARKET_KEY, null);
+    if (!cached || cached.key !== key) return null;
+    if (Date.now() - (cached.at || 0) > MARKET_TTL) return null;
+    const byId = new Map(Object.entries(cached.byId || {}));
+    if (!byId.size) return null;
+    return { key, at: cached.at, byId, ranks: new Map(Object.entries(cached.ranks || {})) };
+}
+
+export function cacheMarket(key, snapshot) {
+    return write(MARKET_KEY, {
+        key,
+        at: snapshot.at || Date.now(),
+        byId: Object.fromEntries(snapshot.byId),
+        ranks: Object.fromEntries(snapshot.ranks),
+    });
+}
+
 // --- Power ranking history -------------------------------------------------
 
 /** Keeps the last 20 weekly snapshots so the board can show movement arrows. */

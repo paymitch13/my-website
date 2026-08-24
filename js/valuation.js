@@ -359,6 +359,7 @@ export function createValuationContext(cfg, {
     projections = null,
     actuals = null,
     scheduleStrength = null,
+    market = null,
 } = {}) {
     const replacement = replacementRanks(cfg);
     const curves = buildCurves({ cfg, projections, actuals, week });
@@ -390,6 +391,14 @@ export function createValuationContext(cfg, {
          */
         scheduleMultiplier: (team) => scheduleStrength?.get(team)?.multiplier ?? 1,
         scheduleStrength,
+        // What the rest of the world pays for these players. Used to value
+        // every roster that is not the user's, so "will they accept" is
+        // answered at the price a real manager would name. Null when the
+        // market could not be reached, and everything falls back to the
+        // projected board exactly as it did before.
+        market: market?.byId ?? null,
+        marketRanks: market?.ranks ?? null,
+        priced: market ? 'market' : curves ? 'projection' : 'model',
         // True when values are grounded in real projections rather than the
         // fallback model. Surfaced in the UI so the numbers are never
         // silently synthetic.

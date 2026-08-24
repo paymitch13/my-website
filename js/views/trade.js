@@ -391,10 +391,28 @@ function renderResult(app, result, repaint) {
     // The meter and the numbers printed under it must be the same quantity.
     // Splitting the bar on raw points while labelling it with scaled values put
     // 67/33 above text that read 72/28.
-    const scaledA = app.tradeValue(a.valueIn);
-    const scaledB = app.tradeValue(b.valueIn);
+    //
+    // Priced at MARKET, not on your board. "Is this fair" is a question about
+    // price, and answering it with your own rankings meant that being higher
+    // than the league on your own player made the meter say you were winning a
+    // trade you were in fact losing. What you think of him is the second
+    // opinion below, where it is worth something.
+    const priced = app.ctx?.market ? 'market' : 'board';
+    const scaledA = app.tradeValue(priced === 'market' ? a.marketIn : a.valueIn);
+    const scaledB = app.tradeValue(priced === 'market' ? b.marketIn : b.valueIn);
     const split = fairness(scaledA, scaledB);
     const shareA = Math.max(4, Math.min(96, split.aShare * 100));
+
+    // Where your board and the market disagree about the same deal. This is the
+    // whole point of keeping both: the market decides whether they accept, and
+    // you decide whether you should want them to.
+    const yourSplit = fairness(app.tradeValue(a.valueIn), app.tradeValue(b.valueIn));
+    const disagreement =
+        priced === 'market' && Math.abs(yourSplit.aShare - split.aShare) >= 0.05
+            ? `Priced at market this is ${Math.round(split.aShare * 100)}/${Math.round(split.bShare * 100)}. ` +
+              `On your own rankings it is ${Math.round(yourSplit.aShare * 100)}/${Math.round(yourSplit.bShare * 100)} — ` +
+              `${yourSplit.aShare > split.aShare ? `you rate ${a.team.name}'s side higher than the league does` : `the league rates ${a.team.name}'s side higher than you do`}.`
+            : null;
 
     wrap.append(
         el(
@@ -428,6 +446,14 @@ function renderResult(app, result, repaint) {
                 el('span', {}, `${a.team.name} receives ${formatValue(scaledA)}`),
                 el('span', {}, `${formatValue(scaledB)} to ${b.team.name}`)
             ),
+            el(
+                'p',
+                { class: 'tiny dim', style: 'margin:8px 0 0' },
+                priced === 'market'
+                    ? 'Split at market price — what these players actually cost in real leagues.'
+                    : 'Split on your own rankings; market prices were not available.'
+            ),
+            disagreement ? el('p', { class: 'small', style: 'margin:6px 0 0' }, disagreement) : null,
             // A trade you cannot send is a trade that does not happen. The
             // link carries the league, both sides and any cash, so pasting it
             // in the league chat reproduces exactly this deal.

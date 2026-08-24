@@ -11,6 +11,7 @@ import { describeSchedule } from '../outlook.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
 import { formatValue } from '../tradevalue.js';
+import { marketEdge, describeEdge } from '../market.js';
 import { getTrending } from '../sleeper.js';
 import { playerHistory } from '../transactions.js';
 import {
@@ -50,6 +51,11 @@ export function openPlayerCard(app, player) {
     const proj = app.projections?.[player.id] || null;
     const projPpg = proj ? projectedPpg(proj, app.cfg.scoring) : null;
     const projRank = v?.projectedRank ?? null;
+    // What the rest of the world pays for him, which is a different question
+    // from what he will score and from what you think of him.
+    const mkt = app.ctx?.market?.get(player.id) ?? null;
+    const mktRank = app.ctx?.marketRanks?.get(player.id) ?? null;
+    const edge = marketEdge({ marketRank: mktRank, projectedRank: projRank, pos: player.pos });
 
     const owner = findOwner(app, player.id);
     const oddsCtx = app.odds?.byTeam?.get(player.team) || null;
@@ -117,6 +123,19 @@ export function openPlayerCard(app, player) {
     if (projRank) {
         tiles.append(tile('Projected rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'where the projection has him'));
     }
+    // The third board. Your rank decides what he is worth TO YOU, the
+    // projection estimates what he will SCORE, and this is what he COSTS --
+    // the only one of the three that predicts whether his manager says yes.
+    if (mktRank) {
+        tiles.append(
+            tile(
+                'Market rank',
+                `${POS_LABEL[player.pos] || player.pos}${mktRank}`,
+                'what the league pays for him',
+                edge?.kind === 'buy-low' ? 'good' : edge?.kind === 'sell-high' ? 'warn' : ''
+            )
+        );
+    }
     // The Vegas multiplier was computed for every Start/Sit decision and never
     // shown as a number anywhere. It is the reason a projection gets moved, so
     // it belongs on the card next to the projection it moves.
@@ -168,6 +187,32 @@ export function openPlayerCard(app, player) {
                 { class: 'card card-tight', style: 'margin-bottom:18px' },
                 scheduleNote ? el('div', { class: 'small' }, scheduleNote) : null,
                 playoffNote ? el('div', { class: 'small', style: 'margin-top:6px' }, playoffNote) : null
+            )
+        );
+    }
+
+    // --- Where the price and the projection disagree ------------------------
+    //
+    // The most useful sentence on this card. Neither number can produce it
+    // alone: the projection has no idea what he costs, and the price has no
+    // idea what he will do. The difference is the trade.
+    if (edge && edge.kind !== 'fair') {
+        const buy = edge.kind === 'buy-low';
+        body.append(
+            el(
+                'div',
+                { class: `verdict tone-${buy ? 'good' : 'warn'}`, style: 'margin-bottom:14px' },
+                el('div', { class: 'label' }, buy ? 'Buy low' : 'Sell high'),
+                el('div', { class: 'headline' }, describeEdge(edge, player.name)),
+                el(
+                    'p',
+                    { class: 'small muted', style: 'margin:8px 0 0' },
+                    buy
+                        ? 'His manager is likely to let him go for less than he is projected to be worth. ' +
+                          'That gap is the cheapest edge in fantasy, and it closes as soon as he scores.'
+                        : 'The league is paying more for him than the projection supports. If you are going ' +
+                          'to move him, this is the window.'
+                )
             )
         );
     }
@@ -246,7 +291,17 @@ export function openPlayerCard(app, player) {
                     row('Weeks remaining', app.ctx.weeksLeft),
                     player.injury ? row('Availability', `${Math.round(v.availability * 100)}%`, 'warn') : null,
                     row('Points above replacement, rest of season', round(v.ros, 1)),
-                    row('Trade value', formatValue(app.tradeValue(v.value)))
+                    row('Trade value on your board', formatValue(app.tradeValue(v.value))),
+                    // What the deal will actually be priced at. The ledger and
+                    // the fairness meter both use this rather than the row
+                    // above, because what you think of him decides whether you
+                    // want the trade, not whether it is even.
+                    mktRank
+                        ? row(
+                              'What the market charges',
+                              formatValue(app.tradeValue(valuePlayer(player, mktRank, app.ctx).value))
+                          )
+                        : null
                 )
             ),
             app.ctx.dynasty

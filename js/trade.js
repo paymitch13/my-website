@@ -43,21 +43,80 @@ export function buildEntries(players, rankings, ctx) {
  * low on a player, the app decides his own manager is low on him too, and
  * cheerfully reports that they will hand him over. They will not.
  *
- * The neutral board already exists: valuePlayer computes each player's
- * projected rank independently of the user's ordering, so scoring the other
- * roster at projectedRank gives a market-ish second opinion for free.
+ * Which second opinion, in order of preference:
+ *
+ *   1. THE MARKET. What players actually cost in real leagues. This is the
+ *      right answer to "will they accept", because it is the only input that
+ *      knows what other managers believe rather than what a spreadsheet
+ *      concludes -- workload security, injury history, a changed offense.
+ *   2. THE PROJECTION. Each player's projected rank, computed independently of
+ *      the user's ordering. Sound, auditable, and blind to all of the above.
+ *
+ * The market arrives as a ranking, not as a price, and enters the pipeline at
+ * exactly the point the user's own board does. That is deliberate: the market
+ * supplies the opinion and this league supplies the scale, so a market value
+ * automatically respects the scoring, the roster slots and the replacement
+ * level here instead of importing someone else's league shape along with it.
  */
 export function neutralEntry(player, ctx) {
+    const market = ctx.marketRanks?.get(player.id) ?? null;
     const proj = ctx.projections?.[player.id] || null;
-    // Fall back to the user's board only when there is no projection at all.
-    const own = proj ? valuePlayer(player, 1, ctx) : null;
-    const rank = own?.projectedRank ?? null;
-    const v = valuePlayer(player, rank ?? 999, ctx);
-    return { player, posRank: rank ?? 999, score: v.effectivePpg, value: v.value, detail: v, neutral: true };
+    const projected = proj ? valuePlayer(player, 1, ctx).projectedRank : null;
+
+    // What he will SCORE and what he will COST are different questions and they
+    // take different boards. Points come from the projection, because a lineup
+    // solve and a season simulation are meant to model what actually happens on
+    // Sunday, and sentiment does not put points on the board. Price comes from
+    // the market, because that is what his manager will ask for.
+    //
+    // Running both off one number is a real error either way round: price the
+    // lineup at market and a player the league is high on inflates his team's
+    // simulated season; price the ask at projection and the app decides a
+    // manager will hand over the guy everyone wants for what a spreadsheet
+    // says he is worth.
+    const scoringRank = projected ?? market ?? 999;
+    const priceRank = market ?? projected ?? 999;
+    const scoring = valuePlayer(player, scoringRank, ctx);
+    const price = priceRank === scoringRank ? scoring : valuePlayer(player, priceRank, ctx);
+
+    return {
+        player,
+        posRank: priceRank,
+        score: scoring.effectivePpg,
+        value: price.value,
+        detail: price,
+        neutral: true,
+        // Which board priced him, so a card never implies a market number it
+        // did not have. Both ranks are carried whether or not they were used --
+        // the gap between them is the whole buy-low signal.
+        priced: market ? 'market' : projected ? 'projection' : 'unranked',
+        marketRank: market,
+        projectedRank: projected,
+    };
 }
 
 export function buildNeutralEntries(players, ctx) {
     return players.map((p) => neutralEntry(p, ctx));
+}
+
+/**
+ * What one player costs on the open market, whoever currently owns him and
+ * whatever the user thinks of him.
+ *
+ * Memoised on the context because the ledger asks for the same handful of
+ * players repeatedly across a search, and each miss is a full valuation.
+ */
+export function marketPrice(entry, ctx) {
+    if (entry.neutral) return entry.value;
+    if (!ctx.marketRanks && !ctx.projections) return entry.value;
+
+    if (!ctx._marketPrices) ctx._marketPrices = new Map();
+    const hit = ctx._marketPrices.get(entry.player.id);
+    if (hit !== undefined) return hit;
+
+    const priced = neutralEntry(entry.player, ctx).value;
+    ctx._marketPrices.set(entry.player.id, priced);
+    return priced;
 }
 
 /**
@@ -142,6 +201,17 @@ export async function evaluateTrade(input) {
         a.valueOut = a.playerValueOut + a.faabValueOut;
         a.valueIn = a.playerValueIn + a.faabValueIn;
         a.valueNet = a.valueIn - a.valueOut;
+
+        // The same ledger again at MARKET price, on one yardstick for both
+        // sides. "Is this fair" and "is this good for me" are different
+        // questions and were being answered with the same number: priced on
+        // your own board, being higher than everyone else on your own player
+        // made the fairness meter say you were winning the trade. Fairness is a
+        // question about price. What you think of him is reported separately,
+        // and where the two disagree that gap is the interesting part.
+        a.marketOut = sum(a.outEntries, (e) => marketPrice(e, ctx)) + a.faabValueOut;
+        a.marketIn = sum(a.inEntries, (e) => marketPrice(e, ctx)) + a.faabValueIn;
+        a.marketNet = a.marketIn - a.marketOut;
     }
 
     // --- 2. FIT: optimal-lineup change, plus roster shape -------------------

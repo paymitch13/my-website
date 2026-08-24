@@ -112,6 +112,33 @@ for (let t = 1; t <= 12; t++) {
         starters: [], settings: { wins: 3, losses: 3, ties: 0, fpts: 700, fpts_decimal: 0 },
     });
 }
+// Market values for the fixture league. Reversed against the projections on
+// purpose -- see the route above.
+const marketRows = [];
+{
+    const byPos = {};
+    for (const id of Object.keys(players)) {
+        const pos = players[id].position;
+        if (!['QB', 'RB', 'WR', 'TE'].includes(pos)) continue;
+        (byPos[pos] ||= []).push(id);
+    }
+    for (const [pos, ids] of Object.entries(byPos)) {
+        const reversed = [...ids].reverse();
+        reversed.forEach((id, i) => {
+            marketRows.push({
+                player: {
+                    id: Number(id.slice(1)), name: `${pos} Player ${ids.indexOf(id) + 1}`,
+                    position: pos, sleeperId: id,
+                },
+                value: Math.max(40, 9000 - i * 260),
+                overallRank: marketRows.length + 1,
+                positionRank: i + 1,
+                trend30Day: 0,
+            });
+        });
+    }
+}
+
 const league = {
     league_id: 'L1', name: 'Fixture League', season: '2025', status: 'in_season',
     total_rosters: 12,
@@ -171,6 +198,11 @@ const fixtures = [
         }],
     })],
     [/open-meteo/, () => json({ hourly: {} })],
+    // Market values, deliberately at odds with the projections: the board is
+    // REVERSED within each position, so the projection's WR1 is the market's
+    // cheapest receiver. Nothing about the market path can quietly degrade into
+    // "same as the projection" and still pass.
+    [/api\.fantasycalc\.com/, () => json(marketRows)],
 ];
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -337,6 +369,14 @@ await page.waitForTimeout(2500);
             await page.waitForTimeout(3500);
             const back = (await page.textContent('#view')) || '';
             if (/What it takes to get/.test(back)) errors.push('finder: removing the target did not restore the open search');
+            // The price-vs-projection sections work from week one, unlike the
+            // usage ones, so they must be on the open board in every fixture.
+            if (!/Priced below their projection/.test(back)) {
+                errors.push('finder: the buy-low board is missing the price signal');
+            }
+            if (!/Priced above their projection/.test(back)) {
+                errors.push('finder: the sell-high board is missing the price signal');
+            }
         } else {
             errors.push('finder: the named target cannot be removed');
         }
@@ -402,12 +442,44 @@ if (await addPlayerToSide(0)) {
     if (!/median of \$/.test(text)) errors.push('trade: the cash section does not cite the league’s own bid history');
     if (!/Copy link to this trade/.test(text)) errors.push('trade: no way to send the deal that was just built');
 
+    // The fairness meter has to be quoting market price, not the user's board.
+    // Without this the market could stop loading entirely and every other
+    // assertion here would still pass.
+    if (!/Split at market price/.test(text)) {
+        errors.push('trade: the fairness meter is not priced at market');
+    }
+
     const o = await overflowOf();
     if (o.scrolled > 0) errors.push(`trade result: scrolls horizontally by ${o.scrolled}px`);
     if (o.wide.length) errors.push(`trade result: overflows — ${o.wide.join(', ')}`);
-    console.log(`  cash trade: analysed, ${text.trim().length} chars of result`);
+    console.log(`  cash trade: analysed at market price, ${text.trim().length} chars of result`);
 } else {
     errors.push('trade: could not add a player to a side');
+}
+
+// --- Three boards on one card ----------------------------------------------
+// Your rank, the projection and the market price are three different questions
+// and the card has to answer all three. The market fixture is reversed against
+// the projections, so a buy-low or sell-high verdict must appear too.
+await page.click('#tabs .tab[data-view="rankings"]');
+await page.waitForTimeout(600);
+const nameLink = await page.$('#view button.plink');
+if (nameLink) {
+    await nameLink.click();
+    await page.waitForSelector('.modal-backdrop .modal', { timeout: 5000 });
+    await page.waitForTimeout(600);
+    const card = (await page.textContent('.modal-backdrop .modal')) || '';
+    if (!/Your rank/.test(card)) errors.push('player card: no "your rank"');
+    if (!/Market rank/.test(card)) errors.push('player card: the market board is missing');
+    if (!/Projected rank/.test(card)) errors.push('player card: the projection board is missing');
+    if (!/(Buy low|Sell high)/.test(card)) {
+        errors.push('player card: market and projection disagree in the fixture but no edge was surfaced');
+    }
+    console.log(`  player card: three boards, ${card.trim().length} chars`);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+} else {
+    errors.push('player card: could not open one');
 }
 
 for (const width of [360, 414, 768]) {

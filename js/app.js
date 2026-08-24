@@ -28,6 +28,7 @@ import { buildEntries } from './trade.js';
 import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
 import { faabModel } from './faab.js';
+import { fetchMarketValues } from './market.js';
 import { impliedTotalsOverWeeks, scheduleStrength, playoffOutlook, playoffWeeksFor } from './outlook.js';
 import { sortBy } from './util.js';
 
@@ -63,6 +64,10 @@ export const app = {
     tradeValue: (v) => Math.round(v),
     faab: null,
     trendingAdds: null,
+    // What the rest of the world pays for these players. Null until the first
+    // fetch lands, and null forever if it never does -- every consumer falls
+    // back to the projected board.
+    market: null,
     seasonSchedule: new Map(),
     restOfSeason: new Map(),
     playoffSchedule: new Map(),
@@ -97,6 +102,9 @@ export const app = {
             // Rest-of-season value should reflect the rest of the season's
             // environment, not just this week's.
             scheduleStrength: this.restOfSeason,
+            // How the league at large prices these players, which is what
+            // decides whether a counterparty says yes.
+            market: this.market,
         });
         this.cfg = cfg;
 
@@ -230,7 +238,7 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         // can blend in what players have actually done and pull this week's
         // game lines.
         const teamsById = new Map(app.league.teams.map((t) => [t.rosterId, t]));
-        const [actuals, odds, transactions, outlook, trending] = await Promise.all([
+        const [actuals, odds, transactions, outlook, trending, market] = await Promise.all([
             app.league.lastPlayed > 0 ? data.loadSeasonStats(app.league.raw.season) : Promise.resolve(null),
             data.loadOdds(app.league.currentWeek, app.league.raw.season),
             loadSeasonTransactions(leagueId, app.league.currentWeek, { teamsById, players: app.players }).catch(() => []),
@@ -238,12 +246,18 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
             // Waiver demand: what the league at large is chasing right now, and
             // therefore what a contested claim is about to cost.
             trendingAdds().catch(() => new Map()),
+            // What the league at large pays for these players. Best-effort:
+            // a failure costs the second opinion, never the app.
+            fetchMarketValues(app.league.cfg, {
+                store: { load: store.loadCachedMarket, save: store.cacheMarket },
+            }).catch(() => null),
         ]);
         app.actuals = actuals;
         app.odds = odds;
         app.transactions = transactions;
         app.byeWeeks = outlook.byes;
         app.trendingAdds = trending;
+        app.market = market;
 
         // Every posted line for the rest of the season, from the same pass that
         // produced the bye map. A player on the offense with the best remaining

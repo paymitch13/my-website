@@ -9,12 +9,14 @@
 //   Stage 2  lineup solve, both ways    milliseconds     ~200 -> ~40
 //   Stage 3  full evaluation with odds  seconds           ~40 -> ~8
 //
-// Throughout, the counterparty's roster is valued on the NEUTRAL board (each
-// player's projected rank), never on the user's. Otherwise a player the user
-// happens to rank low looks cheap to pry loose, and the whole tool recommends
-// offers nobody would accept.
+// Throughout, the counterparty's roster is valued at MARKET price -- what the
+// player actually costs in real leagues -- and never on the user's board.
+// Otherwise a player the user happens to rank low looks cheap to pry loose, and
+// the whole tool recommends offers nobody would accept. The ledger is market on
+// both sides for the same reason: what you think of your own player decides
+// whether you want the deal, never whether it is even.
 
-import { buildEntries, buildNeutralEntries, evaluateTrade, createEvalCache } from './trade.js';
+import { buildEntries, buildNeutralEntries, evaluateTrade, createEvalCache, marketPrice } from './trade.js';
 import { optimizeLineup } from './lineup.js';
 import { buildLeagueNeeds, matchingPositions, relativeMatches, biggestNeed, biggestSurplus } from './needs.js';
 import { fairness } from './tradevalue.js';
@@ -201,8 +203,15 @@ export async function findTrades(input) {
         // than raw because the scale is convex on purpose: one stud is worth
         // more than two of half his value, so a consolidation trade reads as
         // fair here and would read as robbery on raw points.
-        const valueIn = sum(gets, (e) => scale(e.value));
-        const valueOut = sum(gives, (e) => scale(e.value));
+        //
+        // Priced at MARKET on both sides. My players used to be priced on my
+        // board and theirs on the neutral one, which is two yardsticks in a
+        // single fairness number: being higher than the league on my own guy
+        // made the ledger say I was giving up more than I was, and the search
+        // rejected deals that were fine. What I think of him decides whether I
+        // want the trade, never whether it is even.
+        const valueIn = sum(gets, (e) => scale(marketPrice(e, ctx)));
+        const valueOut = sum(gives, (e) => scale(marketPrice(e, ctx)));
         const split = fairness(valueIn, valueOut);
 
         // Lopsided on value is lopsided however well it fits a lineup slot.
