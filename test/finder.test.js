@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { findTrades, postureOf, acceptanceNote } from '../js/finder.js';
+import { findTrades, postureOf, acceptanceNote, spread } from '../js/finder.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
 import { syntheticSchedule } from '../js/sim.js';
+import { createTradeValueScale } from '../js/tradevalue.js';
+import { valuePlayer } from '../js/valuation.js';
+
+/** The market scale the app builds, so tests judge value the way the UI does. */
+function marketScale(teams, rankings, ctx) {
+    const raw = [];
+    for (const t of teams) for (const p of t.players) raw.push(valuePlayer(p, rankings.get(p.id) ?? 999, ctx).value);
+    return createTradeValueScale(raw);
+}
 
 const cfg = normalizeLeague({
     settings: { num_teams: 10, playoff_teams: 4, playoff_week_start: 15 },
@@ -280,14 +289,18 @@ test('same-position trades are allowed', async () => {
         const players = spec.map(([pos, ppg]) => mk(pos, ppg));
         teams.push({ rosterId, name, players, wins: 3, losses: 3, ties: 0, pointsFor: 700 });
     };
+    // Four even receivers and no ceiling, against one real WR1 and nothing
+    // after him. The numbers are close enough that two of mine for his one is
+    // a FAIR trade -- a WR-9 for a WR-24 would be robbery, and the value gate
+    // rejects it however well it fits a lineup slot.
     add(1, 'Flat', [
         ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 11],
-        ['WR', 9], ['WR', 9], ['WR', 9], ['WR', 9],
+        ['WR', 14], ['WR', 13], ['WR', 13], ['WR', 12],
         ['TE', 8], ['K', 7], ['DEF', 6],
     ]);
     add(2, 'Top Heavy', [
         ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 6],
-        ['WR', 24], ['WR', 5], ['WR', 4],
+        ['WR', 19], ['WR', 7], ['WR', 6],
         ['TE', 8], ['K', 7], ['DEF', 6],
     ]);
     for (let i = 3; i <= 8; i++) {
@@ -300,15 +313,14 @@ test('same-position trades are allowed', async () => {
     const rankings = rank(teams);
     const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
     const res = await findTrades({
-        cfg, ctx, teams, myRosterId: 1, rankings,
-        requireMutualGain: false, iterations: 80,
+        cfg, ctx, teams, myRosterId: 1, rankings, iterations: 80,
         limits: { stage2Keep: 200, stage3Keep: 2 },
     });
     const all = [...res.trades, ...res.others];
     const samePos = all.find(
         (t) => t.gives.every((e) => e.player.pos === 'WR') && t.gets.every((e) => e.player.pos === 'WR')
     );
-    assert.ok(samePos, 'my WR3 for your WR1 is the most ordinary trade there is');
+    assert.ok(samePos, 'my WR2 and WR3 for your WR1 is the most ordinary trade there is');
     assert.equal(samePos.other.rosterId, 2);
     assert.ok(samePos.myGain > 0);
 });
@@ -664,4 +676,141 @@ test('a package never sends and receives the same player, in any mode', async ()
         const give = new Set(t.gives.map((e) => e.player.id));
         for (const g of t.gets) assert.ok(!give.has(g.player.id));
     }
+});
+
+// --- Value, not just lineup fit --------------------------------------------
+
+test('a lopsided deal is refused however well it fits a lineup slot', async () => {
+    // The search only ever knew about lineup points, so it would happily
+    // propose sending a 6,000 for a 2,400 whenever the 2,400 filled a starting
+    // slot better. Nobody sends that, and the value printed on the card
+    // contradicted the recommendation above it.
+    const { projections, mk, rank } = pool();
+    const teams = [];
+    const add = (rosterId, name, spec) => {
+        teams.push({
+            rosterId, name, wins: 3, losses: 3, ties: 0, pointsFor: 700,
+            players: spec.map(([pos, ppg]) => mk(pos, ppg)),
+        });
+    };
+    // I have four scrubs at receiver and they have a monster. My lineup would
+    // love him; no manager alive trades him for one of my nines.
+    add(1, 'Scrubs', [
+        ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 11],
+        ['WR', 9], ['WR', 9], ['WR', 9], ['WR', 9], ['TE', 8], ['K', 7], ['DEF', 6],
+    ]);
+    add(2, 'Monster', [
+        ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 6],
+        ['WR', 26], ['WR', 5], ['WR', 4], ['TE', 8], ['K', 7], ['DEF', 6],
+    ]);
+    for (let i = 3; i <= 8; i++) {
+        add(i, `T${i}`, [['QB', 16], ['RB', 12], ['RB', 11], ['WR', 14], ['WR', 13], ['WR', 12], ['TE', 8], ['K', 6], ['DEF', 6]]);
+    }
+
+    const rankings = rank(teams);
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const scale = marketScale(teams, rankings, ctx);
+
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, tradeValue: scale,
+        iterations: 60, limits: { stage2Keep: 200, stage3Keep: 2 },
+    });
+
+    for (const t of [...res.trades, ...res.others]) {
+        assert.ok(
+            t.valueGap <= 0.3 + 1e-9,
+            `offer is ${(t.valueGap * 100).toFixed(0)}% apart on value: ` +
+                `${t.gives.map((e) => e.player.name)} for ${t.gets.map((e) => e.player.name)}`
+        );
+    }
+});
+
+test('every card carries the ledger it was judged on', async () => {
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 80, limits: { stage2Keep: 40, stage3Keep: 3 },
+    });
+    for (const t of [...res.trades, ...res.others]) {
+        assert.ok(Number.isFinite(t.valueIn) && t.valueIn >= 0);
+        assert.ok(Number.isFinite(t.valueOut) && t.valueOut >= 0);
+        assert.ok(Math.abs(t.valueNet - (t.valueIn - t.valueOut)) < 1e-6);
+    }
+});
+
+// --- One search, many different players ------------------------------------
+
+test('the board is not nine prices for the same man', () => {
+    // The best available target generates the most acceptable packages, so an
+    // unfiltered top-N was N ways to acquire one player. A search of the whole
+    // league should answer "who can I get", not "here are nine prices for him".
+    const row = (rosterId, getIds, myGain) => ({
+        other: { rosterId },
+        gets: getIds.map((id) => ({ player: { id } })),
+        gives: [{ player: { id: `g${id_++}` } }],
+        myGain,
+    });
+    let id_ = 0;
+
+    // Nine ways to get one man, then a few other options ranked below them.
+    const list = [
+        ...Array.from({ length: 9 }, (_, i) => row(2, ['star'], 10 - i)),
+        row(3, ['other'], 4),
+        row(4, ['third'], 3),
+        row(5, ['fourth'], 2),
+    ];
+
+    const out = spread(list, { perTargetCap: 2, perTeamCap: 4 });
+    const top = out.slice(0, 5);
+    const counts = new Map();
+    for (const t of top) {
+        const key = t.gets.map((e) => e.player.id).join('+');
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    assert.ok(counts.get('star') <= 2, `the top of the board is ${counts.get('star')} prices for one player`);
+    assert.ok(counts.size >= 3, `expected several different targets up top, got ${counts.size}`);
+});
+
+test('one manager cannot fill the whole board either', () => {
+    let n = 0;
+    const list = Array.from({ length: 10 }, () => ({
+        other: { rosterId: 2 },
+        gets: [{ player: { id: `p${n++}` } }],
+        gives: [{ player: { id: `g${n++}` } }],
+        myGain: 1,
+    }));
+    // Ten distinct acquisitions, all from one team: still capped, because a
+    // board that only ever names one counterparty is not a league search.
+    const out = spread(list, { perTargetCap: 2, perTeamCap: 3 });
+    assert.equal(out.length, 10, 'nothing is discarded');
+    assert.equal(new Set(out.slice(0, 3).map((t) => t.other.rosterId)).size, 1);
+    assert.ok(out.slice(0, 3).every((t) => t.other.rosterId === 2));
+});
+
+test('spread keeps every trade, it only reorders them', () => {
+    const list = Array.from({ length: 20 }, (_, i) => ({
+        other: { rosterId: (i % 2) + 2 },
+        gets: [{ player: { id: `p${i % 3}` } }],
+        gives: [{ player: { id: `g${i}` } }],
+        myGain: 20 - i,
+    }));
+    const out = spread(list, { perTargetCap: 1, perTeamCap: 1 });
+    assert.equal(out.length, list.length);
+    assert.deepEqual(new Set(out), new Set(list), 'same trades, different order');
+});
+
+test('nothing is thrown away to make room for variety', async () => {
+    // The caps decide what is seen first, never what exists.
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const scale = marketScale(teams, rankings, ctx);
+    const opts = { cfg, ctx, teams, myRosterId: 1, rankings, tradeValue: scale, iterations: 50 };
+
+    const spreadOut = await findTrades({ ...opts, limits: { stage2Keep: 200, stage3Keep: 2 } });
+    const unspread = await findTrades({
+        ...opts,
+        limits: { stage2Keep: 200, stage3Keep: 2, perTargetCap: 999, perTeamCap: 999 },
+    });
+    assert.equal(spreadOut.shortlisted, unspread.shortlisted, 'the same trades exist either way');
 });

@@ -138,9 +138,40 @@ of evaluation is matched to how many candidates survive:
 
 Everything that survives stage 2 is shown. Only the top slice gets the expensive simulation; the
 rest is listed as **also possible** with lineup numbers and a note saying so. Reporting "15
-found" and rendering one was the wrong trade-off. A **Balanced only** toggle controls whether
-the other side must gain too — on by default, because those are the offers that get accepted,
-but a lopsided offer is still worth seeing before you send it.
+found" and rendering one was the wrong trade-off.
+
+### Both sides have to want it, and the values have to line up
+
+Two filters, and the second one was missing for a long time.
+
+**Both lineups must improve.** There is no toggle for this. An offer the other manager would
+refuse is not a trade idea, and a switch that produced them only made the real results harder to
+find.
+
+**The values must be close.** The search used to know only about lineup points, so it would
+happily propose sending a 6,000 for a 2,400 whenever the 2,400 filled a starting slot better —
+a deal nobody sends, and one the value printed on the card flatly contradicted. Deals are now
+judged on the same market scale every card in the app prints, and the ledger is shown on each
+one.
+
+The ceiling is 30% apart, and that number is measured rather than picked. Across a twelve-team
+league the deals that improve *both* lineups sit between 18% and 26% apart, median 23% — a trade
+that helps two teams is nearly always slightly uneven on paper, because that unevenness is what
+one side is paying for fit. A 25% ceiling cuts straight through the middle of that distribution
+and throws real trades away. 30% keeps them and still rejects what prompted the change: a 1,716
+for a 10,000 is 83% apart, and even three of the 1,716s is 49%.
+
+Values are convex on purpose, so a consolidation trade reads as fair here and would read as
+robbery on raw points.
+
+### One search, many different players
+
+The best available target generates the most acceptable packages, so an unfiltered top-N is N
+ways to acquire one man — which reads as a broken search even though every row is a real trade.
+A search of the whole league should answer *who can I get*, not *here are nine prices for the
+same guy*. Results are capped at two per incoming player and four per counterparty; everything
+over the cap is demoted rather than dropped, so the caps decide what is seen first and never
+what exists.
 
 ### Naming a player
 

@@ -17,6 +17,7 @@
 import { buildEntries, buildNeutralEntries, evaluateTrade, createEvalCache } from './trade.js';
 import { optimizeLineup } from './lineup.js';
 import { buildLeagueNeeds, matchingPositions, relativeMatches, biggestNeed, biggestSurplus } from './needs.js';
+import { fairness } from './tradevalue.js';
 import { sortBy, sum } from './util.js';
 
 const TRADEABLE = new Set(['QB', 'RB', 'WR', 'TE']);
@@ -47,13 +48,40 @@ export async function findTrades(input) {
         cfg, ctx, teams, myRosterId, rankings, schedule = null,
         playoffOdds = null, iterations = 1200,
         want = [], offer = [],
+        tradeValue = null,
         limits = {},
     } = input;
+
+    // Player VALUE, on the same market scale the rest of the app shows. Without
+    // it the search only ever knew about lineup points, so it would happily
+    // propose sending a 6,000 for a 2,400 whenever the 2,400 happened to fit a
+    // starting slot better -- a deal nobody would send and the numbers on the
+    // card contradicted.
+    const scale = typeof tradeValue === 'function' ? tradeValue : (v) => Math.max(0, v);
 
     // Generous by default: the funnel exists to make the search affordable, not
     // to hide what it found. Everything that survives stage 2 is returned; only
     // the top slice gets the expensive odds simulation.
-    const { stage2Keep = 150, stage3Keep = 25, maxPieces = 3 } = limits;
+    const {
+        stage2Keep = 150, stage3Keep = 25, maxPieces = 3,
+        // How lopsided a deal may be on the value ledger before it stops being
+        // worth showing.
+        //
+        // Measured rather than guessed: across a twelve-team league the deals
+        // that improve BOTH lineups sit between 18% and 26% apart, median 23%,
+        // because a trade that helps two teams is nearly always slightly
+        // uneven on paper -- that unevenness is what one side is paying for
+        // fit. A 25% ceiling cuts straight through the middle of that
+        // distribution and throws away real trades. 30% keeps them and still
+        // rejects the deals that prompted this: a 1,716 for a 10,000 is 83%
+        // apart, and even three of the 1,716s is 49%.
+        maxValueGap = 0.3,
+        // How many results may feature the same incoming player. Without this
+        // the whole board fills with variations on acquiring one man, because
+        // the best available target produces the most acceptable packages.
+        perTargetCap = 2,
+        perTeamCap = 4,
+    } = limits;
     const { requireMutualGain = true, minGain = 0.05 } = input;
 
     const me = teams.find((t) => t.rosterId === myRosterId);
@@ -159,11 +187,25 @@ export async function findTrades(input) {
         const theirGain = theirAfter - theirBaseOf(theirs);
         const gains = { myGain, theirGain };
 
+        // The value ledger, on the market scale the cards print. Scaled rather
+        // than raw because the scale is convex on purpose: one stud is worth
+        // more than two of half his value, so a consolidation trade reads as
+        // fair here and would read as robbery on raw points.
+        const valueIn = sum(gets, (e) => scale(e.value));
+        const valueOut = sum(gives, (e) => scale(e.value));
+        const split = fairness(valueIn, valueOut);
+
         // A named target is a declared want. "This costs you 1.2 points a week
         // of lineup" is the ANSWER to what it would take, not a reason to hide
         // the offer -- so the my-gain gate is dropped and the cost is reported.
         if (!pinned && myGain <= minGain) return gains;
         if (requireMutualGain && theirGain <= minGain) return gains;
+
+        // Lopsided on value is lopsided however well it fits a lineup slot.
+        // A named target is looser -- the user has declared they want him, and
+        // paying over the odds is a legitimate answer to "what would it take"
+        // -- but not unbounded, because a 3x overpay is nobody's trade.
+        if (split.gap > (pinned ? maxValueGap * 3 : maxValueGap)) return gains;
         // A bigger package has to buy something, on whichever side grew. An
         // extra piece that leaves the lineup exactly where the smaller version
         // left it is a body moved for nothing, and listing four of those above
@@ -188,6 +230,11 @@ export async function findTrades(input) {
             theirSurplus: biggestSurplus(theirs),
             jointGain: myGain + theirGain,
             neutralGap: sum(gets, (e) => e.value) - sum(gives, (e) => e.value),
+            // Kept so a card can print the ledger it was actually judged on.
+            valueIn,
+            valueOut,
+            valueGap: split.gap,
+            valueNet: valueIn - valueOut,
             mutual: theirGain > minGain,
             pinned,
         });
@@ -336,7 +383,16 @@ export async function findTrades(input) {
         unique.push(c);
     }
 
-    const shortlist = unique.slice(0, stage2Keep);
+    // Spread the board across different players.
+    //
+    // The best available target generates the most acceptable packages, so an
+    // unfiltered top-N is N ways to acquire one man -- which reads as a broken
+    // search even though every row is a real trade. A search of the whole
+    // league should answer "who can I get", not "here are nine prices for the
+    // same guy". Capped per incoming player and per counterparty, then
+    // everything else is appended below so nothing is actually lost.
+    const diverse = targeted ? unique : spread(unique, { perTargetCap, perTeamCap });
+    const shortlist = diverse.slice(0, stage2Keep);
     if (!shortlist.length) {
         // Same shape whether or not anything was found, so callers never have
         // to guard for missing fields.
@@ -447,6 +503,36 @@ export async function findTrades(input) {
         want: wantEntries,
         offer: offerEntries,
     };
+}
+
+/**
+ * Reorder so the strongest DISTINCT options come first: at most `perTargetCap`
+ * ways to acquire the same player and `perTeamCap` deals with the same
+ * manager. Everything over the cap is kept, just demoted -- the caps decide
+ * what is seen first, never what exists.
+ */
+export function spread(list, { perTargetCap = 2, perTeamCap = 4 } = {}) {
+    const byTarget = new Map();
+    const byTeam = new Map();
+    const front = [];
+    const back = [];
+
+    for (const c of list) {
+        // Identity is the whole incoming set: getting a man alone and getting
+        // him with a throw-in are the same acquisition.
+        const targetKey = c.gets.map((e) => e.player.id).sort().join('+');
+        const t = (byTarget.get(targetKey) ?? 0) + 1;
+        const m = (byTeam.get(c.other.rosterId) ?? 0) + 1;
+
+        if (t <= perTargetCap && m <= perTeamCap) {
+            byTarget.set(targetKey, t);
+            byTeam.set(c.other.rosterId, m);
+            front.push(c);
+        } else {
+            back.push(c);
+        }
+    }
+    return [...front, ...back];
 }
 
 const modeOf = (targeted, shopping) =>

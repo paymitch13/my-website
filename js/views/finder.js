@@ -47,8 +47,6 @@ export default function renderFinder(app) {
     const teams = sortBy(app.league.teams, (t) => t.name.toLowerCase());
     let mine = teams.find((t) => t.ownerId && t.ownerId === app.userId) || teams[0];
 
-    let requireMutual = store.state.settings.finderMutualOnly !== false;
-
     // Named players. Empty means the open search: infer what I need from roster
     // shape. Naming somebody replaces the inference with a declaration, which
     // is a different and usually better-informed question.
@@ -83,22 +81,6 @@ export default function renderFinder(app) {
                 el('span', { class: 'tiny dim' }, 'MY ROSTER'),
                 picker,
                 el('div', { class: 'grow' }),
-                el(
-                    'button',
-                    {
-                        class: 'btn btn-sm btn-toggle',
-                        'aria-pressed': String(requireMutual),
-                        title: 'Only show deals that improve both lineups. Turn off to include lopsided offers.',
-                        onclick: (e) => {
-                            requireMutual = !requireMutual;
-                            store.state.settings.finderMutualOnly = requireMutual;
-                            store.save();
-                            e.currentTarget.setAttribute('aria-pressed', String(requireMutual));
-                            run();
-                        },
-                    },
-                    'Balanced only'
-                ),
                 el('button', { class: 'btn btn-sm', onclick: () => run() }, 'Search again')
             ),
             el(
@@ -210,7 +192,7 @@ export default function renderFinder(app) {
         const target = mine;
         host.replaceChildren(el('div', { class: 'card' }, spinnerRow('Searching every roster — needs, lineups, then full simulations…')));
         try {
-            const built = await build(app, target, requireMutual, {
+            const built = await build(app, target, {
                 want: want.map((p) => p.id),
                 offer: offer.map((p) => p.id),
             });
@@ -227,7 +209,7 @@ export default function renderFinder(app) {
     return root;
 }
 
-async function build(app, me, requireMutual = true, named = { want: [], offer: [] }) {
+async function build(app, me, named = { want: [], offer: [] }) {
     const { cfg, currentWeek, lastPlayed, raw, teams, schedule } = app.league;
 
     const wrap = el('div', {});
@@ -244,7 +226,13 @@ async function build(app, me, requireMutual = true, named = { want: [], offer: [
         schedule,
         playoffOdds,
         iterations: Math.min(store.state.settings.simIterations || 2000, 1200),
-        requireMutualGain: requireMutual,
+        // Balanced only, always. An offer the other manager would refuse is
+        // not a trade idea, it is a daydream, and a toggle that produced them
+        // just made the good results harder to find.
+        requireMutualGain: true,
+        // Deals are judged on player value as well as lineup fit, on the same
+        // market scale every card in the app prints.
+        tradeValue: app.tradeValue,
         want: named.want,
         offer: named.offer,
     });
@@ -270,7 +258,7 @@ async function build(app, me, requireMutual = true, named = { want: [], offer: [
                 ? tile('Cheapest costs you', res.trades[0] || res.others[0]
                     ? `${fmtDelta((res.trades[0] || res.others[0]).myGain)}`
                     : '—', 'pts/wk to your lineup')
-                : tile('Offers that work', res.shortlisted ?? 0, requireMutual ? 'both lineups improve' : 'your lineup improves'),
+                : tile('Offers that work', res.shortlisted ?? 0, 'both lineups improve, values within a quarter'),
             tile('Recommended', res.trades.length, 'after the full season simulation')
         )
     );
@@ -299,15 +287,14 @@ async function build(app, me, requireMutual = true, named = { want: [], offer: [
                 { class: 'card' },
                 el('p', { class: 'muted' },
                     targeted
-                        ? `Nothing on your roster gets ${res.want[0]?.player.name}'s owner to yes. ` +
-                          'That is an answer: he is either untouchable or the price is a piece you do not have. ' +
-                          'Turning off "Balanced only" will show the offers they would still turn down.'
+                        ? `Nothing on your roster gets ${res.want[0]?.player.name}'s owner to yes at a fair price. ` +
+                          'That is an answer: he is either untouchable, or the piece it would take is one you do not have.'
                         : shopping
-                            ? `Nobody in the league improves their lineup by taking ${offerNames}. ` +
-                              'Turning off "Balanced only" will show what they would say no to.'
-                            : 'No deal in this league improves both rosters right now. That usually means your team is ' +
-                              'shaped like everyone else’s — the finder only proposes trades the other manager has a ' +
-                              'reason to accept.')
+                            ? `Nobody in the league both improves their lineup by taking ${offerNames} and can pay ` +
+                              'fairly for him. He is either too good for what they can spare, or not good enough to want.'
+                            : 'No deal in this league improves both rosters at a fair price right now. That usually ' +
+                              'means your team is shaped like everyone else’s — the finder only proposes trades the ' +
+                              'other manager has a reason to accept.')
             )
         );
     } else if (!res.trades.length) {
@@ -486,7 +473,16 @@ function tradeCard(app, me, t, { targeted = false } = {}) {
                 : null,
             el('div', { class: 'fn' },
                 el('div', { class: 'k' }, 'Their lineup'),
-                el('div', { class: 'v num' }, `${fmtDelta(t.theirGain)} pts/wk`))
+                el('div', { class: 'v num' }, `${fmtDelta(t.theirGain)} pts/wk`)),
+            // The value ledger the deal was actually judged on. Showing the
+            // lineup numbers without it was the reason a screen full of real
+            // trades could still look like nonsense: nothing on the card said
+            // the two piles were worth roughly the same.
+            t.valueIn !== undefined
+                ? el('div', { class: 'fn' },
+                    el('div', { class: 'k' }, 'Value'),
+                    el('div', { class: 'v num' }, `${formatValue(t.valueIn)} for ${formatValue(t.valueOut)}`))
+                : null
         ),
         el('p', { class: 'small muted', style: 'margin:10px 0 0' }, 'Why they say yes: ', accept),
         el(

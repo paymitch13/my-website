@@ -243,6 +243,10 @@ await page.setViewportSize({ width: 1280, height: 900 });
 await page.click('#tabs .tab[data-view="finder"]');
 await page.waitForTimeout(2500);
 {
+    // The toggle is gone: balanced is the only mode now.
+    if (await page.$('button:has-text("Balanced only")')) {
+        errors.push('finder: the balanced-only toggle is still there');
+    }
     const targetBtn = await page.$('button:has-text("Target a player")');
     if (!targetBtn) {
         errors.push('finder: no way to name a target');
