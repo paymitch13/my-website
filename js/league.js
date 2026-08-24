@@ -183,6 +183,73 @@ export function replacementRanks(cfg) {
     return out;
 }
 
+/**
+ * Positions that compete for the same starting slots, and how many players the
+ * league starts across each such group.
+ *
+ * Replacement level is the whole basis of every value in the app, and computing
+ * it position by position is wrong the moment a league has a flex. When a RB, a
+ * WR and a TE are all fighting for one slot, the worst startable player at all
+ * three positions is the SAME player -- there is one waiver line, not three. Set
+ * three separate lines and you invent value out of nothing: a steep positional
+ * curve (running back) gets a deep, low baseline while a shallow one (receiver)
+ * gets a high one, and every back on the board is silently marked up against
+ * every receiver.
+ *
+ * So the positions are grouped by what can start where, and the group gets one
+ * line. A league with no flex produces one group per position and the old
+ * behaviour, exactly.
+ *
+ * @returns {Array<{positions: string[], startersPerTeam: number, cushion: number}>}
+ */
+export function flexGroups(cfg) {
+    const positions = ALL_POS.filter((p) => (cfg.startersByPos[p] || 0) > 0);
+    if (!positions.length) return [];
+
+    // Union the positions that share any multi-position slot.
+    const parent = new Map(positions.map((p) => [p, p]));
+    const find = (p) => {
+        while (parent.get(p) !== p) p = parent.get(p);
+        return p;
+    };
+    const union = (a, b) => {
+        const [ra, rb] = [find(a), find(b)];
+        if (ra !== rb) parent.set(rb, ra);
+    };
+
+    const dedicated = {};
+    const flexSlots = [];
+    for (const slot of cfg.starterSlots) {
+        const eligible = (SLOT_ELIGIBILITY[slot] || []).filter((p) => parent.has(p));
+        if (!eligible.length) continue;
+        if (eligible.length === 1) {
+            dedicated[eligible[0]] = (dedicated[eligible[0]] || 0) + 1;
+        } else {
+            flexSlots.push(eligible);
+            for (let i = 1; i < eligible.length; i++) union(eligible[0], eligible[i]);
+        }
+    }
+
+    const CUSHION = { QB: 0.35, RB: 0.9, WR: 0.9, TE: 0.35, K: 0.05, DEF: 0.15 };
+    const groups = new Map();
+    for (const pos of positions) {
+        const root = find(pos);
+        if (!groups.has(root)) groups.set(root, { positions: [], startersPerTeam: 0, cushion: 0 });
+        const g = groups.get(root);
+        g.positions.push(pos);
+        g.startersPerTeam += dedicated[pos] || 0;
+    }
+    for (const eligible of flexSlots) groups.get(find(eligible[0])).startersPerTeam += 1;
+    for (const g of groups.values()) {
+        // Managers roster backups at the positions that churn most, which pushes
+        // the true waiver line deeper than the raw number of starting slots. A
+        // group's cushion is the average over the positions in it, because the
+        // benches behind a flex are shared too.
+        g.cushion = g.positions.reduce((a, p) => a + (CUSHION[p] ?? 0.3), 0) / g.positions.length;
+    }
+    return [...groups.values()];
+}
+
 /** Weeks of fantasy regular season left to play, inclusive of the current week. */
 export function weeksRemaining(cfg, currentWeek) {
     const lastRegular = (cfg.playoffWeekStart || 15) - 1;

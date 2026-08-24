@@ -12,7 +12,7 @@
 // production instead of being bolted on as a fudge factor afterwards.
 
 import { clamp } from './util.js';
-import { ALL_POS, replacementRanks } from './league.js';
+import { ALL_POS, replacementRanks, flexGroups } from './league.js';
 import { blendedPpg, projectedPpg } from './projections.js';
 
 /**
@@ -311,6 +311,42 @@ export function softplusPar(par, k = 1.25) {
 }
 
 /**
+ * One replacement line per group of positions that share starting slots.
+ *
+ * The per-position version of this was the single biggest distortion in the
+ * app. In a standard 12-team half-PPR league it put the running back line at
+ * 8.3 points a game and the receiver line at 9.7, so the same production was
+ * worth 1.4 points a game more at running back for no reason other than which
+ * curve it sat on. Compounded over a season and then run through the convex
+ * trade curve, that is what priced the RB4 above the WR1 and made the finder
+ * offer deals no manager would accept.
+ *
+ * With a flex, the line is a single number: pool every flex-eligible position,
+ * sort, and read off the last startable player. Positions with only dedicated
+ * slots (a kicker, a defense, a quarterback outside superflex) keep their own
+ * line, which is the same thing -- a group of one.
+ */
+function sharedReplacement({ cfg, curves, ppgAtRank, replacement }) {
+    const out = {};
+    for (const pos of ALL_POS) out[pos] = ppgAtRank(pos, replacement[pos]);
+
+    for (const group of flexGroups(cfg)) {
+        if (group.positions.length < 2) continue;
+        const pooled = group.positions.flatMap((pos) => curves?.[pos] || []);
+        // No projections to pool means the fallback model is in play, and its
+        // per-position curves are the only thing to go on.
+        if (pooled.length < group.positions.length * 8) continue;
+        pooled.sort((a, b) => b - a);
+
+        const starters = cfg.teams * group.startersPerTeam;
+        const depth = starters + cfg.teams * group.cushion * 0.35;
+        const line = pooled[Math.min(pooled.length, Math.max(1, Math.round(depth))) - 1];
+        for (const pos of group.positions) out[pos] = line;
+    }
+    return out;
+}
+
+/**
  * Build a valuation context once per (league, rankings, week) and reuse it for
  * every player lookup. Recomputing replacement levels per player would be the
  * single hottest line in the simulator otherwise.
@@ -330,8 +366,7 @@ export function createValuationContext(cfg, {
     const ppgAtRank = (pos, rank) =>
         curveLookup(curves?.[pos], rank, () => ppgFor(pos, rank, cfg.scoring));
 
-    const replacementPpg = {};
-    for (const pos of ALL_POS) replacementPpg[pos] = ppgAtRank(pos, replacement[pos]);
+    const replacementPpg = sharedReplacement({ cfg, curves, ppgAtRank, replacement });
 
     return {
         cfg,

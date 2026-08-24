@@ -253,12 +253,12 @@ async function build(app, me, named = { want: [], offer: [] }) {
             { class: 'tiles' },
             targeted
                 ? tile('Packages priced', res.shortlisted ?? 0, `offers that get them to say yes for ${wantNames}`)
-                : tile('Pairings explored', res.scanned ?? 0, 'positions where you and a rival match up'),
+                : tile('Players priced', res.scanned ?? 0, 'of yours checked against every rival roster'),
             targeted
                 ? tile('Cheapest costs you', res.trades[0] || res.others[0]
                     ? `${fmtDelta((res.trades[0] || res.others[0]).myGain)}`
                     : '—', 'pts/wk to your lineup')
-                : tile('Offers that work', res.shortlisted ?? 0, 'both lineups improve, values within a quarter'),
+                : tile('Offers that work', res.shortlisted ?? 0, 'values within 15% and something in it for both of you'),
             tile('Recommended', res.trades.length, 'after the full season simulation')
         )
     );

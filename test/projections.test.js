@@ -124,7 +124,12 @@ test('a player at exactly replacement level has a usable, non-zero value', () =>
     const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
     assert.equal(ctx.projected, true);
 
-    const replRank = ctx.replacement.RB;
+    // Where the replacement LINE falls on the running back curve. It is not
+    // simply the count of rostered backs any more: the flex slot means backs,
+    // receivers and tight ends are all fighting for the same last startable
+    // spot, so they share one line and it is read off the pooled board.
+    const replRank = ctx.curves.RB.findIndex((ppg) => ppg <= ctx.replacementPpg.RB) + 1;
+    assert.ok(replRank > 0, 'the replacement line must land somewhere on the curve');
     const p = { id: 'x', name: 'Replacement Guy', pos: 'RB', age: 26, injury: null };
     const atRepl = valuePlayer(p, replRank, ctx);
     assert.equal(round2(atRepl.parPerGame), 0, 'this rank IS replacement level');

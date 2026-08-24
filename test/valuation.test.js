@@ -108,3 +108,88 @@ test('redraft ignores age entirely', () => {
     const old = valuePlayer({ id: 'b', name: 'Old', pos: 'RB', age: 30 }, 3, ctx).value;
     assert.equal(young, old);
 });
+
+// --- One replacement line per flex group -----------------------------------
+//
+// The single biggest distortion the app ever shipped: every position carried
+// its own replacement level, so the same production was worth more at running
+// back than at receiver purely because the RB curve is steeper. Compounded over
+// a season and run through the convex trade curve, it priced the RB4 above the
+// WR1 and the trade finder duly offered deals nobody would accept.
+
+/** A projection pool with a distinct, controllable curve shape per position. */
+function board({ rbTop = 20, wrTop = 20, teTop = 14, qbTop = 24, decay = 0.4, n = 90 } = {}) {
+    const projections = {};
+    const add = (pos, top, count) => {
+        for (let i = 0; i < count; i++) {
+            const ppg = Math.max(1, top - i * decay);
+            projections[`${pos}${i}`] = {
+                id: `${pos}${i}`, pos, games: 17,
+                stats: { rush_yd: ppg * 170 }, ptsHalfPpr: 1,
+            };
+        }
+    };
+    add('RB', rbTop, n);
+    add('WR', wrTop, n);
+    add('TE', teTop, n);
+    add('QB', qbTop, 40);
+    return projections;
+}
+
+const flexLeague = (roster) =>
+    normalizeLeague({
+        settings: { num_teams: 12, playoff_teams: 6, playoff_week_start: 15 },
+        scoring_settings: { rush_yd: 0.1 },
+        roster_positions: roster,
+    });
+
+test('positions that share a flex slot share one replacement line', () => {
+    // Receivers fall away faster than backs here, so per-position lines would
+    // land at different points and hand one position free value over the other.
+    const projections = board({ rbTop: 20, wrTop: 26, teTop: 14 });
+    const cfg = flexLeague(defaultRosterPositions());
+    const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
+
+    assert.equal(ctx.replacementPpg.RB, ctx.replacementPpg.WR, 'RB and WR fill the same flex');
+    assert.equal(ctx.replacementPpg.RB, ctx.replacementPpg.TE, 'and so does TE');
+    // The quarterback is not flex-eligible in a one-QB league, so he keeps his
+    // own line -- a group of one.
+    assert.notEqual(ctx.replacementPpg.QB, ctx.replacementPpg.RB);
+});
+
+test('equal production is worth the same at running back and receiver', () => {
+    const projections = board({ rbTop: 20, wrTop: 26, teTop: 14 });
+    const cfg = flexLeague(defaultRosterPositions());
+    const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
+
+    // The 10th back and the 22nd receiver score within a whisker of each other
+    // on this board. Find the pair and check the app agrees.
+    const target = ctx.curves.RB[9];
+    const wrRank = ctx.curves.WR.findIndex((p) => p <= target) + 1;
+    assert.ok(wrRank > 0);
+
+    const rb = valuePlayer({ id: 'a', pos: 'RB', age: 26, injury: null }, 10, ctx);
+    const wr = valuePlayer({ id: 'b', pos: 'WR', age: 26, injury: null }, wrRank, ctx);
+    assert.ok(
+        Math.abs(rb.value - wr.value) < Math.max(rb.value, wr.value) * 0.12,
+        `same production must price alike: RB ${rb.value.toFixed(0)} vs WR ${wr.value.toFixed(0)}`
+    );
+});
+
+test('a league with no flex gives every position its own line', () => {
+    const projections = board({ rbTop: 20, wrTop: 26, teTop: 14 });
+    const cfg = flexLeague(['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'K', 'DEF', 'BN', 'BN', 'BN', 'BN']);
+    const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
+
+    assert.notEqual(ctx.replacementPpg.RB, ctx.replacementPpg.WR);
+    assert.equal(ctx.replacementPpg.RB, ctx.curves.RB[replacementRanks(cfg).RB - 1]);
+});
+
+test('superflex pulls quarterbacks onto the shared line', () => {
+    const projections = board();
+    const cfg = flexLeague([
+        'QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'SUPER_FLEX', 'K', 'DEF', 'BN', 'BN',
+    ]);
+    const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
+    assert.equal(ctx.replacementPpg.QB, ctx.replacementPpg.RB, 'superflex makes QBs flex-eligible');
+});

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { findTrades, postureOf, acceptanceNote, spread } from '../js/finder.js';
+import { findTrades, postureOf, acceptanceNote, spread, undominated } from '../js/finder.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
 import { syntheticSchedule } from '../js/sim.js';
@@ -293,14 +293,20 @@ test('same-position trades are allowed', async () => {
     // after him. The numbers are close enough that two of mine for his one is
     // a FAIR trade -- a WR-9 for a WR-24 would be robbery, and the value gate
     // rejects it however well it fits a lineup slot.
+    //
+    // Exactly two backs, so the only pieces I can add without opening a hole in
+    // my own lineup are receivers. The search is position-blind by design now:
+    // it pairs on value, and an interchangeable RB-11 priced identically to the
+    // WR-12 would make which one it picks a coin toss rather than a property
+    // worth asserting.
     add(1, 'Flat', [
-        ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 11],
+        ['QB', 17], ['RB', 13], ['RB', 12],
         ['WR', 14], ['WR', 13], ['WR', 13], ['WR', 12],
         ['TE', 8], ['K', 7], ['DEF', 6],
     ]);
     add(2, 'Top Heavy', [
         ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 6],
-        ['WR', 19], ['WR', 7], ['WR', 6],
+        ['WR', 19], ['WR', 5], ['WR', 4],
         ['TE', 8], ['K', 7], ['DEF', 6],
     ]);
     for (let i = 3; i <= 8; i++) {
@@ -393,14 +399,24 @@ test('a bigger package has to buy something', async () => {
     }
 
     for (const group of byTarget.values()) {
-        const solo = group.find((t) => t.gives.length === 1);
-        if (!solo) continue;
-        for (const bigger of group.filter((t) => t.gives.length > 1)) {
-            assert.ok(
-                bigger.theirGain > solo.theirGain,
-                `sending ${bigger.gives.length} for the same return must gain them more than sending 1 ` +
-                    `(${bigger.theirGain.toFixed(2)} vs ${solo.theirGain.toFixed(2)})`
+        for (const bigger of group) {
+            // Only a package built ON another one can be compared to it. Since
+            // the search pairs on value rather than growing outward from a
+            // chosen chip, two packages with the same return often share no
+            // pieces at all -- and "sending two of mine beats sending one of
+            // someone else's" is not a property, it is a coincidence.
+            const ids = new Set(bigger.gives.map((e) => e.player.id));
+            const smaller = group.filter(
+                (t) => t !== bigger && t.gives.length < bigger.gives.length &&
+                    t.gives.every((e) => ids.has(e.player.id))
             );
+            for (const solo of smaller) {
+                assert.ok(
+                    bigger.theirGain > solo.theirGain,
+                    `adding ${bigger.gives.length - solo.gives.length} more for the same return must gain ` +
+                        `them more (${bigger.theirGain.toFixed(2)} vs ${solo.theirGain.toFixed(2)})`
+                );
+            }
         }
     }
 });
@@ -468,7 +484,15 @@ test('naming a target answers what he would cost', async () => {
     for (const t of all) {
         assert.ok(t.gets.some((e) => e.player.id === star.id), 'every package has to contain him');
         assert.equal(t.other.rosterId, 2, 'and go to the man who owns him');
-        assert.ok(t.theirGain > 0, 'and be one they would actually take');
+        // Something has to be in it for them, but "their starting lineup goes
+        // up" is only one of the two ways that happens. Prying a star loose is
+        // usually paid for in value, and a manager who banks a clear profit on
+        // the ledger will wear a fractional dip in Sunday's points to do it.
+        const paid = t.valueOut - t.valueIn;
+        assert.ok(
+            t.theirGain > 0 || paid > 0.04 * Math.max(t.valueIn, t.valueOut),
+            `and be one they would actually take (lineup ${t.theirGain.toFixed(2)}, ledger ${paid.toFixed(0)})`
+        );
     }
 });
 
@@ -813,4 +837,136 @@ test('nothing is thrown away to make room for variety', async () => {
         limits: { stage2Keep: 200, stage3Keep: 2, perTargetCap: 999, perTeamCap: 999 },
     });
     assert.equal(spreadOut.shortlisted, unspread.shortlisted, 'the same trades exist either way');
+});
+
+// --- Realism: what the search may put in front of a person ------------------
+//
+// Every one of these is a shape the finder used to produce and a manager would
+// have laughed at. The ledger gate, the acceptance model and the dominance pass
+// each exist because of one of them.
+
+test('nothing on the board is lopsided on value', async () => {
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const tradeValue = marketScale(teams, rankings, ctx);
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, tradeValue,
+        iterations: 80, limits: { stage2Keep: 200, stage3Keep: 3 },
+    });
+
+    for (const t of [...res.trades, ...res.others]) {
+        assert.ok(
+            t.valueGap <= 0.15 + 1e-9,
+            `${t.valueIn.toFixed(0)} for ${t.valueOut.toFixed(0)} is ${(t.valueGap * 100).toFixed(0)}% apart`
+        );
+    }
+});
+
+test('a gap in my favour is no more acceptable than one against me', async () => {
+    // Symmetry is the point. Winning a trade by a third is not a recommendation
+    // -- it is an offer that gets ignored, and the tool exists to get replies.
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const tradeValue = marketScale(teams, rankings, ctx);
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, tradeValue,
+        iterations: 80, limits: { stage2Keep: 200, stage3Keep: 3 },
+    });
+
+    for (const t of [...res.trades, ...res.others]) {
+        const edge = (t.valueIn - t.valueOut) / Math.max(t.valueIn, t.valueOut);
+        assert.ok(edge <= 0.15 + 1e-9, `winning by ${(edge * 100).toFixed(0)}% is not a deal they take`);
+    }
+});
+
+test('every side of every deal has a reason to say yes', async () => {
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const tradeValue = marketScale(teams, rankings, ctx);
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings, tradeValue,
+        iterations: 80, limits: { stage2Keep: 200, stage3Keep: 3 },
+    });
+    assert.ok(res.trades.length + res.others.length > 0, 'and there must BE deals');
+
+    for (const t of [...res.trades, ...res.others]) {
+        const material = 0.04 * Math.max(t.valueIn, t.valueOut);
+        const reason = (lineup, net) => lineup > -0.6 && (lineup > 0.05 || net > material);
+        assert.ok(reason(t.myGain, t.valueIn - t.valueOut), `nothing in it for me: ${t.myGain.toFixed(2)}`);
+        assert.ok(reason(t.theirGain, t.valueOut - t.valueIn), `nothing in it for them: ${t.theirGain.toFixed(2)}`);
+    }
+});
+
+test('a package with a free body stapled on is dropped', () => {
+    // Reachable from a silly pairing: match a scrub against a star, "complete"
+    // the ledger with the player who was the real trade all along, and out
+    // comes the clean deal with a spare attached. Six of those, identical in
+    // both gain columns, was what the board looked like.
+    const e = (id, value) => ({ player: { id }, value });
+    const other = { rosterId: 2 };
+    const clean = { other, gives: [e('mine', 3659)], gets: [e('star', 4173)], myGain: 0.41, theirGain: 2.25, valueGap: 0.12 };
+    const padded = {
+        other,
+        gives: [e('mine', 3659), e('scrub', 93)],
+        gets: [e('star', 4173)],
+        myGain: 0.41, theirGain: 2.25, valueGap: 0.08,
+    };
+
+    const out = undominated([clean, padded]);
+    assert.deepEqual(out, [clean], 'sending more for the same return is never the better deal');
+});
+
+test('one acquisition does not appear three times wearing different change', () => {
+    // Same two players at the heart of it, different worthless filler coming
+    // back. One trade, and the honest version is the one closest to even.
+    const e = (id, value) => ({ player: { id }, value });
+    const other = { rosterId: 2 };
+    const variant = (fillerId, fillerValue, valueGap) => ({
+        other,
+        gives: [e('cook', 3177)],
+        gets: [e('mcbride', 2690), e(fillerId, fillerValue)],
+        myGain: 1.25, theirGain: 0.99, valueGap,
+    });
+    const fairest = variant('stafford', 328, 0.05);
+    const list = [variant('charbonnet', 24, 0.15), fairest, variant('downs', 229, 0.08)];
+
+    const out = undominated(list);
+    assert.equal(out.length, 1, `expected one representative, got ${out.length}`);
+    assert.equal(out[0], fairest, 'and it should be the one whose ledger is closest to even');
+});
+
+test('a package that genuinely differs survives the collapse', () => {
+    const e = (id, value) => ({ player: { id }, value });
+    const other = { rosterId: 2 };
+    const a = { other, gives: [e('a', 100)], gets: [e('x', 105)], myGain: 1, theirGain: 1, valueGap: 0.05 };
+    const b = { other, gives: [e('b', 100)], gets: [e('y', 105)], myGain: 1, theirGain: 1, valueGap: 0.05 };
+    assert.equal(undominated([a, b]).length, 2, 'different players, different trades');
+});
+
+test('one player cannot be in every row of the board', () => {
+    // Value-matched search makes this worse, not better: the two or three
+    // pieces whose price lines up against the rest of the league turn up in
+    // nearly every affordable package.
+    const e = (id) => ({ player: { id }, value: 100 });
+    // Eight ways to send the same man, ranked above three deals that do not
+    // involve him at all.
+    const list = [
+        ...Array.from({ length: 8 }, (_, i) => ({
+            other: { rosterId: 2 + i },
+            gives: [e('workhorse')],
+            gets: [e(`target${i}`)],
+            myGain: 20 - i,
+        })),
+        ...Array.from({ length: 3 }, (_, i) => ({
+            other: { rosterId: 2 + i },
+            gives: [e(`spare${i}`)],
+            gets: [e(`elsewhere${i}`)],
+            myGain: 3 - i,
+        })),
+    ];
+
+    const out = spread(list, { perTargetCap: 2, perTeamCap: 4, perPieceCap: 3 });
+    const top = out.slice(0, 5).filter((t) => t.gives.some((g) => g.player.id === 'workhorse'));
+    assert.ok(top.length <= 3, `the same player leaves in ${top.length} of the first five rows`);
+    assert.equal(out.length, list.length, 'and nothing is actually thrown away');
 });

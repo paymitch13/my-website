@@ -67,19 +67,34 @@ export async function findTrades(input) {
         // How lopsided a deal may be on the value ledger before it stops being
         // worth showing.
         //
-        // Measured rather than guessed: across a twelve-team league the deals
-        // that improve BOTH lineups sit between 18% and 26% apart, median 23%,
-        // because a trade that helps two teams is nearly always slightly
-        // uneven on paper -- that unevenness is what one side is paying for
-        // fit. A 25% ceiling cuts straight through the middle of that
-        // distribution and throws away real trades. 30% keeps them and still
-        // rejects the deals that prompted this: a 1,716 for a 10,000 is 83%
-        // apart, and even three of the 1,716s is 49%.
-        maxValueGap = 0.3,
+        // This used to sit at 30%, on a measurement taken while every position
+        // carried its own replacement level -- which inflated cross-positional
+        // gaps by about that much on its own. With one replacement line per
+        // flex group the ledger means what it says, and 30% is simply a bad
+        // trade: it let the search offer a 3,200 back for a 4,800, and the
+        // manager on the other end of that offer does not reply.
+        //
+        // 15% is the width of a real negotiation. Deals inside it read as
+        // "close enough, and it fills my hole"; deals outside it read as
+        // someone trying it on.
+        maxValueGap = 0.15,
+        // How far a side may go BACKWARDS on starting points to take a deal
+        // that pays them in value. This is the consolidation trade -- two
+        // starters for one better one leaves a hole in the flex this week and
+        // wins the season -- and without the allowance the search cannot
+        // propose one.
+        lineupSlack = 0.6,
+        // ...and how big that value edge has to be to count as a reason on its
+        // own, as a share of the deal. Any edge at all used to qualify, which
+        // is how two bench backs for a bench receiver -- fourteen points of
+        // value on an eight-hundred-point deal, both lineups unmoved -- ended
+        // up on the board as a recommendation.
+        minValueEdge = 0.04,
         // How many results may feature the same incoming player. Without this
         // the whole board fills with variations on acquiring one man, because
         // the best available target produces the most acceptable packages.
         perTargetCap = 2,
+        perPieceCap = 3,
         perTeamCap = 4,
     } = limits;
     const { requireMutualGain = true, minGain = 0.05 } = input;
@@ -120,46 +135,41 @@ export async function findTrades(input) {
     const targeted = wantEntries.length > 0;
     const shopping = offerEntries.length > 0;
 
+    // --- Who to talk to -----------------------------------------------------
+    //
+    // Needs decide the ORDER counterparties are worked through and the sentence
+    // a card puts on the pairing. They no longer decide which players get
+    // looked at. Enumerating candidates by position and checking the ledger
+    // afterwards was backwards: with a real gate on value, almost everything
+    // position-matching generated was unaffordable, and the roster with the
+    // fewest holes -- the good one, the one most able to trade -- got the
+    // fewest candidates. Value comes first now, which is also what the numbers
+    // on the cards have always claimed was happening.
     const pairs = [];
     if (targeted) {
-        // One counterparty, no position filter: they own the player.
+        // One counterparty, no filter at all: they own the player.
         pairs.push({ other: targetTeam, theirs: targetNeeds, score: Infinity, pinned: true });
     } else {
         for (const other of others) {
             const theirs = needsMap.get(other.rosterId);
             if (!theirs) continue;
-
-            // What I need that they can spare, and what they need that I can
-            // spare. Falling back to relative shape when there is no absolute
-            // match is what keeps a strong roster -- above average everywhere,
-            // short of nothing -- from being told that no trade in the league
-            // exists. It only widens what gets LOOKED at; stage 2 still has to
-            // find a deal that improves both lineups before anything is
-            // proposed.
+            // Falling back to relative shape when there is no absolute match is
+            // what keeps a strong roster -- above average everywhere, short of
+            // nothing -- from sorting last behind teams it has no business
+            // trading with.
             const iWant = orRelative(matchingPositions(mine, theirs), mine, theirs);
             const theyWant = orRelative(matchingPositions(theirs, mine), theirs, mine);
-            if (!iWant.length || !theyWant.length) continue;
-
-            for (const wantPos of iWant.slice(0, 4)) {
-                for (const givePos of theyWant.slice(0, 4)) {
-                    // Same-position deals are the most common shape there is --
-                    // my WR3 plus a piece for your WR1 -- and were forbidden
-                    // outright. They are allowed now; stage 2's mutual-gain
-                    // filter is what decides whether they are any good.
-                    pairs.push({
-                        other,
-                        theirs,
-                        wantPos: wantPos.pos,
-                        givePos: givePos.pos,
-                        score: wantPos.score + givePos.score,
-                    });
-                }
-            }
+            const score = (iWant[0]?.score ?? 0) + (theyWant[0]?.score ?? 0);
+            pairs.push({ other, theirs, score });
         }
     }
 
+    /** Can these two ledgers possibly clear the gate? */
+    const withinLedger = (a, b) => fairness(a, b).gap <= maxValueGap;
+
     // --- Stage 2: lineup solve, both directions ----------------------------
     const candidates = [];
+    let pairings = 0;
     const myBase = mine.lineup.points;
     const forcedGiveIds = new Set(offerEntries.map((e) => e.player.id));
 
@@ -195,17 +205,38 @@ export async function findTrades(input) {
         const valueOut = sum(gives, (e) => scale(e.value));
         const split = fairness(valueIn, valueOut);
 
-        // A named target is a declared want. "This costs you 1.2 points a week
-        // of lineup" is the ANSWER to what it would take, not a reason to hide
-        // the offer -- so the my-gain gate is dropped and the cost is reported.
-        if (!pinned && myGain <= minGain) return gains;
-        if (requireMutualGain && theirGain <= minGain) return gains;
-
         // Lopsided on value is lopsided however well it fits a lineup slot.
         // A named target is looser -- the user has declared they want him, and
         // paying over the odds is a legitimate answer to "what would it take"
         // -- but not unbounded, because a 3x overpay is nobody's trade.
         if (split.gap > (pinned ? maxValueGap * 3 : maxValueGap)) return gains;
+
+        // --- Would each manager actually press accept? ----------------------
+        //
+        // The old test was "both starting lineups go up", and it was wrong in
+        // both directions at once. It rejected the majority of real trades --
+        // 1,421 of 1,450 candidates in a twelve-team league, because two
+        // lineups rarely both improve on points alone -- and the handful that
+        // squeezed through were the odd corners where a bad asset happened to
+        // fit a slot. A search that thin has nothing left to be selective
+        // with, which is how a 3,200-for-4,800 ended up on the board.
+        //
+        // What a manager actually weighs is two things: the ledger, and the
+        // lineup. Value is zero-sum, so somebody is always giving up a little
+        // of it -- that side has to be paid in fit, and the side collecting
+        // the value has to not be wrecking its Sunday to do it. Each manager
+        // therefore needs a reason to say yes on one axis and no reason to say
+        // no on the other.
+        const material = minValueEdge * Math.max(valueIn, valueOut);
+        const accepts = (lineupGain, valueNet) =>
+            lineupGain > -lineupSlack && (lineupGain > minGain || valueNet > material);
+
+        // A named target is a declared want. "This costs you 1.2 points a week
+        // of lineup" is the ANSWER to what it would take, not a reason to hide
+        // the offer -- so my own side of the test is dropped and the cost is
+        // reported on the card instead.
+        if (!pinned && !accepts(myGain, valueIn - valueOut)) return gains;
+        if (requireMutualGain && !accepts(theirGain, valueOut - valueIn)) return gains;
         // A bigger package has to buy something, on whichever side grew. An
         // extra piece that leaves the lineup exactly where the smaller version
         // left it is a body moved for nothing, and listing four of those above
@@ -258,14 +289,10 @@ export async function findTrades(input) {
         // What I can send: pinned to the named players when there are any, so
         // "here is my trade bait, what can I get" is answered with offers that
         // actually contain the bait.
-        const offers = shopping
-            ? offerEntries
-            : mine.entries.filter((e) => e.player.pos === pair.givePos && TRADEABLE.has(e.player.pos));
-        const targets = theirs.entries.filter(
-            (e) =>
-                TRADEABLE.has(e.player.pos) &&
-                (shopping || e.player.pos === pair.wantPos)
-        );
+        const offers = shopping ? offerEntries : tradeablePool(mine.entries, 14);
+        const targets = shopping
+            ? theirs.entries.filter((e) => TRADEABLE.has(e.player.pos))
+            : tradeablePool(theirs.entries, 14);
         if (!targets.length || !offers.length) continue;
 
         if (shopping) {
@@ -289,30 +316,78 @@ export async function findTrades(input) {
             continue;
         }
 
-        for (const target of sortBy(targets, (e) => e.value, -1).slice(0, 8)) {
-            for (const give of sortBy(offers, (e) => e.value, -1).slice(0, 8)) {
+        // One-for-one, but only against the players a manager could plausibly
+        // ask for in return. Everything outside the ledger window is skipped
+        // before a lineup is ever solved, which is what pays for the wider
+        // player pool above.
+        for (const give of offers) {
+            const gv = scale(give.value);
+            pairings++;
+
+            for (const target of targets) {
                 if (give.player.id === target.player.id) continue;
+                const tv = scale(target.value);
 
-                // 1-for-1
-                const solo = consider({ other, theirs, gives: [give], gets: [target] });
+                const solo = withinLedger(tv, gv)
+                    ? consider({ other, theirs, gives: [give], gets: [target] })
+                    : null;
 
-                // 2-for-1 consolidation: two of my pieces for one of theirs.
-                // This is the trade that wins leagues, and the value model was
-                // built to price it -- the convex curve exists precisely so a
-                // stud beats two good players -- but the search could not
-                // produce one. The second piece comes from my surplus.
-                if (target.value > give.value * 1.15) {
-                    for (const second of cheapest(mine.entries, [give, target], 5)) {
-                        // The extra piece has to buy something. A second player
-                        // who leaves their lineup exactly where the one-for-one
-                        // left it is a player given away for nothing, and the
-                        // search was proposing five of those in a row above the
-                        // deal they were variations of.
+                // Two-for-one, in both directions. Consolidation is the trade
+                // that wins leagues and the convex value curve exists to price
+                // it, but the second piece has to be chosen so the ledger
+                // lands -- picking "my five cheapest" and hoping was why the
+                // search could never build one that survived.
+                //
+                // Either way the extra body still has to buy something: a
+                // second player who leaves the receiving lineup exactly where
+                // the one-for-one left it has been given away for nothing.
+                if (tv > gv) {
+                    for (const second of completing(offers, [give, target], gv, tv, true)) {
                         consider({ other, theirs, gives: [give, second], gets: [target], mustBeat: solo });
+                    }
+                } else if (gv > tv) {
+                    for (const second of completing(targets, [give, target], tv, gv, false)) {
+                        consider({ other, theirs, gives: [give], gets: [target, second], mustBeatMine: solo });
                     }
                 }
             }
         }
+    }
+
+    /**
+     * The pieces that would close a ledger gap, cheapest first.
+     *
+     * `have` is the smaller side of a lopsided one-for-one and `need` the
+     * larger; anything that brings `have` into the window without overshooting
+     * it is a candidate for the throw-in.
+     *
+     * The piece has to actually close the gap, not merely land inside the
+     * window from the other side of it -- otherwise a package that was already
+     * fair gets a body added to make it less fair. Note that it may legitimately
+     * cross parity: a fair two-for-one usually costs slightly MORE than the man
+     * coming back, because consolidation carries a premium, and demanding the
+     * two pieces stay under his price rejects the most ordinary trade there is.
+     */
+    function completing(pool, exclude, have, need, mine_) {
+        const skip = new Set(exclude.map((e) => e.player.id));
+        const before = fairness(have, need).gap;
+        const out = [];
+        for (const e of pool) {
+            if (skip.has(e.player.id)) continue;
+            const filled = have + scale(e.value);
+            if (fairness(filled, need).gap < before && withinLedger(filled, need)) out.push(e);
+        }
+
+        // Two different offers are worth making out of the same window, and
+        // taking only one end of it loses the other. The piece that lands the
+        // ledger closest to even is the offer a manager sends when they want a
+        // yes; the piece at the end that favours me -- the least of mine, the
+        // most of theirs -- is the one they send when they want a bargain.
+        // Slicing the cheapest two alone was quietly dropping the receiver that
+        // made the trade and pairing a spare back instead.
+        const fairest = sortBy(out, (e) => fairness(have + scale(e.value), need).gap).slice(0, 2);
+        const greedy = sortBy(out, (e) => e.value, mine_ ? 1 : -1)[0];
+        return greedy && !fairest.includes(greedy) ? [...fairest, greedy] : fairest;
     }
 
     /**
@@ -383,6 +458,8 @@ export async function findTrades(input) {
         unique.push(c);
     }
 
+    const best = undominated(unique);
+
     // Spread the board across different players.
     //
     // The best available target generates the most acceptable packages, so an
@@ -391,7 +468,7 @@ export async function findTrades(input) {
     // league should answer "who can I get", not "here are nine prices for the
     // same guy". Capped per incoming player and per counterparty, then
     // everything else is appended below so nothing is actually lost.
-    const diverse = targeted ? unique : spread(unique, { perTargetCap, perTeamCap });
+    const diverse = targeted ? best : spread(best, { perTargetCap, perTeamCap, perPieceCap });
     const shortlist = diverse.slice(0, stage2Keep);
     if (!shortlist.length) {
         // Same shape whether or not anything was found, so callers never have
@@ -400,7 +477,7 @@ export async function findTrades(input) {
             ok: true,
             trades: [],
             others: [],
-            scanned: pairs.length,
+            scanned: targeted ? pairs.length : pairings,
             shortlisted: 0,
             simulated: 0,
             rejected: 0,
@@ -474,11 +551,18 @@ export async function findTrades(input) {
               return title >= -0.0005 && playoff >= -0.0005;
           });
 
+    // Ranked by what actually decides a season, then spread again.
+    //
+    // The stage-2 spread orders what gets SIMULATED; this one orders what gets
+    // READ. Without the second pass the odds ranking quietly undoes the first,
+    // and the top of the finished board fills back up with one player over and
+    // over -- which is the complaint the caps were added to answer.
     const ranked = sortBy(
         worthSending,
         (e) => (e.myTitleDelta ?? 0) * 2 + (e.myPlayoffDelta ?? 0) + e.myGain / 40,
         -1
     );
+    const board = targeted ? ranked : spread(ranked, { perTargetCap, perTeamCap, perPieceCap });
 
     // Everything the simulation rejected, plus everything past the stage-3 cut,
     // is still shown -- with lineup numbers rather than odds, and labelled as
@@ -493,9 +577,11 @@ export async function findTrades(input) {
 
     return {
         ok: true,
-        trades: ranked,
-        others: sortBy(alsoPossible, (o) => o.myGain, -1),
-        scanned: pairs.length,
+        trades: board,
+        others: targeted
+            ? sortBy(alsoPossible, (o) => o.myGain, -1)
+            : spread(sortBy(alsoPossible, (o) => o.myGain, -1), { perTargetCap, perTeamCap, perPieceCap }),
+        scanned: targeted ? pairs.length : pairings,
         shortlisted: shortlist.length,
         simulated: evaluated.length,
         rejected: evaluated.length - worthSending.length,
@@ -506,27 +592,102 @@ export async function findTrades(input) {
 }
 
 /**
- * Reorder so the strongest DISTINCT options come first: at most `perTargetCap`
- * ways to acquire the same player and `perTeamCap` deals with the same
- * manager. Everything over the cap is kept, just demoted -- the caps decide
- * what is seen first, never what exists.
+ * Drop every package that another package beats outright.
+ *
+ * One deal can be reached from several starting pairings, and the ones reached
+ * from a silly pairing arrive with a spare body attached: pair a 168-point
+ * backup quarterback against a 4,173 running back, "complete" the ledger with
+ * the 3,659 receiver, and out comes the receiver-for-back trade with the backup
+ * thrown in for nothing. Six of those, identical in both gain columns, was what
+ * the board actually looked like.
+ *
+ * No arithmetic is needed to reject them. If another live package sends a
+ * subset of these players and receives a superset, it is better for me by
+ * construction -- fewer of mine leave, no less of theirs arrives -- and the
+ * counterparty has already accepted it, or it would not be in the list.
+ *
+ * The mirror image needs a second pass. Six ways to buy the same tight end,
+ * each with a different bench back stapled on for change, are not supersets of
+ * one another and none dominates the rest -- but they are one trade, and the
+ * honest version of it is the one whose ledger comes closest to even. So
+ * packages about the same two players collapse to their best representative.
  */
-export function spread(list, { perTargetCap = 2, perTeamCap = 4 } = {}) {
+export function undominated(list) {
+    const ids = (side) => new Set(side.map((e) => e.player.id));
+    const covers = (a, b) => a.size <= b.size && [...a].every((id) => b.has(id));
+
+    const marked = list.map((c) => ({ c, gives: ids(c.gives), gets: ids(c.gets), size: c.gives.length + c.gets.length }));
+    // Smallest first, so a package is only ever compared against ones already
+    // known to be minimal.
+    const kept = [];
+    for (const m of sortBy(marked, (m) => m.size)) {
+        const beaten = kept.some(
+            (k) =>
+                k.c.other.rosterId === m.c.other.rosterId &&
+                covers(k.gives, m.gives) &&
+                covers(m.gets, k.gets)
+        );
+        if (!beaten) kept.push(m);
+    }
+
+    // One representative per (counterparty, who leaves, who arrives): the deal
+    // that helps my lineup most, and among equals the one closest to even.
+    const bestOf = new Map();
+    for (const { c } of kept) {
+        const key = `${c.other.rosterId}:${headline(c.gives)}>${headline(c.gets)}`;
+        const held = bestOf.get(key);
+        const better =
+            !held ||
+            c.myGain > held.myGain + 0.05 ||
+            (c.myGain > held.myGain - 0.05 && c.valueGap < held.valueGap);
+        if (better) bestOf.set(key, c);
+    }
+
+    const survivors = new Set(bestOf.values());
+    // Back into the caller's order, which carries the ranking.
+    return list.filter((c) => survivors.has(c));
+}
+
+/**
+ * Reorder so the strongest DISTINCT options come first: at most `perTargetCap`
+ * ways to acquire the same player, `perTeamCap` deals with the same manager,
+ * and `perPieceCap` appearances for any one player on either side of the
+ * ledger. Everything over the caps is kept, just demoted -- the caps decide
+ * what is seen first, never what exists.
+ *
+ * The per-piece cap is what stops a board that is technically nine different
+ * trades from reading as one trade nine times. Value-matched search makes this
+ * worse, not better: the two or three pieces whose price happens to line up
+ * against the rest of the league turn up in nearly every affordable package,
+ * so without a cap the answer to "who can I get" is nine ways to send the same
+ * spare running back.
+ */
+/** The player a package is actually about: the most valuable piece on a side. */
+const headline = (side) =>
+    side.reduce((a, b) => (b.value > a.value ? b : a), side[0])?.player.id ?? '';
+
+export function spread(list, { perTargetCap = 2, perTeamCap = 4, perPieceCap = 3 } = {}) {
     const byTarget = new Map();
     const byTeam = new Map();
+    const byPiece = new Map();
     const front = [];
     const back = [];
 
     for (const c of list) {
-        // Identity is the whole incoming set: getting a man alone and getting
-        // him with a throw-in are the same acquisition.
-        const targetKey = c.gets.map((e) => e.player.id).sort().join('+');
+        // Identity is the headline player, not the exact set. Getting him
+        // alone, getting him with a bench back attached, and getting him with a
+        // different bench back attached are one acquisition wearing three hats
+        // -- and keying on the full set let all three onto the board.
+        const targetKey = headline(c.gets);
         const t = (byTarget.get(targetKey) ?? 0) + 1;
         const m = (byTeam.get(c.other.rosterId) ?? 0) + 1;
+        const pieces = [...c.gives, ...c.gets].map((e) => e.player.id);
+        const overused = pieces.some((id) => (byPiece.get(id) ?? 0) >= perPieceCap);
 
-        if (t <= perTargetCap && m <= perTeamCap) {
+        if (t <= perTargetCap && m <= perTeamCap && !overused) {
             byTarget.set(targetKey, t);
             byTeam.set(c.other.rosterId, m);
+            for (const id of pieces) byPiece.set(id, (byPiece.get(id) ?? 0) + 1);
             front.push(c);
         } else {
             back.push(c);
@@ -537,6 +698,15 @@ export function spread(list, { perTargetCap = 2, perTeamCap = 4 } = {}) {
 
 const modeOf = (targeted, shopping) =>
     targeted && shopping ? 'target+offer' : targeted ? 'target' : shopping ? 'offer' : 'open';
+
+/** The tradeable players on a roster worth pricing, best first. */
+function tradeablePool(entries, limit) {
+    return sortBy(
+        entries.filter((e) => TRADEABLE.has(e.player.pos) && e.value > 0),
+        (e) => e.value,
+        -1
+    ).slice(0, limit);
+}
 
 /** The pieces I can most afford to add, cheapest useful first. */
 function cheapest(entries, exclude, limit) {
