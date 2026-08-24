@@ -97,6 +97,10 @@ export function trimPlayers(raw) {
             injuryBody: p.injury_body_part || null,
             practice: p.practice_participation || null,
             depth: p.depth_chart_order ?? null,
+            // ESPN's id for the same player. Sleeper carries it for most of the
+            // relevant pool, and it is the join key for ESPN's betting markets:
+            // without it a player prop cannot be matched to a fantasy roster.
+            espnId: p.espn_id ? String(p.espn_id) : null,
         };
     }
     return out;

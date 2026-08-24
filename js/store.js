@@ -4,10 +4,14 @@
 // and they should survive a refresh without an account, a server or a login.
 
 const KEY = 'ffc:state:v1';
-const PLAYERS_KEY = 'ffc:players:v1';
+// v2 adds espnId. Every cached database from v1 lacks it, and a player
+// without it silently has no betting market, so the cache has to be rebuilt
+// rather than merged.
+const PLAYERS_KEY = 'ffc:players:v2';
 const SNAPSHOT_KEY = 'ffc:power-snapshots:v1';
 const PROJECTIONS_KEY = 'ffc:projections:v1';
 const BYES_KEY = 'ffc:byes:v1';
+const ATHLETES_KEY = 'ffc:espn-athletes:v1';
 
 const DEFAULTS = {
     username: '',
@@ -136,4 +140,26 @@ export function previousSnapshot(leagueId, week, preset = 'balanced') {
         .filter((s) => s.week < week && (s.preset ?? 'balanced') === preset)
         .sort((a, b) => a.week - b.week);
     return snaps.length ? snaps[snaps.length - 1] : null;
+}
+
+
+// --- ESPN athlete names ----------------------------------------------------
+//
+// Sleeper carries `espn_id` for only about a quarter of currently rostered
+// skill players, so matching a betting market to a fantasy roster needs a name
+// for the rest -- one small request per athlete. A name does not change, so
+// every lookup is remembered forever and the cost decays to nothing after the
+// first week or two of a season.
+
+let athleteCache = null;
+const athletes = () => (athleteCache ||= read(ATHLETES_KEY, {}));
+
+export const getAthleteName = (espnId) => athletes()[String(espnId)]?.name ?? null;
+export const getAthletePos = (espnId) => athletes()[String(espnId)]?.pos ?? null;
+
+export function setAthlete(espnId, { name, pos }) {
+    if (!espnId || !name) return;
+    const all = athletes();
+    all[String(espnId)] = { name, pos: pos || null };
+    write(ATHLETES_KEY, all);
 }

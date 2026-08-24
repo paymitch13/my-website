@@ -7,7 +7,8 @@ import { normalizeLeague, weeksRemaining } from './league.js';
 import { buildSchedule, syntheticSchedule } from './sim.js';
 import * as store from './store.js';
 import { fetchProjections, fetchSeasonStats, fetchWeeklyProjections, fetchWeeklyStats } from './projections.js';
-import { fetchOdds } from './odds.js';
+import { fetchOdds, impliedTotals } from './odds.js';
+import { fetchCoreOdds, fetchPredictor } from './props.js';
 
 /**
  * The player database is the one heavy fetch. Serve it from cache when it is
@@ -103,10 +104,74 @@ async function loadWeekContextUncached(season, week, lastPlayed) {
 /** Current-week Vegas lines. Optional context -- never blocks the app. */
 export async function loadOdds(week, season) {
     try {
-        return await fetchOdds({ week, season });
+        const board = await fetchOdds({ week, season });
+        if (board?.games?.length) await enrichWithCoreOdds(board);
+        return board;
     } catch {
         return null;
     }
+}
+
+/**
+ * Fold in what the scoreboard endpoint does not carry: the juice on the total
+ * and the spread, and ESPN's own model.
+ *
+ * A total posted at -120 over is not the total on the board -- the market's
+ * real expectation sits above it. Implied team totals are the single input the
+ * whole Start/Sit engine hangs on, so half a point of free precision is worth
+ * the request. Failures are per-game and silent: a game without core odds keeps
+ * the scoreboard numbers it already had.
+ */
+async function enrichWithCoreOdds(board) {
+    const games = board.games.filter((g) => g.id);
+    await Promise.all(
+        games.map(async (game) => {
+            const [core, predictor] = await Promise.all([
+                fetchCoreOdds(game.id).catch(() => null),
+                fetchPredictor(game.id, {
+                    homeMoneyline: game.moneyline?.home ?? null,
+                    awayMoneyline: game.moneyline?.away ?? null,
+                }).catch(() => null),
+            ]);
+            applyCoreOdds(game, { core, predictor, byTeam: board.byTeam });
+        })
+    );
+}
+
+/**
+ * Fold one game's core odds into the parsed scoreboard game and the team
+ * contexts derived from it.
+ *
+ * Both places have to be updated together. Two copies of the same total, one
+ * corrected and one not, is how a tool starts contradicting itself between the
+ * Vegas tab and the Start/Sit tab.
+ */
+export function applyCoreOdds(game, { core = null, predictor = null, byTeam = null } = {}) {
+    if (predictor) game.predictor = predictor;
+    if (!core?.consensus) return game;
+
+    game.books = core.books;
+    game.consensus = core.consensus;
+    game.fairTotal = core.consensus.fairTotal;
+    game.overLean = core.consensus.overLean;
+
+    const fair =
+        Number.isFinite(core.consensus.fairTotal) && Number.isFinite(game.spread)
+            ? impliedTotals(core.consensus.fairTotal, game.spread)
+            : null;
+    if (!fair || !game.favorite) return game;
+
+    const dog = game.favorite === game.home ? game.away : game.home;
+    game.implied = { [game.favorite]: fair.favorite, [dog]: fair.underdog };
+
+    for (const team of [game.home, game.away]) {
+        const ctx = byTeam?.get(team);
+        if (!ctx) continue;
+        ctx.impliedTotal = game.implied[team];
+        ctx.opponentImplied = game.implied[team === game.home ? game.away : game.home];
+        ctx.fairTotal = core.consensus.fairTotal;
+    }
+    return game;
 }
 
 function refreshPlayersInBackground() {

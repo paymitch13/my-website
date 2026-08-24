@@ -6,7 +6,7 @@
 // look like for him.
 
 import { describeEnvironment } from '../odds.js';
-import { slateAverage } from '../startsit.js';
+import { slateAverage, vegasImpact } from '../startsit.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
 import { formatValue } from '../tradevalue.js';
@@ -115,6 +115,21 @@ export function openPlayerCard(app, player) {
     }
     if (projRank) {
         tiles.append(tile('Projected rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'where the projection has him'));
+    }
+    // The Vegas multiplier was computed for every Start/Sit decision and never
+    // shown as a number anywhere. It is the reason a projection gets moved, so
+    // it belongs on the card next to the projection it moves.
+    const slateNeutral = slateAverage(app.odds?.byTeam);
+    const impact = oddsCtx ? vegasImpact(oddsCtx.impliedTotal, player.pos, slateNeutral) : null;
+    if (impact?.known) {
+        tiles.append(
+            tile(
+                'Vegas',
+                `${impact.multiplier >= 1 ? '+' : ''}${Math.round((impact.multiplier - 1) * 100)}%`,
+                `${round(impact.impliedTotal, 1)} implied, slate average ${round(slateNeutral, 1)}`,
+                impact.multiplier > 1.04 ? 'good' : impact.multiplier < 0.96 ? 'bad' : ''
+            )
+        );
     }
     body.append(tiles);
 

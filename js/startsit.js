@@ -21,6 +21,7 @@ import { weeklyPlayProbability, ruledOutThisWeek } from './valuation.js';
 import { matchupImpact, describeMatchup } from './matchup.js';
 import { weatherImpact, describeWeather } from './weather.js';
 import { describeEnvironment, describeMovement, gameScript } from './odds.js';
+import { marketPoints, disagreement, blendMarket } from './props.js';
 import { clamp, round, sortBy } from './util.js';
 
 /**
@@ -81,6 +82,7 @@ export function evaluatePlayerWeek(input) {
     const {
         player, weekly, scoring, oddsByTeam, weatherByHome, defenseProfiles,
         defenseRanks, weeksLeft = 1, neutralImplied = null, onBye = false,
+        marketRow = null,
     } = input;
     const neutral = neutralImplied ?? slateAverage(oddsByTeam);
 
@@ -202,7 +204,31 @@ export function evaluatePlayerWeek(input) {
 
     // A player who is not playing cannot be started, exactly like a bye.
     const hasGame = !!weekly && !!opponent && !ruledOut && !onBye;
-    const adjusted = base === null || ruledOut || onBye ? null : base * multiplier;
+    let adjusted = base === null || ruledOut || onBye ? null : base * multiplier;
+
+    // --- The betting market as a second projection -------------------------
+    // Every other number here descends from one consensus projection. A posted
+    // player prop is a number with money behind it, so where the two disagree
+    // that is worth both blending in and saying out loud -- it is the single
+    // most actionable line a start/sit tool can print.
+    const market = marketRow ? marketPoints(marketRow, scoring) : null;
+    const gap = market !== null && base !== null ? disagreement(market, base) : null;
+    if (market !== null && adjusted !== null) {
+        // Blend the RAW projections, then re-apply the situational multiplier:
+        // the market line already prices the opponent, but not the weather or
+        // the injury discount this engine adds on top.
+        adjusted = blendMarket(market, base) * multiplier;
+        if (gap) {
+            factors.push({
+                kind: 'market',
+                label: 'Vegas props',
+                // Reported as the ratio it actually moved the number by.
+                multiplier: base > 0 ? blendMarket(market, base) / base : 1,
+                detail: gap.text,
+                tone: gap.direction === 'higher' ? 'good' : 'bad',
+            });
+        }
+    }
 
     return {
         player,
@@ -212,6 +238,9 @@ export function evaluatePlayerWeek(input) {
         onBye,
         playProbability,
         baseProjection: base,
+        marketProjection: market,
+        marketDisagreement: gap,
+        marketMovement: marketRow?.movement ?? null,
         adjusted,
         multiplier,
         factors: sortBy(factors, (f) => Math.abs(f.multiplier - 1), -1),

@@ -175,8 +175,23 @@ function gameCard(g, wx, neutral) {
         el(
             'div',
             { class: 'vegas-grid' },
-            vegasCell('Total', g.overUnder, g.movement?.total
-                ? `opened ${g.movement.total.open} (${fmtDelta(g.movement.total.change)})` : 'no movement data'),
+            vegasCell(
+                'Total',
+                g.overUnder,
+                g.movement?.total
+                    ? `opened ${g.movement.total.open} (${fmtDelta(g.movement.total.change)})`
+                    : 'no movement data'
+            ),
+            // The posted total is not the market's number when one side is
+            // priced higher. Every implied total below is computed off the
+            // de-vigged one, so it is shown rather than applied silently.
+            Number.isFinite(g.fairTotal) && Math.abs(g.fairTotal - g.overUnder) > 0.01
+                ? vegasCell(
+                      'Total, de-vigged',
+                      round(g.fairTotal, 2),
+                      `${g.overLean > 0.5 ? 'over' : 'under'} is juiced — the market sits ${g.fairTotal > g.overUnder ? 'above' : 'below'} the posted ${g.overUnder}`
+                  )
+                : null,
             vegasCell('Spread', g.detail || fmtSpread(g.spread), g.movement?.spread
                 ? `opened ${fmtSpread(g.movement.spread.open)} (home)` : ''),
             vegasCell(`${g.favorite || '—'} implied`, favImplied === null ? '—' : round(favImplied, 1),
@@ -192,6 +207,19 @@ function gameCard(g, wx, neutral) {
         moves.length
             ? el('div', { style: 'margin-top:10px' },
                 ...moves.map((m) => el('div', { class: `small ${m.tone === 'neutral' ? 'muted' : m.tone}` }, m.text)))
+            : null,
+        // A model and a market disagreeing is genuinely interesting and nothing
+        // else in the app can see it: one is an opinion, the other is money.
+        g.predictor?.notable
+            ? el('div', { class: 'small warn', style: 'margin-top:8px' },
+                `${g.predictor.text} That is a ${Math.abs(Math.round(g.predictor.gap * 100))}-point disagreement between the model and the money.`)
+            : g.predictor?.text
+                ? el('div', { class: 'small muted', style: 'margin-top:8px' }, `${g.predictor.text} Model and market agree.`)
+                : null,
+        g.consensus && g.consensus.providers > 1
+            ? el('div', { class: 'small muted', style: 'margin-top:8px' },
+                `${g.consensus.providers} books priced this game` +
+                (g.consensus.totalSpread > 0 ? `, and they disagree by ${round(g.consensus.totalSpread, 1)} on the total` : ' and they agree on the total') + '.')
             : null,
         wx && !wx.dome && !wx.unavailable
             ? el(
