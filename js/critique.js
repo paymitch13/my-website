@@ -63,7 +63,7 @@ export function critiqueRoster(input) {
 
     findings.push(...positionFindings({ mine, rank, perSlotAvg, weakAvg, bestAvg, teams }));
     findings.push(...fragilityFindings({ mine, byRoster }));
-    findings.push(...deadWeightFindings({ mine, cfg, ctx }));
+    findings.push(...deadWeightFindings({ mine, cfg, ctx, byRoster }));
     findings.push(...byeFindings({ team, byeWeeks, currentWeek, cfg }));
     findings.push(...scheduleFindings({ mine, restOfSeason, playoffSchedule }));
     findings.push(...shapeFindings({ mine, rank, playoffOdds, team }));
@@ -189,8 +189,8 @@ function positionFindings({ mine, rank, perSlotAvg, weakAvg, bestAvg }) {
  * teams it plays.
  */
 function fragilityFindings({ mine, byRoster }) {
-    const out = [];
     const rows = [...byRoster.values()];
+    const exposed = [];
 
     for (const pos of NEED_POSITIONS) {
         const need = mine.needs[pos];
@@ -210,23 +210,47 @@ function fragilityFindings({ mine, byRoster }) {
         // somebody would actually feel.
         if (drop < typical * 1.5 || drop - typical < 2.5) continue;
 
-        const share = need.perSlot > 0 ? drop / (need.perSlot * need.starting) : 0;
-        out.push({
-            kind: 'fragile',
-            pos,
-            severity: drop - typical >= 5 ? 'warning' : 'note',
-            weight: drop - typical,
-            title: `Your season runs through one ${pos}`,
-            detail:
-                `Lose ${need.best?.player?.name ?? `your top ${pos}`} and the lineup drops ` +
-                `${round(drop, 1)} points a week — ${Math.round(share * 100)}% of what the position gives you, ` +
-                `against ${round(typical, 1)} for the typical team here. There is nothing behind him.`,
-            fix: `Buy the cheapest startable ${pos} in the league. Insurance is not exciting and it is not expensive.`,
-            action: { view: 'finder', pos },
-        });
+        // How many teams here are MORE exposed at this position. When most of
+        // the league is in the same boat -- everyone starts one quarterback --
+        // this is the format talking, and the median comparison alone does not
+        // catch it: most teams carrying a backup drags the median down until
+        // every single-QB roster looks like an outlier against it.
+        const worse = peers.filter((p) => p >= drop).length;
+        if (worse / peers.length > 0.25) continue;
+
+        exposed.push({ pos, drop, typical, need, margin: drop - typical, worse, peers: peers.length });
     }
 
-    return out;
+    if (!exposed.length) return [];
+
+    // One finding, not one per position. Three separate cards saying "buy a
+    // backup" is the same advice printed three times.
+    const worst = sortBy(exposed, (x) => x.margin, -1)[0];
+    const also = exposed.filter((x) => x !== worst);
+    const share = worst.need.perSlot > 0 ? worst.drop / (worst.need.perSlot * worst.need.starting) : 0;
+
+    return [
+        {
+            kind: 'fragile',
+            pos: worst.pos,
+            severity: worst.margin >= 5 ? 'warning' : 'note',
+            weight: worst.margin,
+            title:
+                also.length
+                    ? `No insurance at ${worst.pos} or ${also.map((x) => x.pos).join(' or ')}`
+                    : `Your season runs through one ${worst.pos}`,
+            detail:
+                `Lose ${worst.need.best?.player?.name ?? `your top ${worst.pos}`} and the lineup drops ` +
+                `${round(worst.drop, 1)} points a week — ${Math.round(share * 100)}% of what the position gives you, ` +
+                `against ${round(worst.typical, 1)} for the typical team here. ` +
+                (worst.worse === 0
+                    ? `No other roster in the league is this thin behind its starter.`
+                    : `Only ${worst.worse} of your ${worst.peers} rivals ${worst.worse === 1 ? 'is' : 'are'} this exposed.`) +
+                (also.length ? ` The same is true at ${also.map((x) => x.pos).join(' and ')}.` : ''),
+            fix: `Buy the cheapest startable ${worst.pos} in the league. Insurance is not exciting and it is not expensive.`,
+            action: { view: 'finder', pos: worst.pos },
+        },
+    ];
 }
 
 /** Middle value, for comparing one roster against the rest of the league. */
@@ -237,8 +261,19 @@ function median(values) {
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-/** Value that will never score a point for you. */
-function deadWeightFindings({ mine, cfg, ctx }) {
+/**
+ * Bench spots doing nothing, counted against what a bench normally does.
+ *
+ * The absolute version of this fired on twelve rosters out of twelve, which is
+ * exactly what it should have done: a fifteen-man roster starting nine players
+ * has six bench spots, and most bench players are below replacement by
+ * construction. That is the format, not a flaw, and telling every manager in
+ * the league the same non-fact is the definition of noise.
+ *
+ * So it is measured against the league. Six dead spots is only a finding when
+ * the teams you play carry three.
+ */
+function deadWeightFindings({ mine, cfg, ctx, byRoster }) {
     const out = [];
     const lineup = optimizeLineup(mine.entries, cfg.starterSlots);
     const starting = new Set(lineup.starters.map((s) => s.entry.player.id));
@@ -269,23 +304,37 @@ function deadWeightFindings({ mine, cfg, ctx }) {
         });
     }
 
-    // Roster spots spent on nothing at all.
-    const useless = mine.entries.filter(
-        (e) =>
-            !starting.has(e.player.id) &&
-            e.player.pos !== 'K' &&
-            e.player.pos !== 'DEF' &&
-            e.score < (ctx.replacementPpg[e.player.pos] ?? 0) - 1
-    );
-    if (useless.length >= 2) {
+    // Roster spots spent on nothing at all -- relative to what everyone else
+    // is carrying.
+    const deadOn = (row) => {
+        const l = optimizeLineup(row.entries, cfg.starterSlots);
+        const start = new Set(l.starters.map((s) => s.entry.player.id));
+        return row.entries.filter(
+            (e) =>
+                !start.has(e.player.id) &&
+                e.player.pos !== 'K' &&
+                e.player.pos !== 'DEF' &&
+                e.score < (ctx.replacementPpg[e.player.pos] ?? 0) - 1
+        );
+    };
+
+    const useless = deadOn(mine);
+    const peers = [...(byRoster?.values() ?? [])]
+        .filter((r) => r.rosterId !== mine.rosterId)
+        .map((r) => deadOn(r).length);
+    const typical = peers.length >= 3 ? median(peers) : null;
+
+    // Two more than the league's typical bench, and at least three in total.
+    if (useless.length >= 3 && typical !== null && useless.length - typical >= 2) {
         out.push({
             kind: 'dead-weight',
-            severity: 'note',
-            weight: useless.length,
-            title: `${useless.length} roster spots are doing nothing`,
+            severity: useless.length - typical >= 4 ? 'warning' : 'note',
+            weight: useless.length - typical,
+            title: `${useless.length} roster spots are doing nothing, against ${round(typical, 0)} for the rest of the league`,
             detail:
-                `${useless.slice(0, 3).map((e) => e.player.name).join(', ')} score below what is freely ` +
-                `available on waivers. They are not depth, they are furniture.`,
+                `${sortBy(useless, (e) => e.score).slice(0, 3).map((e) => e.player.name).join(', ')} and ` +
+                `${Math.max(0, useless.length - 3)} other${useless.length - 3 === 1 ? '' : 's'} score below what is freely ` +
+                `available on waivers. Every roster carries some of this; you are carrying more than anyone you play.`,
             fix: 'Drop the worst of them for the best free agent at your weakest position.',
             action: { view: 'finder' },
         });

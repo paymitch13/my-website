@@ -6,6 +6,7 @@ import { faabModel } from '../js/faab.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
 import { syntheticSchedule } from '../js/sim.js';
+import { sum } from '../js/util.js';
 
 const cfg = normalizeLeague({
     league_id: 'test',
@@ -134,7 +135,7 @@ test('need-based trade: swapping surplus for a hole helps both sides', async () 
     assert.ok(a.lineupNet > 0.5, `WR-rich team should gain from the TE (${a.lineupNet})`);
     assert.ok(b.lineupNet > 0.5, `TE-rich team should gain from the WR (${b.lineupNet})`);
     assert.equal(res.verdict.bothGainLineup, true);
-    assert.ok(res.reasons.some((r) => /upgrades at TE/.test(r.title)));
+    assert.ok(res.reasons.some((r) => /Upgrades at TE/.test(r.title)));
 });
 
 test('depth that never starts is flagged as value that does not score', async () => {
@@ -160,7 +161,7 @@ test('depth that never starts is flagged as value that does not score', async ()
     const stacked = res.sides[0];
     assert.ok(stacked.valueNet > 0, 'the ledger says they won');
     assert.ok(stacked.lineupNet < 0.6, 'but the lineup barely moves');
-    assert.ok(res.reasons.some((r) => /"wins" the value but not the lineup/.test(r.title)));
+    assert.ok(res.reasons.some((r) => /Wins the ledger but not the lineup/.test(r.title)));
 });
 
 test('injured incoming players are discounted and called out', async () => {
@@ -177,7 +178,7 @@ test('injured incoming players are discounted and called out', async () => {
         ],
     });
     assert.equal(res.verdict.winner, 2, 'the team sending the IR player wins');
-    assert.ok(res.reasons.some((r) => /is IR/.test(r.title)));
+    assert.ok(res.reasons.some((r) => /is IR/.test(r.title)), `expected an IR warning, got: ${res.reasons.map((r) => r.title).join(' | ')}`);
     assert.ok(res.sides[0].valueIn < res.sides[0].valueOut / 2);
 });
 
@@ -210,7 +211,7 @@ test('roster crunch charges the team that has to make cuts', async () => {
         a.crunchCost < Math.abs(a.valueIn) * 0.5,
         `crunch (${a.crunchCost}) must be small beside the incoming value (${a.valueIn})`
     );
-    const cut = res.reasons.find((r) => /has to cut 2 players/.test(r.title));
+    const cut = res.reasons.find((r) => /Has to cut 2 players/.test(r.title));
     assert.ok(cut, 'roster crunch must be reported');
     assert.match(cut.detail, /deep bench pieces/);
 });
@@ -238,7 +239,7 @@ test('full mode reports playoff and title odds deltas', async () => {
     assert.ok(a.playoffAfter < a.playoffBefore, 'giving away your best player hurts');
     assert.ok(b.playoffAfter > b.playoffBefore, 'receiving him helps');
     assert.ok(typeof a.titleDelta === 'number' && typeof b.titleDelta === 'number');
-    assert.ok(res.reasons.some((r) => /playoff odds/.test(r.title)));
+    assert.ok(res.reasons.some((r) => /[Pp]layoff odds/.test(r.title)));
 });
 
 test('a shared cache changes the cost of a search, never its answer', async () => {
@@ -413,7 +414,7 @@ test('the most important reason comes first', async () => {
     });
     // A trade this lopsided should lead with playoff impact or the lineup swing,
     // not with a footnote about roster fragility.
-    assert.match(res.reasons[0].title, /playoff odds|pts\/week|hole at/);
+    assert.match(res.reasons[0].title, /[Pp]layoff odds|pts\/week|at [A-Z]{2}/);
 });
 
 // --- FAAB ------------------------------------------------------------------
@@ -627,4 +628,138 @@ test('cash already in the deal is not offered a second time', () => {
     const giver = { team: teams[0], faabOut: 20 };
     const receiver = { team: teams[1] };
     assert.equal(suggestFaab({ faab, giver, receiver, gap: 50 }), null, 'the budget is already committed');
+});
+
+// --- The "why" has to be true, and said once --------------------------------
+//
+// Each of these is a sentence the app used to print that was either wrong or a
+// restatement of the line above it.
+
+test('a lateral swap is not reported as a hole plus an upgrade', async () => {
+    // The worst of the old reasoning. Send a back, get a receiver, and the slot
+    // columns lose his whole score at RB while gaining hers at WR -- so a deal
+    // worth under a point a week came out as "opens a 15.5 hole at RB" AND
+    // "upgrades 14.6 at WR". Two alarms, one lateral move, and the flex
+    // quietly absorbing the difference.
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 2], ...BALANCED] },
+        { name: 'B', players: [['WR', 2], ...BALANCED] },
+    ]);
+    const res = await evaluateTrade({
+        cfg, ctx, teams, rankings,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+
+    for (const side of res.sides) {
+        const net = Math.abs(side.lineupChange.net);
+        const claims = res.reasons
+            .filter((r) => r.team === side.team.rosterId && /pts\/wk\)$/.test(r.title))
+            .map((r) => Math.abs(Number(r.title.match(/\(([+-]?[\d.]+) pts\/wk\)/)?.[1] ?? 0)));
+        for (const c of claims) {
+            assert.ok(
+                c <= Math.max(2.5, net * 2.5),
+                `a positional claim of ${c} against a net lineup change of ${net.toFixed(1)} is double counting`
+            );
+        }
+    }
+});
+
+test('the lineup change names who actually walked in and out', async () => {
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 2], ...BALANCED] },
+        { name: 'B', players: [['WR', 2], ...BALANCED] },
+    ]);
+    const res = await evaluateTrade({
+        cfg, ctx, teams, rankings,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+
+    const side = res.sides[0];
+    const { arrived, departed, net } = side.lineupChange;
+    // The diff of the starting lineup cannot double count: a player is in it or
+    // he is not, so the named movers have to reconcile with the net.
+    const moved = sum(arrived, (x) => x.entry.score) - sum(departed, (x) => x.entry.score);
+    assert.ok(Math.abs(moved - net) < 0.01, `named movers (${moved.toFixed(2)}) must equal the net (${net.toFixed(2)})`);
+});
+
+test('no reason is printed twice for the same team', async () => {
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 2], ['RB', 5], ...BALANCED] },
+        { name: 'B', players: [['WR', 2], ['TE', 2], ...BALANCED] },
+    ]);
+    const res = await evaluateTrade({
+        cfg, ctx, teams, rankings,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id, teams[0].players[1].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id, teams[1].players[1].id] },
+        ],
+    });
+    const keys = res.reasons.map((r) => `${r.team}:${r.code}`);
+    assert.equal(new Set(keys).size, keys.length, `duplicate reasons: ${keys.join(', ')}`);
+});
+
+test('a trivial injury tag is not a warning', async () => {
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 2], ...BALANCED] },
+        // Questionable costs a fraction of a game across ten weeks. Raising it
+        // as a finding on both sides of every deal was noise.
+        { name: 'B', players: [['WR', 2, { injury: 'Questionable' }], ...BALANCED] },
+    ]);
+    const res = await evaluateTrade({
+        cfg, ctx, teams, rankings,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+    assert.ok(
+        !res.reasons.some((r) => r.code === 'injury'),
+        'a 90%-plus available player is not an injury finding'
+    );
+});
+
+test('a real injury tag still is', async () => {
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 2], ...BALANCED] },
+        { name: 'B', players: [['WR', 2, { injury: 'IR' }], ...BALANCED] },
+    ]);
+    const res = await evaluateTrade({
+        cfg, ctx, teams, rankings,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+    assert.ok(res.reasons.some((r) => r.code === 'injury'), 'an IR tag has to be raised');
+});
+
+test('a replacement is named rather than assumed away', async () => {
+    // "Nobody on the roster replaces him" was printed whether or not somebody
+    // did, on rosters carrying a perfectly good next man up.
+    const rankings = new Map();
+    const teams = league(rankings, [
+        { name: 'A', players: [['RB', 2], ['RB', 4], ...BALANCED] },
+        { name: 'B', players: [['WR', 2], ...BALANCED] },
+    ]);
+    const res = await evaluateTrade({
+        cfg, ctx, teams, rankings,
+        offers: [
+            { rosterId: 1, sending: [teams[0].players[0].id] },
+            { rosterId: 2, sending: [teams[1].players[0].id] },
+        ],
+    });
+    for (const r of res.reasons) {
+        assert.ok(!/Nobody on the roster replaces/.test(r.detail), 'that claim was never checked');
+    }
 });

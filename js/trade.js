@@ -242,6 +242,7 @@ export async function evaluateTrade(input) {
         }
 
         a.positionSwing = positionSwing(a.reportBefore, a.reportAfter);
+        a.lineupChange = lineupChange(lineupBefore, lineupAfter);
     }
 
     // --- 3. IMPACT: playoff and title odds, before vs after -----------------
@@ -409,6 +410,38 @@ async function simulateImpact({ cfg, ctx, teams, analysis, rankings, schedule, i
     return out;
 }
 
+/**
+ * Who actually entered and left the starting lineup, and what that was worth.
+ *
+ * This exists because per-position slot accounting cannot describe a trade
+ * without lying about it. Swap a running back for a receiver and the RB slots
+ * lose his whole score while the WR slots gain the other man's, so a deal worth
+ * -0.8 points a week reported as "opens a 15.5 hole at RB" AND "upgrades 14.6
+ * at WR" -- two alarming findings, both arithmetically true of the slot
+ * columns, describing one lateral move whose real effect was under a point.
+ * The flex absorbing the difference is invisible in that view.
+ *
+ * The starting lineup is the thing that scores, so the diff of the starting
+ * lineup is the thing to report. It cannot double count: a player is in it or
+ * he is not.
+ */
+export function lineupChange(before, after) {
+    const idsOf = (l) => new Set(l.starters.map((s) => s.entry.player.id));
+    const wasStarting = idsOf(before);
+    const nowStarting = idsOf(after);
+
+    const arrived = after.starters.filter((s) => !wasStarting.has(s.entry.player.id));
+    const departed = before.starters.filter((s) => !nowStarting.has(s.entry.player.id));
+
+    return {
+        // Newly in the lineup, best first -- includes players already on the
+        // roster who were promoted to cover for someone who left.
+        arrived: sortBy(arrived.map((s) => ({ entry: s.entry, slot: s.slot })), (x) => x.entry.score, -1),
+        departed: sortBy(departed.map((s) => ({ entry: s.entry, slot: s.slot })), (x) => x.entry.score, -1),
+        net: after.points - before.points,
+    };
+}
+
 /** Which positions got stronger or weaker, in weekly starting points. */
 function positionSwing(before, after) {
     const swing = {};
@@ -515,19 +548,46 @@ function buildVerdict(sides, ctx, cfg, hasOdds) {
 }
 
 /**
- * Plain-language reasoning. Every entry is derived from a number computed
- * above -- nothing here is decorative.
+ * Plain-language reasoning.
+ *
+ * Three rules, each of them a bug this function used to have:
+ *
+ *   1. ONE FACT, ONCE, AT ITS TRUE SIZE. A single swap was being reported as a
+ *      hole at one position and an upgrade at another, at twenty times its net
+ *      effect, because slot columns double count what the flex absorbs.
+ *   2. NOTHING ASSERTED THAT WAS NOT CHECKED. "Nobody replaces him" and "the
+ *      incoming talent sits behind players already starting" were written
+ *      whether or not they were true.
+ *   3. NOTHING THAT IS TRUE OF EVERY TRADE. A 96%-available Questionable tag,
+ *      a playoff swing inside simulation noise, and "the season barely moves"
+ *      are not findings; they are the weather.
+ *
+ * A two-team trade is also zero-sum on the ledger, so a fact about one side is
+ * usually the same fact about the other. Those are stated once.
  */
 function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000, faab = null) {
     const reasons = [];
     const wk = ctx.weeksLeft;
+    // Below this, a simulated odds difference is sampling noise rather than a
+    // result.
+    //
+    // Measured, not guessed. Paired runs share a seed, so a trade that changes
+    // no lineup returns a delta of exactly zero -- the two runs see identical
+    // weeks. What remains is how much the ESTIMATE moves with the seed: a
+    // genuine +0.8 pts/wk edge, run under forty seeds at 2,000 iterations,
+    // averaged +2.50% playoff odds with a standard deviation of 0.42% and a
+    // spread from +1.6% to +3.8%. Two standard deviations is 0.84%, and
+    // 0.38/sqrt(iterations) reproduces that across run lengths.
+    const oddsFloor = Math.max(0.005, 0.38 / Math.sqrt(Math.max(1, iterations)));
 
     for (const s of sides) {
         const name = s.team.name;
+        const mine = [];
+        const add = (r) => mine.push({ ...r, team: s.team.rosterId });
 
-        // Cash first when there is any, because it is the part of a deal
-        // people are least able to price in their heads, and because saying
-        // nothing about it while it moves the value bar is worse than useless.
+        // --- Cash ----------------------------------------------------------
+        // First when there is any, because it is the part of a deal people are
+        // least able to price in their heads.
         if (s.faabIn > 0 || s.faabOut > 0) {
             const net = s.faabIn - s.faabOut;
             const gross = Math.abs(net);
@@ -545,11 +605,11 @@ function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000, faab = null) 
                 ? ` ${name} ${receiving ? 'would hold' : 'would be left with'} $${Math.max(0, (s.team.faabRemaining ?? 0) + net)} of $${cfg.faabBudget}.`
                 : '';
 
-            reasons.push({
+            add({
                 kind: receiving ? 'good' : 'warn',
-                team: s.team.rosterId,
+                code: 'faab',
                 weight: 1.5 + worth / 20,
-                title: `${name} ${receiving ? 'gets' : 'sends'} $${gross} of FAAB`,
+                title: `${receiving ? 'Gets' : 'Sends'} $${gross} of FAAB`,
                 detail: faab?.usable
                     ? `That is worth about ${round(worth, 1)} rest-of-season points, roughly ${round(perWeek, 1)} a week. ${basis}` +
                       ` It does nothing for this week's lineup, and it takes no roster spot.${budgetNote}`
@@ -557,142 +617,238 @@ function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000, faab = null) 
             });
         }
 
-        if (Math.abs(s.lineupNet) >= 0.4) {
-            const dir = s.lineupNet > 0 ? 'gains' : 'loses';
-            const inNames = s.inEntries.map((e) => e.player.name).join(' and ');
-            const outNames = s.outEntries.map((e) => e.player.name).join(' and ');
-            reasons.push({
-                kind: s.lineupNet > 0 ? 'good' : 'bad',
-                team: s.team.rosterId,
-                weight: 2 + Math.abs(s.lineupNet),
-                title: `${name} ${dir} ${Math.abs(round(s.lineupNet, 1))} pts/week in the starting lineup`,
-                detail: `Swapping ${outNames} for ${inNames} is worth ${Math.abs(round(s.rosLineupPoints, 0))} points across the ${wk} week${wk === 1 ? '' : 's'} left.`,
+        // --- What happens to the lineup ------------------------------------
+        // The starting eleven is the only thing that scores, so its diff is the
+        // story: who walks in, who walks out, and the one number that is the
+        // difference between them.
+        const change = s.lineupChange;
+        if (change && Math.abs(change.net) >= 0.4) {
+            const better = change.net > 0;
+            const arrived = change.arrived.map((x) => x.entry.player.name);
+            const departed = change.departed.map((x) => x.entry.player.name);
+
+            add({
+                kind: better ? 'good' : 'bad',
+                code: 'lineup',
+                weight: 2 + Math.abs(change.net),
+                title: `${better ? 'Gains' : 'Loses'} ${Math.abs(round(change.net, 1))} pts/week in the starting lineup`,
+                detail: describeLineupChange({ arrived, departed, net: change.net, weeks: wk, ros: s.rosLineupPoints }),
+            });
+        } else if (change && change.arrived.length) {
+            // Bodies moved and the lineup did not. Worth saying plainly,
+            // because it is the most common way a trade that looks exciting
+            // turns out not to be one.
+            add({
+                kind: 'neutral',
+                code: 'lineup-flat',
+                weight: 0.9,
+                title: 'The starting lineup barely changes',
+                detail:
+                    `The players coming in slot into roughly what was already there — ` +
+                    `${Math.abs(round(change.net, 1))} pts/week either way. Whatever this deal is for, it is not this week's points.`,
             });
         }
 
-        // Value moved that never reaches the lineup is the classic trap.
-        if (s.valueNet > 0 && s.lineupNet <= 0.2) {
-            reasons.push({
+        // --- Where the lineup change lands ---------------------------------
+        // Attributed to a position ONLY when that position drives the net
+        // rather than cancelling against another. A lateral swap moves two slot
+        // columns hard and the team not at all, and describing that as two
+        // findings is how one trade came to read as a crisis.
+        const net = change?.net ?? s.lineupNet;
+        if (Math.abs(net) >= 1) {
+            for (const [pos, sw] of Object.entries(s.positionSwing)) {
+                const d = sw.startingDelta;
+                // Same direction as the net, and big enough to be most of it.
+                if (Math.sign(d) !== Math.sign(net)) continue;
+                if (Math.abs(d) < 1.5) continue;
+                const share = Math.abs(d) / Math.max(0.1, Math.abs(net));
+                // A swing several times the net is being cancelled elsewhere;
+                // that is the flex doing its job, not a positional story.
+                if (share > 2.5) continue;
+
+                const who = (d > 0 ? s.inEntries : s.outEntries)
+                    .filter((e) => e.player.pos === pos)
+                    .map((e) => e.player.name)
+                    .join(', ');
+                if (!who) continue;
+
+                add({
+                    kind: d > 0 ? 'good' : 'bad',
+                    code: `pos-${pos}`,
+                    weight: 1 + Math.abs(d) / 2,
+                    title: `${d > 0 ? 'Upgrades' : 'Gets worse'} at ${pos} (${d > 0 ? '+' : ''}${round(d, 1)} pts/wk)`,
+                    detail:
+                        d > 0
+                            ? `${who} goes straight into the lineup at ${pos}.`
+                            : replacementNote(s, pos, who),
+                });
+            }
+        }
+
+        // --- Value that never reaches the lineup ---------------------------
+        // Only when it is checked rather than assumed: the incoming players
+        // really are on the bench afterwards.
+        const benchedIn = s.inEntries.filter(
+            (e) => !s.lineupAfter.starters.some((st) => st.entry.player.id === e.player.id)
+        );
+        if (s.valueNet > 0 && net <= 0.2 && benchedIn.length) {
+            add({
                 kind: 'warn',
-                team: s.team.rosterId,
-                title: `${name} "wins" the value but not the lineup`,
-                detail: 'The incoming talent sits behind players already starting. Raw value that never cracks the lineup does not score points.',
+                code: 'value-not-lineup',
+                weight: 1.4,
+                title: 'Wins the ledger but not the lineup',
+                detail:
+                    `${benchedIn.map((e) => e.player.name).join(' and ')} ${benchedIn.length === 1 ? 'does' : 'do'} not crack the ` +
+                    `starting lineup, so the value gained does not score points this season.`,
             });
         }
-        if (s.valueNet < 0 && s.lineupNet > 0.6) {
-            reasons.push({
+        if (s.valueNet < 0 && net > 0.6) {
+            add({
                 kind: 'good',
-                team: s.team.rosterId,
-                title: `${name} gives up value but improves the lineup`,
+                code: 'consolidation',
+                weight: 1.4,
+                title: 'Gives up value but improves the lineup',
                 detail: 'Consolidating depth into a starter is exactly how a team should lose a value ledger on purpose.',
             });
         }
 
-        for (const [pos, sw] of Object.entries(s.positionSwing)) {
-            if (sw.startingDelta >= 1.5) {
-                const who = s.inEntries.filter((e) => e.player.pos === pos).map((e) => e.player.name).join(', ');
-                reasons.push({
-                    kind: 'good',
-                    team: s.team.rosterId,
-                    weight: 1 + sw.startingDelta / 2,
-                    title: `${name} upgrades at ${pos} (+${round(sw.startingDelta, 1)} pts/wk)`,
-                    detail: who
-                        ? `${who} steps straight into the lineup at a position that was costing them points.`
-                        : `${pos} was a soft spot and the deal addresses it directly.`,
-                });
-            } else if (sw.startingDelta <= -1.5) {
-                const who = s.outEntries.filter((e) => e.player.pos === pos).map((e) => e.player.name).join(', ');
-                reasons.push({
-                    kind: 'bad',
-                    team: s.team.rosterId,
-                    weight: 1 + Math.abs(sw.startingDelta) / 2,
-                    title: `${name} opens a hole at ${pos} (${round(sw.startingDelta, 1)} pts/wk)`,
-                    detail: who
-                        ? `Nobody on the roster replaces what ${who} was producing at ${pos}.`
-                        : `There is no comparable replacement to slot in at ${pos}.`,
-                });
-            }
-            // Only worth saying if the position still matters after the trade.
-            if (sw.dropoffAfter > sw.dropoffBefore + 3 && sw.dropoffAfter > 6) {
-                reasons.push({
-                    kind: 'warn',
-                    team: s.team.rosterId,
-                    weight: 1.2,
-                    title: `${name} becomes fragile at ${pos}`,
-                    detail: `Losing their top ${pos} would now cost ${round(sw.dropoffAfter, 1)} pts/wk, up from ${round(sw.dropoffBefore, 1)}.`,
-                });
-            }
-        }
-
+        // --- Roster crunch --------------------------------------------------
         if (s.overflow > 0) {
             const names = s.crunchCuts.map((c) => c.player.name).join(', ');
-            // Judge the cut against the size of the deal, not in the abstract:
-            // losing a deep bench body out of a blockbuster is noise, the same
-            // loss in a swap of spare parts is most of the trade.
             const dealSize = Math.max(1, Math.abs(s.valueIn) + Math.abs(s.valueOut));
             const material = s.crunchCost / dealSize > 0.08;
-            reasons.push({
+            add({
                 kind: material ? 'warn' : 'neutral',
-                team: s.team.rosterId,
-                title: `${name} has to cut ${s.overflow} player${s.overflow === 1 ? '' : 's'}`,
+                code: 'crunch',
+                weight: material ? 1.3 : 0.5,
+                title: `Has to cut ${s.overflow} player${s.overflow === 1 ? '' : 's'}`,
                 detail: material
                     ? `The roster only holds ${cfg.rosterSize}. Dropping ${names} costs real value and is part of the price of this deal.`
                     : `The roster only holds ${cfg.rosterSize}, so ${names} would go. They are deep bench pieces — a minor cost next to the rest of the trade.`,
             });
         }
 
-        const injured = s.inEntries.filter((e) => e.player.injury);
-        for (const e of injured) {
-            reasons.push({
+        // --- Injuries worth mentioning --------------------------------------
+        // A tag is not news. A tag that has already cost the player real
+        // expected time is. Questionable at 96% availability was being raised
+        // as a warning on both sides of trades it had no bearing on.
+        const injured = s.inEntries.filter(
+            (e) => e.player.injury && (e.detail?.availability ?? 1) <= 0.85
+        );
+        if (injured.length) {
+            const worst = sortBy(injured, (e) => e.detail.availability)[0];
+            const rest = injured.length - 1;
+            add({
                 kind: 'warn',
-                team: s.team.rosterId,
-                title: `${e.player.name} is ${e.player.injury}`,
-                detail: `His value here is already discounted to ${Math.round(e.detail.availability * 100)}% for expected missed time. Confirm the timeline before accepting.`,
+                code: 'injury',
+                weight: 1.2 + (1 - worst.detail.availability) * 2,
+                title:
+                    `${worst.player.name} is ${worst.player.injury}` +
+                    (rest > 0 ? ` (and ${rest} other incoming player${rest === 1 ? '' : 's'} carry tags)` : ''),
+                detail:
+                    `His value here is already discounted to ${Math.round(worst.detail.availability * 100)}% for expected ` +
+                    `missed time. Confirm the timeline before accepting.`,
             });
         }
 
+        // --- What it does to the season --------------------------------------
         if (hasOdds) {
             const pd = s.playoffDelta;
             const td = s.titleDelta;
-            if (Math.abs(pd) >= 0.01 || Math.abs(td) >= 0.005) {
-                reasons.push({
+            if (Math.abs(pd) >= oddsFloor || Math.abs(td) >= oddsFloor / 2) {
+                add({
                     kind: pd + td > 0 ? 'good' : 'bad',
-                    team: s.team.rosterId,
+                    code: 'odds',
                     weight: 3 + Math.abs(pd) * 10 + Math.abs(td) * 20,
-                    title: `${name}: playoff odds ${fmtPctDelta(pd)}, title odds ${fmtPctDelta(td)}`,
+                    title: `Playoff odds ${fmtPctDelta(pd)}, title odds ${fmtPctDelta(td)}`,
                     detail: `${round(s.playoffBefore * 100, 1)}% → ${round(s.playoffAfter * 100, 1)}% to make the playoffs across ${iterations.toLocaleString()} simulated seasons on the real remaining schedule.`,
-                });
-            } else {
-                reasons.push({
-                    kind: 'neutral',
-                    team: s.team.rosterId,
-                    title: `${name}'s season barely moves`,
-                    detail: `Playoff odds stay near ${round(s.playoffBefore * 100, 0)}%. Whatever this trade is about, it is not this year's playoff race.`,
                 });
             }
 
-            if (s.playoffBefore > 0.85 && s.titleDelta > 0.005) {
-                reasons.push({
+            if (s.playoffBefore > 0.85 && s.titleDelta > oddsFloor / 2) {
+                add({
                     kind: 'good',
-                    team: s.team.rosterId,
-                    title: `${name} is already a lock — this is about January`,
+                    code: 'lock',
+                    weight: 1.6,
+                    title: 'Already a lock — this is about January',
                     detail: 'The playoff spot was never in doubt. The right question is title odds, and those go up.',
                 });
             }
             if (s.playoffBefore < 0.15 && ctx.dynasty === false && s.valueNet > 0) {
-                reasons.push({
+                add({
                     kind: 'warn',
-                    team: s.team.rosterId,
-                    title: `${name} is buying in a lost season`,
+                    code: 'lost-season',
+                    weight: 1.7,
+                    title: 'Buying in a lost season',
                     detail: `At ${round(s.playoffBefore * 100, 0)}% to make the playoffs, adding win-now value in a redraft league has almost no payoff.`,
                 });
             }
         }
+
+        // Nothing at all to say is itself worth one line, and only one.
+        if (!mine.length) {
+            add({
+                kind: 'neutral',
+                code: 'nothing',
+                weight: 0.1,
+                title: 'This trade does very little here',
+                detail: hasOdds
+                    ? `Lineup, value and playoff odds all finish within noise of where they started.`
+                    : `Neither the lineup nor the value ledger moves enough to matter.`,
+            });
+        }
+
+        reasons.push(...mine);
     }
 
-    // Rank by how much each point actually matters, not by category, then cap
-    // per team. Twelve variations on "you got worse at receiver" is noise, and
-    // burying the one line that explains the verdict underneath them is worse.
+    return rankReasons(reasons, sides);
+}
+
+/** The lineup diff in a sentence, naming only what actually moved. */
+function describeLineupChange({ arrived, departed, net, weeks, ros }) {
+    const total = `${Math.abs(round(ros, 0))} points across the ${weeks} week${weeks === 1 ? '' : 's'} left`;
+    if (arrived.length && departed.length) {
+        return `${departed.join(' and ')} ${departed.length === 1 ? 'comes' : 'come'} out of the lineup and ` +
+            `${arrived.join(' and ')} ${arrived.length === 1 ? 'goes' : 'go'} in — ${total}.`;
+    }
+    if (arrived.length) {
+        return `${arrived.join(' and ')} ${arrived.length === 1 ? 'joins' : 'join'} the starting lineup — ${total}.`;
+    }
+    if (departed.length) {
+        return `${departed.join(' and ')} ${departed.length === 1 ? 'leaves' : 'leave'} the starting lineup and ` +
+            `nobody incoming replaces ${departed.length === 1 ? 'him' : 'them'} — ${total}.`;
+    }
+    return `The same players start, but their expected output shifts by ${total}.`;
+}
+
+/**
+ * Who actually steps into the gap, checked rather than asserted.
+ *
+ * "Nobody on the roster replaces him" was printed regardless of whether
+ * somebody did, on rosters carrying a perfectly good next man up.
+ */
+function replacementNote(side, pos, who) {
+    const heir = side.lineupAfter.starters
+        .filter((st) => st.entry.player.pos === pos)
+        .map((st) => st.entry)
+        .filter((e) => !side.lineupBefore.starters.some((st) => st.entry.player.id === e.player.id));
+
+    if (heir.length) {
+        const best = sortBy(heir, (e) => e.score, -1)[0];
+        return `${who} leaves and ${best.player.name} takes the ${pos} slot, at ${round(best.score, 1)} pts/wk.`;
+    }
+    return `${who} leaves and the ${pos} slot is filled from what is already on the roster.`;
+}
+
+/**
+ * Order by how much each point matters, then cut the repeats.
+ *
+ * Deduplication keys on the KIND of finding rather than its rendered title.
+ * Titles carry numbers, so two versions of the same observation never matched
+ * and both survived -- which is how a board came to hold four variations on
+ * "you got worse at receiver".
+ */
+function rankReasons(reasons, sides) {
     const weight = (r) => (r.weight ?? 1) * ({ bad: 3, warn: 2, good: 2.2, neutral: 0.6 }[r.kind] ?? 1);
     const ranked = sortBy(reasons, weight, -1);
 
@@ -700,12 +856,13 @@ function buildReasons(sides, cfg, ctx, hasOdds, iterations = 2000, faab = null) 
     const seen = new Set();
     const out = [];
     for (const r of ranked) {
-        // Two reasons that say the same thing about the same team are one reason.
-        const key = `${r.team}:${r.title}`;
+        const key = `${r.team}:${r.code ?? r.title}`;
         if (seen.has(key)) continue;
         seen.add(key);
         const count = perTeam.get(r.team) || 0;
-        if (count >= 5) continue;
+        // Four is what fits on a card without scrolling past the verdict, and
+        // the fifth was always a restatement of one of the first four.
+        if (count >= 4) continue;
         perTeam.set(r.team, count + 1);
         out.push(r);
     }

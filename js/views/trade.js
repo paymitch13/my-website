@@ -544,19 +544,41 @@ function renderResult(app, result, repaint) {
     }
 
     // Why
+    //
+    // Grouped by team. Flat and interleaved, every line had to carry the team
+    // name to be readable, so the column became "Team 1 ... Team 2 ... Team 1"
+    // and the same observation about two sides of one swap read as four
+    // separate findings. One heading per side says it once.
     wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Why'), el('span', { class: 'hint' }, 'ranked by how much it matters')));
-    const reasons = el('div', { class: 'card' });
-    for (const r of result.reasons.slice(0, 12)) {
-        reasons.append(
-            el(
-                'div',
-                { class: `reason k-${r.kind}` },
-                el('div', {}, el('div', { class: 'r-title' }, r.title), el('div', { class: 'r-detail' }, r.detail))
-            )
-        );
+
+    if (!result.reasons.length) {
+        wrap.append(el('div', { class: 'card' }, el('p', { class: 'muted' }, 'Nothing notable — this deal barely moves either roster.')));
+    } else {
+        for (const side of result.sides) {
+            const mine = result.reasons.filter((r) => r.team === side.team.rosterId);
+            if (!mine.length) continue;
+            wrap.append(
+                el(
+                    'div',
+                    { class: 'card', style: 'margin-bottom:12px' },
+                    el(
+                        'div',
+                        { class: 'row', style: 'gap:8px;margin-bottom:10px' },
+                        el('span', { style: 'font-weight:650;min-width:0;overflow-wrap:anywhere' }, side.team.name),
+                        el('div', { class: 'grow' }),
+                        el('span', { class: 'tiny dim' }, `${mine.length} note${mine.length === 1 ? '' : 's'}`)
+                    ),
+                    ...mine.map((r) =>
+                        el(
+                            'div',
+                            { class: `reason k-${r.kind}` },
+                            el('div', {}, el('div', { class: 'r-title' }, r.title), el('div', { class: 'r-detail' }, r.detail))
+                        )
+                    )
+                )
+            );
+        }
     }
-    if (!result.reasons.length) reasons.append(el('p', { class: 'muted' }, 'Nothing notable — this deal barely moves either roster.'));
-    wrap.append(reasons);
 
     // Lineup impact side by side
     wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Lineup impact')));

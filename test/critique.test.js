@@ -178,7 +178,7 @@ test('a one-man position is called fragile', () => {
     const res = run(fx);
     const fragile = res.findings.find((f) => f.kind === 'fragile');
     assert.ok(fragile, `expected a fragility warning, found: ${kinds(res).join(', ')}`);
-    assert.match(fragile.detail, /nothing behind him/);
+    assert.match(fragile.detail, /this thin behind its starter|this exposed/);
 });
 
 test('startable players stuck on the bench are called out as an asset, not depth', () => {
@@ -287,4 +287,127 @@ test('a schedule nobody has loaded produces no schedule claims', () => {
     ]);
     const res = run(fx, { restOfSeason: null, playoffSchedule: null });
     assert.ok(!res.findings.some((f) => f.kind.includes('schedule')));
+});
+
+// --- A finding true of everybody is not a finding ---------------------------
+//
+// The failure mode this whole module keeps rediscovering. A fifteen-man roster
+// starting nine has six bench spots and one quarterback; saying so is a
+// description of the format, and printing it for all twelve managers is the
+// definition of noise. Everything here checks the same property from a
+// different angle: does this fire on a league of identical rosters?
+
+/** Twelve rosters built from the same spec. Nobody is worse than anybody. */
+function clones(spec, n = 10) {
+    const { projections, mk, rank } = pool();
+    const teams = [];
+    for (let i = 1; i <= n; i++) {
+        teams.push({
+            rosterId: i, name: `T${i}`, wins: 3, losses: 3, ties: 0, pointsFor: 700,
+            players: spec.map(([pos, ppg]) => mk(pos, ppg)),
+        });
+    }
+    const rankings = rank(teams);
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    return {
+        teams, ctx,
+        entriesFor: (team) => buildEntries(team.players, rankings, ctx),
+        rankings,
+    };
+}
+
+const IDENTICAL = [
+    ['QB', 17], ['RB', 13], ['RB', 12], ['RB', 10], ['RB', 4],
+    ['WR', 14], ['WR', 13], ['WR', 12], ['WR', 10], ['WR', 4],
+    ['TE', 9], ['TE', 3], ['K', 7], ['DEF', 6],
+];
+
+test('a league of identical rosters produces no structural criticism', () => {
+    const fx = clones(IDENTICAL);
+    for (const team of fx.teams) {
+        const res = critiqueRoster({
+            team, teams: fx.teams, cfg, ctx: fx.ctx,
+            rankings: fx.rankings, entriesFor: fx.entriesFor, currentWeek: 7,
+        });
+        const problems = res.findings.filter((f) => f.severity !== 'good');
+        assert.equal(
+            problems.length, 0,
+            `nobody is worse than anybody, yet ${team.name} was told: ${problems.map((f) => f.title).join(' | ')}`
+        );
+    }
+});
+
+test('every roster having a bench is not a criticism of any roster', () => {
+    // Fired on twelve of twelve before: everyone carries below-replacement
+    // depth, because that is what a bench is for.
+    const fx = clones(IDENTICAL);
+    for (const team of fx.teams) {
+        const res = critiqueRoster({
+            team, teams: fx.teams, cfg, ctx: fx.ctx,
+            rankings: fx.rankings, entriesFor: fx.entriesFor, currentWeek: 7,
+        });
+        assert.ok(!res.findings.some((f) => f.kind === 'dead-weight'), 'dead weight must be league-relative');
+    }
+});
+
+test('a genuinely bloated bench still gets called out', () => {
+    // The other half: relative must not mean toothless.
+    const { projections, mk, rank } = pool();
+    const teams = [];
+    const add = (id, spec) => teams.push({
+        rosterId: id, name: `T${id}`, wins: 3, losses: 3, ties: 0, pointsFor: 700,
+        players: spec.map(([pos, ppg]) => mk(pos, ppg)),
+    });
+    // Roster 1 fills its bench with waiver fodder; everyone else carries real
+    // backups.
+    add(1, [
+        ['QB', 17], ['RB', 13], ['RB', 12], ['WR', 14], ['WR', 13], ['TE', 9], ['K', 7], ['DEF', 6],
+        ['RB', 1], ['RB', 1], ['WR', 1], ['WR', 1], ['TE', 1], ['WR', 1],
+    ]);
+    for (let i = 2; i <= 10; i++) {
+        add(i, [
+            ['QB', 17], ['RB', 13], ['RB', 12], ['WR', 14], ['WR', 13], ['TE', 9], ['K', 7], ['DEF', 6],
+            ['RB', 11], ['RB', 10], ['WR', 11], ['WR', 10], ['TE', 8], ['WR', 9],
+        ]);
+    }
+    const rankings = rank(teams);
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = critiqueRoster({
+        team: teams[0], teams, cfg, ctx, rankings,
+        entriesFor: (t) => buildEntries(t.players, rankings, ctx), currentWeek: 7,
+    });
+    const dead = res.findings.find((f) => f.kind === 'dead-weight');
+    assert.ok(dead, `expected dead weight, found: ${kinds(res).join(', ')}`);
+    assert.match(dead.title, /against \d+ for the rest of the league/);
+});
+
+test('fragility is one finding, not one per position', () => {
+    // Three cards all saying "buy a backup" is the same advice printed three
+    // times.
+    const { projections, mk, rank } = pool();
+    const teams = [];
+    const add = (id, spec) => teams.push({
+        rosterId: id, name: `T${id}`, wins: 3, losses: 3, ties: 0, pointsFor: 700,
+        players: spec.map(([pos, ppg]) => mk(pos, ppg)),
+    });
+    // One star and nothing behind him at three positions at once.
+    add(1, [
+        ['QB', 24], ['QB', 2], ['RB', 24], ['RB', 2], ['RB', 2],
+        ['WR', 24], ['WR', 2], ['WR', 2], ['TE', 14], ['TE', 1], ['K', 7], ['DEF', 6],
+    ]);
+    for (let i = 2; i <= 10; i++) {
+        add(i, [
+            ['QB', 17], ['QB', 15], ['RB', 13], ['RB', 12], ['RB', 11],
+            ['WR', 14], ['WR', 13], ['WR', 12], ['TE', 9], ['TE', 8], ['K', 7], ['DEF', 6],
+        ]);
+    }
+    const rankings = rank(teams);
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 8, projections });
+    const res = critiqueRoster({
+        team: teams[0], teams, cfg, ctx, rankings,
+        entriesFor: (t) => buildEntries(t.players, rankings, ctx), currentWeek: 7,
+    });
+    const fragile = res.findings.filter((f) => f.kind === 'fragile');
+    assert.ok(fragile.length <= 1, `expected at most one fragility card, got ${fragile.length}`);
+    if (fragile.length) assert.match(fragile[0].detail, /rivals|thin behind its starter/);
 });
