@@ -300,3 +300,87 @@ test('the user’s own board is untouched by the market', () => {
         buildEntries([players.rb0], rankings, plain)[0].value
     );
 });
+
+// --- Positional premiums ----------------------------------------------------
+//
+// The market feed has no tight-end-premium parameter, which looks at first like
+// a hole in the counterparty board and is not one. The market supplies an
+// ORDERING, never a scale: the points behind a rank come from this league's own
+// curve, premium included. These tests exist because the tempting "fix" --
+// blending the market's rank toward our projected one -- would contaminate the
+// one input that makes "will they accept" worth anything.
+
+/** A pool where tight ends catch enough passes for a premium to bite. */
+function premiumFixture() {
+    const projections = {};
+    const players = {};
+    const add = (pos, i, stats) => {
+        const id = `${pos}${i}`;
+        projections[id] = { id, pos, games: 17, stats, ptsHalfPpr: 1 };
+        players[id] = { id, name: `${pos} ${i}`, pos, team: 'KC', age: 26, injury: null };
+    };
+    for (let i = 0; i < 40; i++) {
+        add('TE', i, { rec: (90 - i * 2) * 1, rec_yd: (900 - i * 20), bonus_rec_te: 90 - i * 2 });
+        add('WR', i, { rec: 100 - i * 2, rec_yd: 1400 - i * 25 });
+        add('RB', i, { rush_yd: 1200 - i * 25, rec: 40 - i, rec_yd: 300 - i * 5 });
+    }
+    return { projections, players };
+}
+
+const marketFor = (players) => {
+    const rows = Object.values(players).map((p, i) => ({
+        player: { sleeperId: p.id, name: p.name, position: p.pos },
+        value: 9000 - i * 20,
+        positionRank: 1,
+    }));
+    const byId = parseMarketValues(rows);
+    return { byId, ranks: marketRanks(byId) };
+};
+
+test('a tight end premium reaches the counterparty board through the curve', () => {
+    const { projections, players } = premiumFixture();
+    const scoring = { rec: 0.5, rec_yd: 0.1, rush_yd: 0.1 };
+    const market = marketFor(players);
+
+    const plain = createValuationContext(
+        leagueOf(defaultRosterPositions(), scoring),
+        { week: 1, weeksLeft: 14, projections, market }
+    );
+    const premium = createValuationContext(
+        leagueOf(defaultRosterPositions(), { ...scoring, bonus_rec_te: 1 }),
+        { week: 1, weeksLeft: 14, projections, market }
+    );
+
+    const te = players.TE0;
+    const before = neutralEntry(te, plain);
+    const after = neutralEntry(te, premium);
+
+    assert.equal(before.marketRank, after.marketRank, 'the market opinion itself does not change');
+    assert.ok(
+        after.value > before.value * 1.3,
+        `a rival must demand more for an elite TE once the premium is on: ${before.value.toFixed(0)} -> ${after.value.toFixed(0)}`
+    );
+});
+
+test('the premium pushes receivers down the same board it lifts tight ends up', () => {
+    // Not a side effect -- the point. A premium makes tight ends startable in
+    // the flex, which is what a marginal receiver was there for.
+    const { projections, players } = premiumFixture();
+    const scoring = { rec: 0.5, rec_yd: 0.1, rush_yd: 0.1 };
+    const market = marketFor(players);
+
+    const plain = createValuationContext(
+        leagueOf(defaultRosterPositions(), scoring),
+        { week: 1, weeksLeft: 14, projections, market }
+    );
+    const premium = createValuationContext(
+        leagueOf(defaultRosterPositions(), { ...scoring, bonus_rec_te: 1 }),
+        { week: 1, weeksLeft: 14, projections, market }
+    );
+
+    assert.ok(premium.replacementPpg.WR > plain.replacementPpg.WR, 'the flex line has to rise');
+    assert.ok(
+        neutralEntry(players.WR20, premium).value < neutralEntry(players.WR20, plain).value,
+        'so a marginal receiver is worth less, not the same'
+    );
+});
