@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { vegasImpact, defenseVegasImpact, evaluatePlayerWeek, buildStartSitReport, lineupChanges, slateAverage } from '../js/startsit.js';
+import {
+    vegasImpact, defenseVegasImpact, evaluatePlayerWeek, buildStartSitReport,
+    lineupChanges, slateAverage, comparePlayers, describeComparison,
+} from '../js/startsit.js';
 import { buildDefenseProfiles, matchupImpact, rankDefenses, describeMatchup } from '../js/matchup.js';
 import { weatherImpact, pickHour, STADIUMS } from '../js/weather.js';
 import { normalizeScoring, normalizeLeague, defaultRosterPositions } from '../js/league.js';
+import { round } from '../js/util.js';
 
 const scoring = normalizeScoring({ rec: 0.5 });
 const cfg = normalizeLeague({
@@ -382,4 +386,106 @@ test('the recommended lineup never projects below a legal current lineup', () =>
     assert.ok(changes.currentTotal <= rep.projectedTotal + 1e-9,
         `current ${changes.currentTotal} must not exceed optimum ${rep.projectedTotal}`);
     assert.ok(changes.pointsGained >= 0);
+});
+
+// --- Every player on the roster, and every decision -------------------------
+//
+// The complaint that prompted this: two quarterbacks on one roster were never
+// put next to each other. Close calls capped at the top eight bench players and
+// a 2.5-point gap, so anything the tool judged easy simply vanished -- and the
+// bench was computed and then never rendered at all.
+
+test('every rostered player lands somewhere in the report', () => {
+    const evaluations = roster();
+    evaluations.push({ player: mkPlayer('bye1', 'WR', 'NYJ'), hasGame: false, adjusted: null, factors: [], confidence: {} });
+    const rep = buildStartSitReport({ team: { name: 'T' }, cfg, evaluations });
+
+    const seen = new Set([
+        ...rep.lineup.starters.map((s) => s.entry.player.id),
+        ...rep.bench.map((e) => e.player.id),
+        ...rep.unavailable.map((e) => e.player.id),
+    ]);
+    for (const e of evaluations) {
+        assert.ok(seen.has(e.player.id), `${e.player.id} is on the roster and nowhere in the report`);
+    }
+});
+
+test('a backup quarterback is compared to the starter however far behind he is', () => {
+    // qb2 is eight points back. Under the old close-call rule that made him
+    // invisible; he is still the only other quarterback you own.
+    const rep = buildStartSitReport({ team: { name: 'T' }, cfg, evaluations: roster() });
+    const qbSlot = rep.decisions.find((d) => d.starter.player.pos === 'QB');
+    assert.ok(qbSlot, 'the QB slot must produce a decision');
+    assert.ok(
+        qbSlot.alternatives.some((a) => a.entry.player.id === 'qb2'),
+        `expected qb2 among the alternatives, got: ${qbSlot.alternatives.map((a) => a.entry.player.id).join(', ')}`
+    );
+    assert.ok(qbSlot.margin > 2.5, 'and this is deliberately NOT a close call');
+});
+
+test('every starting slot reports its margin over the next man', () => {
+    const rep = buildStartSitReport({ team: { name: 'T' }, cfg, evaluations: roster() });
+    assert.equal(rep.decisions.length, rep.lineup.starters.length);
+    for (const d of rep.decisions) {
+        if (!d.alternatives.length) continue;
+        const best = Math.min(...d.alternatives.map((a) => a.gap));
+        assert.equal(d.margin, best, `${d.label} margin must be the gap to the best alternative`);
+        assert.ok(d.margin >= -1e-9, 'the optimizer already picked the best, so no alternative is ahead');
+    }
+});
+
+test('flex alternatives cross positions, dedicated slots do not', () => {
+    const rep = buildStartSitReport({ team: { name: 'T' }, cfg, evaluations: roster() });
+    const flex = rep.decisions.find((d) => d.slot === 'FLEX');
+    const qb = rep.decisions.find((d) => d.slot === 'QB');
+    assert.ok(flex.alternatives.some((a) => a.entry.player.pos !== flex.starter.player.pos), 'the flex is the cross-position question');
+    for (const a of qb.alternatives) assert.equal(a.entry.player.pos, 'QB', 'only a QB can fill the QB slot');
+});
+
+// --- Head to head -----------------------------------------------------------
+
+test('two players can be compared directly, whatever the gap', () => {
+    const evaluations = roster();
+    const a = evaluations.find((e) => e.player.id === 'qb1');
+    const b = evaluations.find((e) => e.player.id === 'qb2');
+    const cmp = comparePlayers(a, b);
+    assert.equal(cmp.leader.player.id, 'qb1');
+    assert.equal(round(cmp.gap, 1), 8);
+    assert.equal(cmp.tooClose, false);
+    assert.match(describeComparison(cmp), /qb1 by 8/);
+});
+
+test('a gap inside a point is called a coin flip rather than dressed up', () => {
+    const evaluations = roster();
+    const a = { ...evaluations[0], adjusted: 12.4 };
+    const b = { ...evaluations[1], adjusted: 12.0 };
+    const cmp = comparePlayers(a, b);
+    assert.equal(cmp.tooClose, true);
+    assert.match(describeComparison(cmp), /coin flip/);
+});
+
+test('a player who cannot play is not a decision', () => {
+    const evaluations = roster();
+    const a = evaluations[0];
+    const b = { ...evaluations[1], hasGame: false };
+    const cmp = comparePlayers(a, b);
+    assert.equal(cmp.blocked, true);
+    assert.match(describeComparison(cmp), /cannot be started/);
+});
+
+test('only the factors that differ are offered as reasons', () => {
+    // Two players in the same game share the weather entirely. However big that
+    // factor is, it explains nothing about choosing between them.
+    const shared = { kind: 'weather', label: 'Weather', multiplier: 0.8, detail: 'wind' };
+    const evaluations = roster();
+    const a = { ...evaluations[0], factors: [shared, { kind: 'matchup', label: 'Matchup', multiplier: 1.1, detail: 'soft' }] };
+    const b = { ...evaluations[1], factors: [shared] };
+    const cmp = comparePlayers(a, b);
+    assert.ok(!cmp.swings.some((s) => s.kind === 'weather'), 'a shared factor is not a differentiator');
+    assert.equal(cmp.swings[0].kind, 'matchup');
+});
+
+test('comparing needs two players', () => {
+    assert.equal(comparePlayers(null, null), null);
+    assert.equal(describeComparison(null), '');
 });

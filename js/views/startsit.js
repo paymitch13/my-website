@@ -1,6 +1,9 @@
 // Start/Sit — weekly lineup decisions.
 
-import { buildStartSitReport, evaluatePlayerWeek, lineupChanges, slateAverage } from '../startsit.js';
+import {
+    buildStartSitReport, comparePlayers, describeComparison, evaluatePlayerWeek,
+    lineupChanges, slateAverage,
+} from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
 import { fetchWeatherForGames } from '../weather.js';
 import { loadSlateProps } from '../props.js';
@@ -10,8 +13,8 @@ import { isOnBye } from '../schedule.js';
 import { slotLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
-    banner, el, emptyState, fmtDelta, playerLink, posBadge, round, sortBy,
-    spinnerRow, tag, tile,
+    banner, el, emptyState, fmtDelta, pickPlayer, playerLink, posBadge, round,
+    sortBy, spinnerRow, tag, tile,
 } from '../ui.js';
 
 /** Readable names for the market keys, for the movement line. */
@@ -183,7 +186,7 @@ async function build(app, team) {
                   )
                 : null,
             tile('Unavailable', report.unavailable.length, 'bye, no game, or ruled out'),
-            tile('Close calls', report.closeCalls.length, 'within 2.5 points')
+            tile('Close calls', report.closeCalls.length, `of ${report.decisions.length} slot decisions`)
         )
     );
 
@@ -286,33 +289,147 @@ async function build(app, team) {
         )
     );
 
-    // --- Close calls -------------------------------------------------------
-    if (report.closeCalls.length) {
-        const card = el('div', { class: 'card' });
-        card.append(
-            el('h3', {}, 'Close calls'),
-            el('p', { class: 'muted small' }, 'These are within 2.5 points — the decisions actually in doubt.')
+    // --- Every decision on the roster --------------------------------------
+    //
+    // One card per starting slot, with everyone eligible to take it. This
+    // replaced a "close calls" list that showed only benched players within
+    // 2.5 points of a starter, drawn from the top eight on the bench -- so two
+    // quarterbacks four points apart, the only two you own, were never put next
+    // to each other at all.
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {}, 'Every decision'),
+            el('span', { class: 'hint' }, 'each slot, and everyone who could take it')
+        )
+    );
+
+    const decisions = report.decisions.filter((d) => d.alternatives.length);
+    if (!decisions.length) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'card' },
+                el('p', { class: 'muted' }, 'Every slot has exactly one eligible player, so there is nothing to decide this week.')
+            )
         );
-        for (const c of report.closeCalls) {
-            card.append(
+    }
+    for (const d of decisions) {
+        const tight = d.margin !== null && d.margin <= 2.5;
+        const card = el('div', { class: 'card card-tight', style: 'margin-bottom:10px' });
+        card.append(
+            el(
+                'div',
+                { class: 'row', style: 'gap:8px;align-items:center' },
+                el('span', { class: 'tiny dim', style: 'min-width:42px' }, d.label),
+                posBadge(d.starter.player.pos),
+                el('span', { style: 'font-weight:650;min-width:0;overflow-wrap:anywhere' }, playerLink(d.starter.player)),
+                el('span', { class: 'num small', style: 'color:var(--accent)' }, round(d.starter.score, 1)),
+                el('div', { class: 'grow' }),
+                tight
+                    ? tag(`${round(d.margin, 1)} clear`, 'warn')
+                    : tag(`${round(d.margin, 1)} clear`, 'good')
+            )
+        );
+
+        // How many alternatives are worth printing depends on how close the
+        // call is. Listing five names under a slot the starter leads by ninety
+        // points is padding; under a slot he leads by one, every one of them is
+        // a real option. Always at least two, so the comparison the manager
+        // came for is on the page either way.
+        const inContention = d.alternatives.filter((a) => a.gap <= 8);
+        const shown = d.alternatives.slice(0, Math.min(4, Math.max(2, inContention.length)));
+        const hidden = d.alternatives.length - shown.length;
+
+        const list = el('div', { style: 'margin-top:8px' });
+        for (const alt of shown) {
+            const ev = alt.entry.evaluation;
+            list.append(
                 el(
                     'div',
-                    { class: 'reason k-neutral' },
+                    { class: 'row', style: 'gap:8px;align-items:center;padding:4px 0;min-width:0' },
+                    el('span', { class: 'tiny dim', style: 'min-width:42px' }, 'instead'),
+                    posBadge(alt.entry.player.pos),
+                    el('span', { class: 'small ellipsis', style: 'min-width:0;flex:1' }, playerLink(alt.entry.player)),
+                    ev?.opponent ? el('span', { class: 'tiny dim nowrap hide-sm' }, `vs ${ev.opponent}`) : null,
+                    el('span', { class: 'num small muted' }, round(alt.entry.score, 1)),
                     el(
-                        'div',
-                        {},
-                        el(
-                            'div',
-                            { class: 'r-title' },
-                            `${c.start.player.name} over ${c.sit.player.name} by ${round(c.gap, 1)} at ${c.slot}`
-                        ),
-                        el('div', { class: 'r-detail' }, closeCallReason(c))
+                        'span',
+                        { class: `num tiny ${alt.gap <= 1 ? 'warn' : 'dim'}`, style: 'min-width:52px;text-align:right' },
+                        `−${round(alt.gap, 1)}`
                     )
                 )
             );
         }
+        card.append(list);
+        if (hidden > 0) {
+            card.append(
+                el('p', { class: 'tiny dim', style: 'margin:6px 0 0' },
+                    `${hidden} more eligible, all further behind.`)
+            );
+        }
         wrap.append(card);
     }
+
+    // --- The rest of the roster --------------------------------------------
+    //
+    // The bench was computed and then never rendered, so most of the roster was
+    // invisible on the one page whose entire job is choosing between the
+    // players on it. Same columns as the starters, because the comparison only
+    // works if the numbers are the same numbers.
+    if (report.bench.length) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'section-head' },
+                el('h2', {}, 'Bench'),
+                el('span', { class: 'hint' }, `${report.bench.length} players, same numbers as above`)
+            )
+        );
+        wrap.append(
+            el(
+                'div',
+                { class: 'card' },
+                el(
+                    'div',
+                    { class: 'table-scroll' },
+                    el(
+                        'table',
+                        { class: 'table' },
+                        el(
+                            'thead',
+                            {},
+                            el(
+                                'tr',
+                                {},
+                                el('th', {}, 'Player'),
+                                el('th', { class: 'hide-sm' }, 'Matchup'),
+                                el('th', { class: 'right hide-sm' }, 'Base'),
+                                el('th', { class: 'right' }, 'Adjusted'),
+                                el('th', { class: 'right hide-sm' }, 'Behind'),
+                                el('th', {}, 'Why')
+                            )
+                        ),
+                        el('tbody', {}, ...report.bench.map((e) => benchRow(e, report)))
+                    )
+                )
+            )
+        );
+    }
+
+    // --- Head to head -------------------------------------------------------
+    // The question people actually ask, which nothing on this page could answer
+    // before: two names, one call.
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {}, 'Head to head'),
+            el('span', { class: 'hint' }, 'compare any two players on this roster')
+        )
+    );
+    wrap.append(headToHead(app, evaluations));
 
     // --- Bench and byes ----------------------------------------------------
     if (report.unavailable.length) {
@@ -506,14 +623,174 @@ function factorChips(ev) {
     return el('div', { class: 'row', style: 'gap:2px' }, ...chips);
 }
 
-function closeCallReason(c) {
-    const a = c.start.evaluation;
-    const b = c.sit.evaluation;
-    const bits = [];
-    const topA = a.factors[0];
-    const topB = b.factors[0];
-    if (topA && Math.abs(topA.multiplier - 1) > 0.03) bits.push(`${c.start.player.name}: ${topA.detail}`);
-    if (topB && Math.abs(topB.multiplier - 1) > 0.03) bits.push(`${c.sit.player.name}: ${topB.detail}`);
-    if (!bits.length) bits.push('Nothing separates them beyond the raw projection — a genuine coin flip.');
-    return bits.join(' ');
+/** A bench player, with the same numbers the starters are judged on. */
+function benchRow(entry, report) {
+    const ev = entry.evaluation;
+    const p = entry.player;
+    const delta = ev.adjusted - ev.baseProjection;
+
+    // How far off the lineup he is: the smallest gap to any slot he could
+    // legally fill. A receiver 0.3 behind the flex is a live decision; the same
+    // receiver 12 behind is depth.
+    const behind = report.decisions
+        .filter((d) => d.alternatives.some((a) => a.entry.player.id === p.id))
+        .map((d) => d.alternatives.find((a) => a.entry.player.id === p.id).gap);
+    const closest = behind.length ? Math.min(...behind) : null;
+
+    return el(
+        'tr',
+        {},
+        el(
+            'td',
+            {},
+            el(
+                'div',
+                { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' },
+                posBadge(p.pos),
+                el('span', { class: 'ellipsis' }, playerLink(p)),
+                p.injury ? tag(p.injury, 'bad') : null
+            )
+        ),
+        el('td', { class: 'small nowrap hide-sm' }, ev.opponent ? `vs ${ev.opponent}` : '—'),
+        el('td', { class: 'num right small muted hide-sm' }, round(ev.baseProjection, 1)),
+        el(
+            'td',
+            { class: `num right ${delta > 0.4 ? 'good' : delta < -0.4 ? 'bad' : ''}` },
+            round(ev.adjusted, 1)
+        ),
+        el(
+            'td',
+            { class: `num right small hide-sm ${closest !== null && closest <= 1.5 ? 'warn' : 'dim'}` },
+            closest === null ? '—' : `−${round(closest, 1)}`
+        ),
+        el('td', {}, factorChips(ev))
+    );
+}
+
+/**
+ * Two players, side by side.
+ *
+ * Deliberately stateful and local: the picker writes into a pair of slots and
+ * repaints just this card, so choosing a player never costs a full re-render of
+ * a page that took several network calls to build.
+ */
+function headToHead(app, evaluations) {
+    const startable = sortBy(
+        evaluations.filter((e) => e.adjusted !== null),
+        (e) => e.adjusted,
+        -1
+    );
+    const host = el('div', { class: 'card' });
+    if (startable.length < 2) {
+        host.append(el('p', { class: 'muted' }, 'Not enough players with a projection this week to compare.'));
+        return host;
+    }
+
+    // Open on the closest call there is, so the card is useful before it is
+    // touched rather than being two empty boxes.
+    let a = startable[0];
+    let b = startable[1];
+    const opener = bestPair(evaluations);
+    if (opener) {
+        a = opener.a;
+        b = opener.b;
+    }
+
+    const pick = async (which) => {
+        const chosen = await pickPlayer({
+            title: which === 'a' ? 'First player' : 'Second player',
+            entries: startable.map((e) => ({ player: e.player, value: e.adjusted, posRank: null })),
+            emptyText: 'Nobody on this roster has a projection this week.',
+            formatValue: (v) => round(v, 1),
+        });
+        if (!chosen) return;
+        const picked = startable.find((e) => e.player.id === chosen.player.id);
+        if (!picked) return;
+        if (which === 'a') a = picked;
+        else b = picked;
+        paint();
+    };
+
+    function side(entry, which) {
+        const ev = entry;
+        return el(
+            'div',
+            { class: 'h2h-side' },
+            el(
+                'button',
+                { class: 'btn btn-sm', style: 'width:100%;justify-content:flex-start', onclick: () => pick(which) },
+                posBadge(ev.player.pos),
+                el('span', { class: 'ellipsis', style: 'min-width:0' }, ev.player.name),
+                el('span', { class: 'tiny dim' }, '▾')
+            ),
+            el('div', { class: 'num', style: 'font-size:26px;margin-top:8px' }, round(ev.adjusted, 1)),
+            el('div', { class: 'tiny dim' }, ev.opponent ? `vs ${ev.opponent}` : 'no game'),
+            el('div', { style: 'margin-top:8px' }, factorChips(ev))
+        );
+    }
+
+    function paint() {
+        const cmp = comparePlayers(a, b);
+        host.replaceChildren(
+            el(
+                'div',
+                { class: 'h2h' },
+                side(a, 'a'),
+                el('div', { class: 'h2h-mid' }, el('span', { class: 'tiny dim' }, 'VS')),
+                side(b, 'b')
+            ),
+            el(
+                'div',
+                { class: `verdict tone-${cmp.blocked ? 'bad' : cmp.tooClose ? 'warn' : 'good'}`, style: 'margin-top:14px' },
+                el('div', { class: 'label' }, cmp.blocked ? 'Not a decision' : cmp.tooClose ? 'Too close to call' : 'Start'),
+                el('div', { class: 'headline' }, describeComparison(cmp))
+            ),
+            cmp.swings.length
+                ? el(
+                      'div',
+                      { style: 'margin-top:12px' },
+                      el('div', { class: 'tiny dim', style: 'margin-bottom:6px' }, 'WHAT SEPARATES THEM'),
+                      ...cmp.swings.slice(0, 4).map((sw) =>
+                          el(
+                              'div',
+                              { class: 'row', style: 'gap:8px;padding:3px 0;min-width:0' },
+                              el('span', { class: 'tiny dim', style: 'min-width:64px' }, FACTOR_LABEL[sw.kind] || sw.kind),
+                              el(
+                                  'span',
+                                  { class: `small ${sw.edge > 0 ? 'good' : 'bad'}`, style: 'min-width:0;flex:1' },
+                                  `${(sw.edge > 0 ? a : b).player.name} by ${Math.round(Math.abs(sw.edge) * 100)}%`
+                              )
+                          )
+                      )
+                  )
+                : el('p', { class: 'tiny dim', style: 'margin-top:10px' }, 'Nothing in the matchup separates them — the gap is the raw projection.')
+        );
+    }
+
+    paint();
+    return host;
+}
+
+const FACTOR_LABEL = {
+    vegas: 'Vegas',
+    matchup: 'Matchup',
+    weather: 'Weather',
+    health: 'Health',
+    market: 'Market',
+};
+
+/** The tightest genuine decision on the roster, to open the comparison on. */
+function bestPair(evaluations) {
+    const usable = evaluations.filter((e) => e.adjusted !== null && e.hasGame && !e.ruledOut);
+    let best = null;
+    for (let i = 0; i < usable.length; i++) {
+        for (let j = i + 1; j < usable.length; j++) {
+            // Same position, because that is the comparison a manager means
+            // when they name two players.
+            if (usable[i].player.pos !== usable[j].player.pos) continue;
+            const gap = Math.abs(usable[i].adjusted - usable[j].adjusted);
+            if (!best || gap < best.gap) best = { a: usable[i], b: usable[j], gap };
+        }
+    }
+    return best;
 }

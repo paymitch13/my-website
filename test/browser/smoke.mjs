@@ -112,6 +112,20 @@ for (let t = 1; t <= 12; t++) {
         starters: [], settings: { wins: 3, losses: 3, ties: 0, fpts: 700, fpts_decimal: 0 },
     });
 }
+// One week's projections, with a real opponent so players actually have a game
+// to be started in.
+const weeklyProjections = projections.map((row, i) => ({
+    player_id: row.player_id,
+    player: row.player,
+    team: players[row.player_id]?.team || 'KC',
+    opponent: NFL_TEAMS[(i + 3) % NFL_TEAMS.length],
+    game_id: `g${i % 8}`,
+    week: 7,
+    stats: Object.fromEntries(
+        Object.entries(row.stats).map(([k, v]) => [k, k === 'gp' ? 1 : Math.round((v / 17) * 10) / 10])
+    ),
+}));
+
 // Market values for the fixture league. Reversed against the projections on
 // purpose -- see the route above.
 const marketRows = [];
@@ -172,6 +186,11 @@ const waivers = ids.slice(0, 6).map((id, i) => ({
 const json = (body) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 const fixtures = [
     [/players\/nfl$/, () => json(players)],
+    // Weekly projections are a DIFFERENT quantity from season ones, and serving
+    // the season rows for both made every start/sit number seventeen times too
+    // big -- a quarterback projected for 278 points on Sunday. The weekly route
+    // has to come first: it is the more specific pattern.
+    [/projections\/nfl\/\d+\/\d+/, () => json(weeklyProjections)],
     [/projections\/nfl/, () => json(projections)],
     [/stats\/nfl/, () => json([])],
     [/\/state\/nfl/, () => json(state)],
@@ -455,6 +474,49 @@ if (await addPlayerToSide(0)) {
     console.log(`  cash trade: analysed at market price, ${text.trim().length} chars of result`);
 } else {
     errors.push('trade: could not add a player to a side');
+}
+
+// --- Start/Sit shows the whole roster --------------------------------------
+// The complaint that prompted the rework: two quarterbacks on one roster were
+// never put next to each other, because the page only compared players within
+// 2.5 points of a starter and never rendered the bench at all.
+await page.click('#tabs .tab[data-view="startsit"]');
+await page.waitForTimeout(4000);
+{
+    const text = (await page.textContent('#view')) || '';
+    if (!/Bench/.test(text)) errors.push('start/sit: the bench is not rendered');
+    if (!/Every decision/.test(text)) errors.push('start/sit: per-slot decisions are missing');
+    if (!/Head to head/.test(text)) errors.push('start/sit: no head-to-head comparison');
+
+    // Every rostered player with a projection has to appear somewhere on the
+    // page -- that is the whole complaint.
+    const missing = [];
+    for (const id of rosters[0].players.slice(0, 12)) {
+        const p = players[id];
+        if (!p) continue;
+        const name = `${p.position} ${p.last_name.replace('Player ', '')}`.trim();
+        if (!text.includes(p.last_name)) missing.push(p.last_name);
+    }
+    if (missing.length) errors.push(`start/sit: rostered players missing from the page: ${[...new Set(missing)].join(', ')}`);
+
+    // The second quarterback must be comparable to the first.
+    const qbCount = (text.match(/QB/g) || []).length;
+    if (qbCount < 2) errors.push('start/sit: only one QB surfaced on a two-QB roster');
+
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`start/sit: scrolls horizontally by ${o.scrolled}px`);
+    if (o.wide.length) errors.push(`start/sit: overflows — ${o.wide.join(', ')}`);
+    console.log(`  start/sit: bench + decisions + head-to-head, ${text.trim().length} chars`);
+
+    // Opt-in visual capture, for looking at the page rather than counting it.
+    if (process.env.SHOOT) {
+        for (const [w, h, name] of [[1280, 3000, 'desktop'], [390, 3600, 'mobile']]) {
+            await page.setViewportSize({ width: w, height: h });
+            await page.waitForTimeout(500);
+            await page.screenshot({ path: `${process.env.SHOOT}/ss-${name}.png`, fullPage: true });
+        }
+        await page.setViewportSize({ width: 1280, height: 900 });
+    }
 }
 
 // --- Three boards on one card ----------------------------------------------

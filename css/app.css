@@ -631,6 +631,35 @@ input::placeholder { color: var(--text-3); }
     .swap-gain { grid-column: 1 / -1; text-align: right; }
 }
 
+/* Head to head: two players and the call between them. */
+.h2h {
+    display: grid;
+    grid-template-columns: 1fr 40px 1fr;
+    align-items: start;
+    gap: var(--sp-3);
+}
+.h2h-side {
+    min-width: 0;
+    padding: var(--sp-3);
+    background: var(--bg-2);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-sm);
+}
+.h2h-mid {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Sits level with the projected number rather than the picker above it. */
+    padding-top: 46px;
+}
+
+@media (max-width: 560px) {
+    /* Stacked, with the divider becoming a rule between the two cards rather
+       than a column that would squeeze both sides to nothing. */
+    .h2h { grid-template-columns: 1fr; gap: var(--sp-2); }
+    .h2h-mid { padding: 0; }
+}
+
 /* ---------- Shared truncation helper ---------- */
 
 .ellipsis {

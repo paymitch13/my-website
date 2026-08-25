@@ -308,33 +308,52 @@ export function buildStartSitReport({ team, cfg, evaluations }) {
         -1
     );
 
-    // A close call is a benched player within a small margin of a starter he
-    // could legally replace. Eligibility is what decides that, not an exact
-    // position match: RB-versus-WR for the flex spot is the decision people
-    // actually agonize over, and matching on position excluded it by
-    // construction.
+    // Every decision on the roster, one per starting slot.
+    //
+    // This used to be "close calls": benched players within 2.5 points of a
+    // starter, drawn from the top eight on the bench. Both limits hid real
+    // decisions. Two quarterbacks four points apart are still the only two
+    // quarterbacks you own, and the ninth man on the bench is exactly who you
+    // are wondering about when somebody is questionable. A start/sit tool that
+    // answers only the questions it considers difficult is not answering the
+    // question the manager came with.
+    //
+    // So: for each slot, everyone eligible to fill it, ranked. The gap is
+    // reported rather than used as a filter.
+    const decisions = lineup.starters.map((slot) => {
+        const eligible = SLOT_ELIGIBILITY[slot.slot] || [];
+        const alternatives = bench
+            .filter((e) => eligible.includes(e.player.pos))
+            .map((e) => ({ entry: e, gap: slot.entry.score - e.score }));
+
+        return {
+            slot: slot.slot,
+            label: slot.label,
+            starter: slot.entry,
+            alternatives: sortBy(alternatives, (a) => a.gap),
+            // How safe the call is: the margin over the best alternative.
+            margin: alternatives.length ? Math.min(...alternatives.map((a) => a.gap)) : null,
+        };
+    });
+
+    // The subset that is genuinely in doubt, kept for the summary tile and for
+    // anyone who wants the short version.
     const closeCalls = [];
     const seen = new Set();
-    for (const benched of bench.slice(0, 8)) {
-        for (const slot of lineup.starters) {
-            const starter = slot.entry;
-            const eligible = SLOT_ELIGIBILITY[slot.slot] || [];
-            if (!eligible.includes(benched.player.pos)) continue;
-            if (starter.player.id === benched.player.id) continue;
-            const gap = starter.score - benched.score;
-            if (gap >= 0 && gap <= 2.5) {
-                const key = `${starter.player.id}:${benched.player.id}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                closeCalls.push({
-                    start: starter,
-                    sit: benched,
-                    gap,
-                    slot: slot.label,
-                    // A cross-position call is the flex question specifically.
-                    crossPosition: starter.player.pos !== benched.player.pos,
-                });
-            }
+    for (const d of decisions) {
+        for (const alt of d.alternatives) {
+            if (alt.gap < 0 || alt.gap > 2.5) continue;
+            const key = `${d.starter.player.id}:${alt.entry.player.id}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            closeCalls.push({
+                start: d.starter,
+                sit: alt.entry,
+                gap: alt.gap,
+                slot: d.label,
+                // A cross-position call is the flex question specifically.
+                crossPosition: d.starter.player.pos !== alt.entry.player.pos,
+            });
         }
     }
 
@@ -343,9 +362,83 @@ export function buildStartSitReport({ team, cfg, evaluations }) {
         lineup,
         bench,
         unavailable,
+        decisions,
         closeCalls: sortBy(closeCalls, (c) => c.gap).slice(0, 5),
         projectedTotal: lineup.points,
     };
+}
+
+/**
+ * Two players, side by side, with the reason one is ahead.
+ *
+ * Every other surface on this page ranks a list. This answers the question a
+ * manager actually types into a group chat -- "Nix or Herbert?" -- which is not
+ * the same question as "what is my optimal lineup" and was not answerable here
+ * at all: unless the two happened to land within 2.5 points of each other on
+ * the same slot, the app had nothing to say about them.
+ */
+export function comparePlayers(a, b) {
+    if (!a || !b) return null;
+
+    const scoreOf = (e) => (Number.isFinite(e.adjusted) ? e.adjusted : null);
+    const [sa, sb] = [scoreOf(a), scoreOf(b)];
+
+    // Which factors actually separate them. A factor both players share -- two
+    // men in the same game, in the same weather -- explains nothing about the
+    // choice between them, however large it is.
+    const factorOf = (e, kind) => e.factors?.find((f) => f.kind === kind)?.multiplier ?? 1;
+    const kinds = ['vegas', 'matchup', 'weather', 'health', 'market'];
+    const swings = kinds
+        .map((kind) => ({ kind, a: factorOf(a, kind), b: factorOf(b, kind) }))
+        .map((row) => ({ ...row, edge: row.a - row.b }))
+        .filter((row) => Math.abs(row.edge) >= 0.02);
+
+    const gap = sa !== null && sb !== null ? sa - sb : null;
+    const leader = gap === null ? null : gap > 0 ? a : b;
+    const trailer = leader === a ? b : a;
+
+    return {
+        a,
+        b,
+        gap,
+        leader,
+        trailer,
+        // Ranked by how much each factor separates them, biggest first.
+        swings: sortBy(swings, (s) => Math.abs(s.edge), -1),
+        // A start/sit call inside a point is a coin flip, and saying so is more
+        // useful than manufacturing a reason.
+        tooClose: gap !== null && Math.abs(gap) < 1,
+        blocked: !a.hasGame || !b.hasGame || a.ruledOut || b.ruledOut,
+    };
+}
+
+/** One sentence explaining a head-to-head. */
+export function describeComparison(cmp) {
+    if (!cmp) return '';
+    if (cmp.blocked) {
+        const out = [cmp.a, cmp.b].filter((e) => !e.hasGame || e.ruledOut);
+        return `${out.map((e) => e.player.name).join(' and ')} cannot be started this week, so this is not a decision.`;
+    }
+    if (cmp.gap === null) return 'Neither player has a usable projection this week.';
+    if (cmp.tooClose) {
+        return `${round(Math.abs(cmp.gap), 1)} points apart — a coin flip. Start whichever you would rather be wrong about.`;
+    }
+
+    const top = cmp.swings[0];
+    const because = top
+        ? {
+              vegas: 'his offence is expected to score more',
+              matchup: 'the matchup is softer',
+              weather: 'the weather is kinder',
+              health: 'he is the healthier of the two',
+              market: 'the betting market is higher on him',
+          }[top.kind]
+        : null;
+
+    return (
+        `${cmp.leader.player.name} by ${round(Math.abs(cmp.gap), 1)} points` +
+        (because ? `, mostly because ${because}.` : '.')
+    );
 }
 
 /**
