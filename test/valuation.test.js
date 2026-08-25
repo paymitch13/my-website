@@ -193,3 +193,27 @@ test('superflex pulls quarterbacks onto the shared line', () => {
     const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
     assert.equal(ctx.replacementPpg.QB, ctx.replacementPpg.RB, 'superflex makes QBs flex-eligible');
 });
+
+test('IDP slots are detected so the app can say it cannot value them', () => {
+    // Sleeper publishes no projections for individual defensive players, so an
+    // IDP league sees starting slots nothing can fill. That is a real
+    // limitation and the only honest thing to do is say so -- which requires
+    // noticing it first.
+    const idp = normalizeLeague({
+        settings: { num_teams: 12 },
+        scoring_settings: { rec: 0.5 },
+        roster_positions: ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'DL', 'LB', 'DB', 'K', 'DEF', 'BN'],
+    });
+    assert.equal(idp.hasIdp, true);
+    // IDP slots must not be counted as startable at a position we DO value, or
+    // every replacement level in the league shifts to cover players that were
+    // never in the pool.
+    assert.equal(idp.startersByPos.DEF, 1, 'the team defense is not an IDP slot');
+
+    const plain = normalizeLeague({
+        settings: { num_teams: 12 },
+        scoring_settings: { rec: 0.5 },
+        roster_positions: defaultRosterPositions(),
+    });
+    assert.equal(plain.hasIdp, false);
+});

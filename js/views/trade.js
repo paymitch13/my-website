@@ -15,8 +15,8 @@ import { formatValue, fairness } from '../tradevalue.js';
 import { offerUrl } from '../share.js';
 import { bidHistory, waiverTargets, estimateBid } from '../faab.js';
 import {
-    banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, pickPlayer, playerCell,
-    playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
+    banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, idpNotice, pickPlayer,
+    playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 export default function renderTrade(app) {
@@ -36,6 +36,9 @@ export default function renderTrade(app) {
             )
         )
     );
+
+    const idp = idpNotice(app.league?.cfg);
+    if (idp) root.append(idp);
 
     // A pasted link names the league it came from. Roster ids are meaningless
     // without it, so offer the one-click sync rather than showing an empty

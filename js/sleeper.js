@@ -5,6 +5,8 @@
 // /players/nfl (about 14MB), which Sleeper asks callers to hit at most once a day --
 // we trim it to fantasy-relevant fields and cache the result.
 
+import { politeFetch } from './net.js';
+
 const BASE = 'https://api.sleeper.app/v1';
 
 const MEM = new Map();
@@ -27,7 +29,7 @@ async function get(path, { ttl = 5 * 60 * 1000, force = false } = {}) {
 
     let res;
     try {
-        res = await fetch(`${BASE}${path}`);
+        res = await politeFetch(`${BASE}${path}`);
     } catch (cause) {
         throw new SleeperError(`Could not reach Sleeper. Check your connection and try again.`, 0);
     }
@@ -107,7 +109,7 @@ export function trimPlayers(raw) {
 }
 
 export async function fetchPlayers() {
-    const res = await fetch(`${BASE}/players/nfl`);
+    const res = await politeFetch(`${BASE}/players/nfl`);
     if (!res.ok) throw new SleeperError(`Player database fetch failed (${res.status})`, res.status);
     return trimPlayers(await res.json());
 }

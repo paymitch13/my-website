@@ -17,6 +17,7 @@
 // engine hangs on, so half a point of free precision is worth taking.
 
 import { americanToProbability, devig } from './odds.js';
+import { politeFetch } from './net.js';
 import { scoreStats } from './projections.js';
 import { mean } from './util.js';
 
@@ -261,7 +262,7 @@ const cache = new Map();
 async function getJson(url, { ttl = 15 * 60 * 1000 } = {}) {
     const hit = cache.get(url);
     if (hit && Date.now() - hit.at < ttl) return hit.value;
-    const res = await fetch(url);
+    const res = await politeFetch(url);
     if (!res.ok) throw new Error(`ESPN ${res.status} for ${url}`);
     const value = await res.json();
     cache.set(url, { at: Date.now(), value });

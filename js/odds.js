@@ -18,6 +18,8 @@
 //   Spread magnitude    blowout risk. A 14-point favorite's starters may not
 //                       see the fourth quarter.
 
+import { politeFetch } from './net.js';
+
 const SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';
 
 /** ESPN abbreviations that genuinely differ from Sleeper's. */
@@ -215,7 +217,7 @@ export async function fetchOdds({ week, season, seasonType = 2 } = {}) {
     if (season) params.set('dates', String(season));
     params.set('seasontype', String(seasonType));
 
-    const res = await fetch(`${SCOREBOARD}?${params}`);
+    const res = await politeFetch(`${SCOREBOARD}?${params}`);
     if (!res.ok) throw new Error(`Odds fetch failed (${res.status})`);
     const games = parseScoreboard(await res.json());
     return { games, byTeam: buildTeamContext(games), teamsOnBye: games.teamsOnBye || [] };

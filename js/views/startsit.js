@@ -13,8 +13,8 @@ import { isOnBye } from '../schedule.js';
 import { slotLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
-    banner, el, emptyState, fmtDelta, pickPlayer, playerLink, posBadge, round,
-    sortBy, spinnerRow, tag, tile,
+    banner, el, emptyState, fmtDelta, idpNotice, pickPlayer, playerLink, posBadge,
+    round, sortBy, spinnerRow, tag, tile,
 } from '../ui.js';
 
 /** Readable names for the market keys, for the movement line. */
@@ -170,6 +170,9 @@ async function build(app, team) {
             )
         );
     }
+
+    const idp = idpNotice(cfg);
+    if (idp) wrap.append(idp);
 
     // --- Headline ----------------------------------------------------------
     wrap.append(

@@ -8,6 +8,8 @@
 // Domes are excluded outright rather than being given a "nice weather" bonus,
 // because a dome is the absence of a weather factor, not a positive one.
 
+import { politeFetch } from './net.js';
+
 const API = 'https://api.open-meteo.com/v1/forecast';
 
 /**
@@ -123,7 +125,7 @@ export async function fetchVenueWeather(team, kickoffIso, { neutralSite = false,
         forecast_days: '8',
     });
 
-    const res = await fetch(`${API}?${params}`);
+    const res = await politeFetch(`${API}?${params}`);
     if (!res.ok) throw new Error(`Weather fetch failed (${res.status})`);
     const data = await res.json();
     return pickHour(data, kickoffIso, stadium, team);

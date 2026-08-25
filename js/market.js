@@ -21,6 +21,8 @@
 // respects this league's scoring, roster slots and replacement level instead of
 // pretending a 12-team half-PPR number fits a superflex.
 
+import { politeFetch } from './net.js';
+
 const BASE = 'https://api.fantasycalc.com/values/current';
 
 /** How long a market snapshot stays fresh. Values move on a scale of days. */
@@ -253,9 +255,7 @@ export async function fetchMarketValues(cfg, { fetchImpl = null, store = null, f
         if (cached) return { ...cached, cached: true };
     }
 
-    const doFetch = fetchImpl || (typeof fetch === 'function' ? fetch : null);
-    if (!doFetch) return null;
-
+    const doFetch = fetchImpl || ((url) => politeFetch(url));
     let rows;
     try {
         const res = await doFetch(marketUrl(cfg));

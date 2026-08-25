@@ -78,6 +78,25 @@ export function banner(text, kind = '') {
     return el('div', { class: `banner ${kind ? `banner-${kind}` : ''}` }, text);
 }
 
+/**
+ * The one limitation this app cannot hide: individual defensive players are not
+ * valued, so an IDP league sees starting slots nothing can fill.
+ *
+ * It was disclosed on the League tab only, which is not where anybody starts.
+ * A manager opens Start/Sit or the Trade Calculator, finds three empty rows and
+ * no explanation, and concludes the tool is broken. It is a real limitation and
+ * it belongs next to the hole it makes.
+ */
+export function idpNotice(cfg) {
+    if (!cfg?.hasIdp) return null;
+    return banner(
+        'This league starts individual defensive players. Sleeper does not publish projections for them, ' +
+            'so IDP slots are left empty and IDP players carry no value here — everything else on this page ' +
+            'is unaffected.',
+        'warn'
+    );
+}
+
 export function skeleton(count = 4, height = 42) {
     return el(
         'div',

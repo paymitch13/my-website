@@ -1,0 +1,26 @@
+{
+    "name": "Fantasy Command Center",
+    "short_name": "Command Center",
+    "description": "A fantasy football trade calculator, start/sit engine and power rankings built on your own player rankings and your league's real Sleeper settings.",
+    "start_url": "./",
+    "scope": "./",
+    "display": "standalone",
+    "orientation": "portrait-primary",
+    "background_color": "#12161f",
+    "theme_color": "#12161f",
+    "categories": ["sports", "utilities"],
+    "icons": [
+        {
+            "src": "favicon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        },
+        {
+            "src": "favicon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "maskable"
+        }
+    ]
+}

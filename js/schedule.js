@@ -7,6 +7,8 @@
 // map, and it unlocks bye-aware lineups, bye conflict warnings on trades, and
 // playoff-week availability -- which is the thing that actually decides leagues.
 
+import { politeFetch } from './net.js';
+
 const SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';
 
 /** ESPN abbreviations that differ from Sleeper's. */
@@ -91,7 +93,7 @@ export async function fetchSeasonOutlook(season, { through = LAST_SCAN_WEEK } = 
                     week: String(week),
                     dates: String(season),
                 });
-                const res = await fetch(`${SCOREBOARD}?${params}`);
+                const res = await politeFetch(`${SCOREBOARD}?${params}`);
                 if (!res.ok) return null;
                 const payload = await res.json();
                 return { week, teams: extractByes(payload), games: extractWeekOdds(payload) };

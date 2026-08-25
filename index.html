@@ -27,14 +27,21 @@
 
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="favicon.svg">
+    <link rel="manifest" href="manifest.webmanifest">
 
     <link rel="preconnect" href="https://api.sleeper.app">
+    <link rel="preconnect" href="https://api.sleeper.com">
+    <link rel="preconnect" href="https://api.fantasycalc.com">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
+    <!-- First tab stop. Nine tabs and a league button sit between the top of
+         the page and the content, which is a lot of tabbing to get past on
+         every view change if you are not using a mouse. -->
+    <a class="skip-link" href="#view">Skip to content</a>
     <header class="topbar">
         <div class="topbar-inner">
             <div class="brand">
@@ -74,12 +81,25 @@
 
     <footer class="app-footer">
         Built by <a href="https://github.com/paymitch13" target="_blank" rel="noopener">Payton Mitchell</a>
+        ·
+        <a href="https://github.com/paymitch13/my-website/issues" target="_blank" rel="noopener">Report a problem</a>
         <br>
         <span class="tiny">
-            Players, leagues and live scoring from the Sleeper API · projections from Sleeper ·
-            game lines from ESPN · weather from Open-Meteo.
-            Not affiliated with Sleeper, ESPN or the NFL.
+            Players, leagues and live scoring from the
+            <a href="https://docs.sleeper.com/" target="_blank" rel="noopener">Sleeper API</a> ·
+            projections from Sleeper ·
+            trade market values from <a href="https://fantasycalc.com/" target="_blank" rel="noopener">FantasyCalc</a> ·
+            game lines and player props from ESPN ·
+            weather from <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.
+            Not affiliated with Sleeper, FantasyCalc, ESPN or the NFL.
         </span>
+        <br>
+        <span class="tiny">
+            Everything runs in your browser. There is no account, no server and no tracking —
+            your rankings and your league live in this device's local storage and are never sent anywhere.
+        </span>
+        <br>
+        <span class="tiny dim" id="build-stamp"></span>
     </footer>
 
     <div class="toasts" id="toasts"></div>

@@ -29,6 +29,7 @@ import { runSimulation } from './simclient.js';
 import { valuePlayer } from './valuation.js';
 import { faabModel } from './faab.js';
 import { fetchMarketValues, marketPriceCurve } from './market.js';
+import { BUILD } from './version.js';
 import { impliedTotalsOverWeeks, scheduleStrength, playoffOutlook, playoffWeeksFor } from './outlook.js';
 import { sortBy } from './util.js';
 
@@ -509,6 +510,15 @@ async function boot() {
     window.addEventListener('resize', updateFade);
     app.updateTabFade = updateFade;
     setTimeout(updateFade, 0);
+
+    // What the reporter was running, for when a stranger says "it's broken".
+    const stamp = document.getElementById('build-stamp');
+    if (stamp) {
+        const when = new Date(BUILD.built);
+        stamp.textContent = Number.isNaN(when.getTime())
+            ? `build ${BUILD.sha}`
+            : `build ${BUILD.sha} · ${when.toISOString().slice(0, 10)}`;
+    }
 
     try {
         const nflState = await api.getState().catch(() => null);

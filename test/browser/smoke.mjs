@@ -476,6 +476,39 @@ if (await addPlayerToSide(0)) {
     errors.push('trade: could not add a player to a side');
 }
 
+// --- The shell a stranger lands on -----------------------------------------
+{
+    const head = await page.evaluate(() => ({
+        skip: !!document.querySelector('.skip-link'),
+        skipFirst: document.querySelector('a,button,input,select')?.className || '',
+        manifest: document.querySelector('link[rel="manifest"]')?.getAttribute('href') || null,
+        footer: document.querySelector('.app-footer')?.textContent || '',
+        stamp: document.getElementById('build-stamp')?.textContent || '',
+    }));
+    if (!head.skip) errors.push('shell: no skip link');
+    if (!head.skipFirst.includes('skip-link')) errors.push('shell: the skip link is not the first tab stop');
+    if (!head.manifest) errors.push('shell: no web app manifest');
+    // Every data source we depend on has to be named, FantasyCalc included.
+    for (const who of ['Sleeper', 'FantasyCalc', 'ESPN', 'Open-Meteo']) {
+        if (!head.footer.includes(who)) errors.push(`shell: ${who} is not credited`);
+    }
+    if (!/no account, no server and no tracking/i.test(head.footer)) errors.push('shell: privacy position not stated');
+    if (!/Report a problem/.test(head.footer)) errors.push('shell: no way to report a problem');
+    if (!/^build [0-9a-f]{7,}/.test(head.stamp)) errors.push(`shell: build stamp missing or malformed ("${head.stamp}")`);
+
+    const manifest = await page.evaluate(async (href) => {
+        const r = await fetch(href);
+        return r.ok ? await r.json() : null;
+    }, head.manifest);
+    if (!manifest) errors.push('shell: manifest does not load');
+    else {
+        for (const k of ['name', 'start_url', 'display', 'icons', 'theme_color']) {
+            if (!manifest[k]) errors.push(`manifest: missing ${k}`);
+        }
+    }
+    console.log(`  shell: skip link, manifest, attribution, privacy, ${head.stamp}`);
+}
+
 // --- Start/Sit shows the whole roster --------------------------------------
 // The complaint that prompted the rework: two quarterbacks on one roster were
 // never put next to each other, because the page only compared players within

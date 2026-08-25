@@ -5,6 +5,7 @@
   "description": "Static, dependency-free fantasy football trade calculator and power rankings. No build step -- the browser loads js/app.js directly as an ES module. package.json exists so Node can run the engine tests under test/.",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "smoke": "node test/browser/smoke.mjs"
+    "smoke": "node test/browser/smoke.mjs",
+    "stamp": "node tools/stamp.mjs"
   }
 }

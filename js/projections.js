@@ -12,6 +12,8 @@
 // play bonuses, IDP-style kicker distance buckets, whatever -- is a dot product
 // between two objects, with no per-rule special casing anywhere.
 
+import { politeFetch } from './net.js';
+
 const BASE = 'https://api.sleeper.com';
 const POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 
@@ -120,7 +122,7 @@ export function projectedPpg(projection, scoring) {
 export async function fetchProjections(season) {
     const qs = POSITIONS.map((p) => `position[]=${p}`).join('&');
     const url = `${BASE}/projections/nfl/${season}?season_type=regular&${qs}`;
-    const res = await fetch(url);
+    const res = await politeFetch(url);
     if (!res.ok) throw new Error(`Projections fetch failed (${res.status})`);
     return normalizeProjections(await res.json());
 }
@@ -133,7 +135,7 @@ export async function fetchProjections(season) {
 /** One week's projections, carrying each player's opponent and game id. */
 export async function fetchWeeklyProjections(season, week) {
     const qs = POSITIONS.map((p) => `position[]=${p}`).join('&');
-    const res = await fetch(`${BASE}/projections/nfl/${season}/${week}?season_type=regular&${qs}`);
+    const res = await politeFetch(`${BASE}/projections/nfl/${season}/${week}?season_type=regular&${qs}`);
     if (!res.ok) throw new Error(`Weekly projections fetch failed (${res.status})`);
     return normalizeWeekly(await res.json());
 }
@@ -141,7 +143,7 @@ export async function fetchWeeklyProjections(season, week) {
 /** One week's actual results, used to build defensive matchup profiles. */
 export async function fetchWeeklyStats(season, week) {
     const qs = POSITIONS.map((p) => `position[]=${p}`).join('&');
-    const res = await fetch(`${BASE}/stats/nfl/${season}/${week}?season_type=regular&${qs}`);
+    const res = await politeFetch(`${BASE}/stats/nfl/${season}/${week}?season_type=regular&${qs}`);
     if (!res.ok) throw new Error(`Weekly stats fetch failed (${res.status})`);
     return await res.json();
 }
@@ -179,7 +181,7 @@ export function normalizeWeekly(rows) {
 export async function fetchSeasonStats(season) {
     const qs = POSITIONS.map((p) => `position[]=${p}`).join('&');
     const url = `${BASE}/stats/nfl/${season}?season_type=regular&${qs}`;
-    const res = await fetch(url);
+    const res = await politeFetch(url);
     if (!res.ok) throw new Error(`Stats fetch failed (${res.status})`);
     return normalizeProjections(await res.json(), { kind: 'actual' });
 }
