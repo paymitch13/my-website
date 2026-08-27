@@ -511,6 +511,20 @@ async function boot() {
     app.updateTabFade = updateFade;
     setTimeout(updateFade, 0);
 
+    // Nothing this browser does will be remembered. Said once, at the top,
+    // before any work is done that would be lost.
+    if (!store.persists) {
+        const host2 = document.getElementById('view');
+        host2?.parentNode?.insertBefore(
+            banner(
+                'This browser is not letting the page save anything — usually private browsing, or site data ' +
+                    'being blocked. Everything works, but your rankings and league will be gone when you close the tab.',
+                'warn'
+            ),
+            host2
+        );
+    }
+
     // What the reporter was running, for when a stranger says "it's broken".
     const stamp = document.getElementById('build-stamp');
     if (stamp) {

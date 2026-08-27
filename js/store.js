@@ -52,6 +52,33 @@ function write(key, value) {
     }
 }
 
+/**
+ * Whether this browser will actually keep anything.
+ *
+ * Safari in private mode, and any browser with site data blocked, makes
+ * localStorage throw rather than fail quietly. Every read and write here is
+ * guarded, so the app runs perfectly well in that state -- it simply forgets
+ * everything the moment the tab closes.
+ *
+ * Silently forgetting is worse than not working. The rankings are the product;
+ * somebody who spends twenty minutes ordering their board deserves to know
+ * before they lose it, not after. Probed once with a real round trip, because
+ * the presence of the API says nothing about whether writing to it succeeds.
+ */
+function probePersistence() {
+    try {
+        const probe = '__ffc_probe__';
+        localStorage.setItem(probe, '1');
+        const ok = localStorage.getItem(probe) === '1';
+        localStorage.removeItem(probe);
+        return ok;
+    } catch {
+        return false;
+    }
+}
+
+export const persists = probePersistence();
+
 export const state = { ...DEFAULTS, ...read(KEY, {}) };
 state.settings = { ...DEFAULTS.settings, ...(state.settings || {}) };
 

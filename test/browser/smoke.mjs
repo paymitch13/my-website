@@ -476,6 +476,62 @@ if (await addPlayerToSide(0)) {
     errors.push('trade: could not add a player to a side');
 }
 
+// --- Storage that refuses to work ------------------------------------------
+//
+// Safari in private mode, and any browser with site data blocked, makes
+// localStorage throw rather than fail quietly -- historically on setItem, and
+// in some configurations on merely touching window.localStorage. This app leans
+// on it hard: the user's rankings ARE the product, and store.js reads at module
+// load. A throw there takes the whole page down before a single view renders.
+//
+// The app cannot remember anything in that state, and should not pretend to.
+// It does have to work.
+{
+    const hostile = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await hostile.addInitScript(() => {
+        const boom = () => { throw new DOMException('The quota has been exceeded.', 'QuotaExceededError'); };
+        Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            get() { return { getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom, length: 0 }; },
+        });
+    });
+    const hostileErrors = [];
+    hostile.on('pageerror', (e) => hostileErrors.push(`pageerror: ${e.message}`));
+    await hostile.route('**', (route) => {
+        const u = route.request().url();
+        if (u.includes(`localhost:${port}`) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+        for (const [re, make] of fixtures) if (re.test(u)) return route.fulfill(make(u));
+        return route.fulfill(json({}));
+    });
+    await hostile.goto(`http://localhost:${port}/`, { waitUntil: 'load' });
+    await hostile.waitForTimeout(5000);
+
+    if (hostileErrors.length) {
+        errors.push(`private mode: page threw — ${[...new Set(hostileErrors)].slice(0, 2).join(' | ')}`);
+    }
+    const enabled = await hostile.$$eval('#tabs .tab', (ns) => ns.filter((n) => !n.disabled).length);
+    if (enabled < 9) errors.push(`private mode: only ${enabled} of 9 tabs usable`);
+
+    // And the app has to actually work, not just boot.
+    let painted = 0;
+    for (const v of ['trade', 'finder', 'rankings', 'startsit']) {
+        await hostile.click(`#tabs .tab[data-view="${v}"]`);
+        await hostile.waitForTimeout(600);
+        const body = (await hostile.textContent('#view')) || '';
+        if (body.trim().length > 200) painted++;
+        else errors.push(`private mode: ${v} rendered ${body.trim().length} chars`);
+    }
+    // Silently forgetting is worse than not working: the rankings ARE the
+    // product, and losing twenty minutes of board ordering without warning is
+    // the one outcome nobody forgives.
+    const warned = (await hostile.textContent('body')) || '';
+    if (!/not letting the page save|gone when you close/i.test(warned)) {
+        errors.push('private mode: the app forgets everything and never says so');
+    }
+    console.log(`  private mode (localStorage throws): booted, ${enabled}/9 tabs, ${painted}/4 views render, warns`);
+    await hostile.close();
+}
+
 // --- The shell a stranger lands on -----------------------------------------
 {
     const head = await page.evaluate(() => ({
