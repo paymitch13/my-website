@@ -970,3 +970,101 @@ test('one player cannot be in every row of the board', () => {
     assert.ok(top.length <= 3, `the same player leaves in ${top.length} of the first five rows`);
     assert.equal(out.length, list.length, 'and nothing is actually thrown away');
 });
+
+// --- Redraft and dynasty want different things ------------------------------
+//
+// The complaint that prompted this: "a lot of the trades I straight up lose,
+// and some the other person would never accept." Measured across twelve real
+// rosters, 14% of proposals lowered the user's starting lineup and 21% lowered
+// the counterparty's -- every one of them justified by a market-value gain.
+//
+// In a redraft league that justification is empty. Nothing carries to next
+// year, so value is a PRICE and the only benefit is points between now and the
+// playoffs. In dynasty it is real, and the older rule holds.
+
+/** The mirror-image league again, in whichever format is asked for. */
+function formatLeague(type) {
+    const { projections, mk, rank } = pool();
+    const teams = [];
+    const add = (rosterId, name, spec) =>
+        teams.push({
+            rosterId, ownerId: `o${rosterId}`, name,
+            players: spec.map(([pos, ppg]) => mk(pos, ppg)),
+            wins: 3, losses: 3, ties: 0, pointsFor: 700,
+        });
+
+    add(1, 'RB Rich', [
+        ['QB', 18], ['RB', 17], ['RB', 15], ['RB', 14], ['RB', 13],
+        ['WR', 6], ['WR', 5], ['TE', 8], ['K', 7], ['DEF', 6],
+    ]);
+    add(2, 'WR Rich', [
+        ['QB', 17], ['WR', 17], ['WR', 15], ['WR', 14], ['WR', 13],
+        ['RB', 6], ['RB', 5], ['TE', 8], ['K', 7], ['DEF', 6],
+    ]);
+    for (let i = 3; i <= 8; i++) {
+        add(i, `Team ${i}`, [
+            ['QB', 15], ['RB', 11], ['RB', 10], ['WR', 11], ['WR', 10],
+            ['TE', 7], ['K', 6], ['DEF', 6], ['RB', 5], ['WR', 5],
+        ]);
+    }
+
+    const league = normalizeLeague({
+        settings: { num_teams: 10, playoff_teams: 4, playoff_week_start: 15, type },
+        scoring_settings: { rush_yd: 0.1, rec_yd: 0.1, rec: 0.5 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const rankings = rank(teams);
+    const ctx = createValuationContext(league, { week: 7, weeksLeft: 7, projections });
+    return { league, ctx, teams, rankings };
+}
+
+test('a redraft trade never lowers either starting lineup', async () => {
+    const { league, ctx, teams, rankings } = formatLeague(0);
+    assert.equal(ctx.dynasty, false);
+
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    assert.ok(res.trades.length + res.others.length > 0, 'and it still finds deals');
+    for (const t of [...res.trades, ...res.others]) {
+        assert.ok(t.myGain > 0, `redraft proposal lowers my lineup by ${(-t.myGain).toFixed(2)}`);
+        assert.ok(t.theirGain > 0, `redraft proposal lowers their lineup by ${(-t.theirGain).toFixed(2)}`);
+    }
+});
+
+test('market value alone is never a reason to send a redraft trade', async () => {
+    // The exact shape that was slipping through: a side whose lineup drops
+    // while it collects value. Value is the price of the deal, not the point
+    // of it, when nothing carries past January.
+    const { league, ctx, teams, rankings } = formatLeague(0);
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    for (const t of [...res.trades, ...res.others]) {
+        const iPay = t.valueOut > t.valueIn;
+        // Whichever side is paying on the ledger still has to be gaining points.
+        assert.ok(t.myGain > 0 && t.theirGain > 0, `${iPay ? 'I pay' : 'they pay'} and somebody loses points`);
+    }
+});
+
+test('dynasty keeps the older rule, where banking value is a real strategy', async () => {
+    const { league, ctx, teams, rankings } = formatLeague(2);
+    assert.equal(ctx.dynasty, true, 'settings.type 2 is dynasty');
+
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    // Not asserting such a deal EXISTS in this fixture -- only that the format
+    // is what decides whether one is allowed to, and that even dynasty has a
+    // floor rather than accepting any loss for any price.
+    for (const t of [...res.trades, ...res.others]) {
+        assert.ok(t.myGain > -0.6 - 1e-9, `even dynasty has a floor, got ${t.myGain.toFixed(2)}`);
+        assert.ok(t.theirGain > -0.6 - 1e-9);
+    }
+});

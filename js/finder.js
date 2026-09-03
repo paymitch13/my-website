@@ -230,15 +230,27 @@ export async function findTrades(input) {
         // fit a slot. A search that thin has nothing left to be selective
         // with, which is how a 3,200-for-4,800 ended up on the board.
         //
-        // What a manager actually weighs is two things: the ledger, and the
-        // lineup. Value is zero-sum, so somebody is always giving up a little
-        // of it -- that side has to be paid in fit, and the side collecting
-        // the value has to not be wrecking its Sunday to do it. Each manager
-        // therefore needs a reason to say yes on one axis and no reason to say
-        // no on the other.
+        // What a manager weighs depends entirely on the format, and treating
+        // the two the same is what put deals on the board that nobody would
+        // send and nobody would take.
+        //
+        // In a REDRAFT league, market value is a PRICE, not a benefit. Nothing
+        // carries to next year, so the only thing a trade can give you is
+        // points between now and the playoffs. "You lose 0.6 a week but gain
+        // 587 of value" is a loss stated as a gain -- and it was 14% of what
+        // this search proposed for the user, and 21% of what it asked
+        // counterparties to swallow. Both sides have to end up with a better
+        // starting lineup, full stop. The ledger still decides whether the
+        // deal is FAIR; it does not get to decide whether it is GOOD.
+        //
+        // In a DYNASTY or keeper league that is wrong: assets carry over, so
+        // banking value at the cost of a fraction of a point this week is a
+        // real and common strategy. There the older rule holds.
         const material = minValueEdge * Math.max(valueIn, valueOut);
-        const accepts = (lineupGain, valueNet) =>
-            lineupGain > -lineupSlack && (lineupGain > minGain || valueNet > material);
+        const accepts = ctx.dynasty
+            ? (lineupGain, valueNet) =>
+                  lineupGain > -lineupSlack && (lineupGain > minGain || valueNet > material)
+            : (lineupGain) => lineupGain > minGain;
 
         // A named target is a declared want. "This costs you 1.2 points a week
         // of lineup" is the ANSWER to what it would take, not a reason to hide
