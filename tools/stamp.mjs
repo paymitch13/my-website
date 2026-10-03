@@ -1,16 +1,26 @@
 // Writes the build stamp the footer shows.
 //
-// There is no bundler here, so nothing injects a version at build time. Run
-// this before committing a deploy: `npm run stamp`.
+// There is no bundler here, so nothing injects a version at build time.
 //
 // The point is answering "what were you running?" when somebody reports a
 // problem. A date alone is ambiguous when two deploys land in a day, and a
 // commit alone means nothing to the person reporting, so it records both.
 //
-// The SHA is HEAD at stamp time, which is the commit this build was made FROM
-// -- the stamped file itself lands in the next commit. That is one hop off and
-// still identifies the code exactly, because the only thing that changed
-// between them is this stamp.
+// The SHA is HEAD at stamp time, which is the commit the build was made FROM:
+// the stamped file itself can only land in a LATER commit, since a commit
+// cannot contain its own hash.
+//
+// THE ORDER MATTERS. Run this AFTER committing the code and commit the stamp
+// on its own:
+//
+//     git commit -m "the actual change"   # content
+//     npm run stamp && git commit js/version.js -m "Stamp the build"
+//
+// Then the recorded SHA identifies the deployed code exactly, because the only
+// difference between that commit and the deployed tree is this one file.
+// Stamping BEFORE the content commit instead -- so both land together -- makes
+// the stamp name the parent, which is a commit that does not contain any of
+// the change it claims to identify.
 
 import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
