@@ -36,13 +36,13 @@ export async function loadPlayers({ force = false, onProgress = () => {} } = {})
  * reported rather than swallowed -- the UI falls back to the modeled curve and
  * says so, instead of quietly showing worse numbers that look identical.
  */
-export async function loadProjections(season, { onProgress = () => {} } = {}) {
+export async function loadProjections(season, { onProgress = () => {}, week = null } = {}) {
     onProgress('Loading season projections…');
-    const cached = store.loadCachedProjections(season);
+    const cached = store.loadCachedProjections(season, undefined, week);
     if (cached && !cached.stale) return { projections: cached.projections, from: 'cache' };
     try {
         const projections = await fetchProjections(season);
-        store.cacheProjections(season, projections);
+        store.cacheProjections(season, projections, week);
         return { projections, from: 'network' };
     } catch (err) {
         if (cached) return { projections: cached.projections, from: 'stale-cache', error: err };

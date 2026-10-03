@@ -277,7 +277,17 @@ async function build(app, me, named = { want: [], offer: [] }) {
                     : shopping ? `What ${offerNames} could bring back`
                     : 'Best available trades'),
             el('span', { class: 'hint' },
-                targeted ? 'cheapest acceptable offer first' : 'their side shown on neutral values')
+                targeted ? 'cheapest acceptable offer first'
+                    // Shopping a player you have declared you want to move is a
+                    // different question from "find me a win-win". Moving your
+                    // best player almost always costs starting points, and the
+                    // size of that cost IS the answer -- so it is ranked by it
+                    // and labelled rather than filtered away.
+                    : shopping
+                        ? (res.trades[0] || res.others[0])?.costly
+                            ? 'best return first — every one of these costs you starting points, which is what moving your best player means'
+                            : 'best return first — the lineup cost of moving him is shown on each card'
+                    : 'their side shown on neutral values')
         )
     );
 
@@ -515,8 +525,11 @@ function tradeCard(app, me, t, { targeted = false } = {}) {
             el('div', { class: 'fn' },
                 // With a named target the lineup number is the PRICE, and a
                 // price that is negative is still the answer to the question
-                // that was asked.
-                el('div', { class: 'k' }, targeted ? 'Cost to your lineup' : 'Your lineup'),
+                // that was asked. The same is true of a player you have
+                // declared you want to MOVE: every fair return for your best
+                // starter costs you something this week, and that cost is the
+                // answer rather than a reason to show nothing.
+                el('div', { class: 'k' }, targeted || t.costly ? 'Cost to your lineup' : 'Your lineup'),
                 el('div', { class: `v num ${t.myGain >= 0 ? 'good' : 'bad'}` }, `${fmtDelta(t.myGain)} pts/wk`)),
             t.myPlayoffDelta !== null
                 ? el('div', { class: 'fn' },
@@ -541,6 +554,16 @@ function tradeCard(app, me, t, { targeted = false } = {}) {
                     el('div', { class: 'v num' }, `${formatValue(t.valueIn)} for ${formatValue(t.valueOut)}`))
                 : null
         ),
+        // Said plainly, because the ledger being even is exactly what makes
+        // this easy to misread: a 0% gap looks like a free upgrade until you
+        // notice the starting lineup went down.
+        t.costly
+            ? el('p', { class: 'small k-warn', style: 'margin:10px 0 0' },
+                `Every fair return for ${(t.gives || [t.give]).map((e) => e.player.name).join(' and ')} ` +
+                'costs you starting points, because he is better than anything one roster can send back ' +
+                'without gutting itself. The ledger is even — the lineup is not. Worth it if you need the ' +
+                'depth or the position it fills; not worth it just to make the values balance.')
+            : null,
         el('p', { class: 'small muted', style: 'margin:10px 0 0' }, 'Why they say yes: ', accept),
         el(
             'div',
@@ -598,13 +621,17 @@ function otherRow(app, me, t) {
                 `${t.other.name} · you ${fmtDelta(t.myGain)} pts/wk, they ${fmtDelta(t.theirGain)} pts/wk`,
                 t.reason === 'lowers-odds'
                     ? ' — the season simulation says this lowers your playoff or title odds despite the lineup gain.'
-                    : ''
+                    : t.costly
+                        ? ' — a fair price, but it costs you starting points.'
+                        : ''
             )
         ),
         el(
             'div',
             { class: 'suggest-meta' },
-            t.reason === 'lowers-odds' ? tag('odds down', 'warn') : tag('not simulated', ''),
+            t.reason === 'lowers-odds' ? tag('odds down', 'warn')
+                : t.costly ? tag('costs lineup', 'warn')
+                : tag('not simulated', ''),
             el(
                 'button',
                 {

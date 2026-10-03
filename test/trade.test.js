@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages, createEvalCache, suggestFaab } from '../js/trade.js';
+import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages, createEvalCache, suggestFaab, marketPrice, evaluateRosterEntry } from '../js/trade.js';
+import { normalizeScoring } from '../js/league.js';
 import { faabModel } from '../js/faab.js';
 import { createValuationContext } from '../js/valuation.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
@@ -762,4 +763,71 @@ test('a replacement is named rather than assumed away', async () => {
     for (const r of res.reasons) {
         assert.ok(!/Nobody on the roster replaces/.test(r.detail), 'that claim was never checked');
     }
+});
+
+// --- What a player costs, versus what he is worth to you -------------------
+
+test('a backup carries a trade price even with no lineup value', () => {
+    // The display complaint: "some players are valued way too low and
+    // seemingly valueless when in reality they are rostered in most leagues
+    // and do have value."
+    //
+    // Both numbers are correct and they answer different questions. A backup
+    // quarterback in a one-quarterback league is worth almost nothing to your
+    // STARTING LINEUP -- that is what points above replacement measures, and
+    // it is the right input to a start/sit call. It is the wrong number to put
+    // under the words "trade value", because real leagues trade him and the
+    // finder's own ledger prices him there.
+    const scoring = normalizeScoring({ pass_yd: 0.04, pass_td: 4 });
+    const projections = {};
+    // Twenty-four quarterbacks, so ranks past twelve are genuinely unstartable
+    // in a twelve-team single-quarterback league.
+    for (let i = 1; i <= 24; i++) {
+        projections[`qb${i}`] = {
+            id: `qb${i}`, pos: 'QB', games: 17,
+            stats: { pass_yd: 5200 - i * 140, pass_td: 40 - i },
+        };
+    }
+    const league = normalizeLeague({
+        settings: { num_teams: 12 },
+        scoring_settings: { pass_yd: 0.04, pass_td: 4 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const ctx = createValuationContext(league, { week: 4, weeksLeft: 10, projections, scoring });
+
+    const backup = { id: 'qb20', name: 'Clipboard Holder', pos: 'QB', team: 'KC', age: 26 };
+    // Ranked where he belongs on the board: a long way behind the starters.
+    const entry = evaluateRosterEntry(backup, new Map([['qb20', 20]]), ctx);
+    const cost = marketPrice(entry, ctx);
+
+    assert.ok(cost > 0, 'a rostered quarterback must not price at nothing');
+    assert.ok(
+        cost >= entry.value,
+        `a trade price must not be below the lineup-only value: ${cost} vs ${entry.value}`
+    );
+});
+
+test('a market price ignores where the user filed him on their board', () => {
+    const scoring = normalizeScoring({ rec_yd: 0.1, rec: 0.5 });
+    const projections = {};
+    for (let i = 1; i <= 40; i++) {
+        projections[`wr${i}`] = {
+            id: `wr${i}`, pos: 'WR', games: 17,
+            stats: { rec_yd: 1500 - i * 25, rec: 100 - i },
+        };
+    }
+    const league = normalizeLeague({
+        settings: { num_teams: 12 },
+        scoring_settings: { rec_yd: 0.1, rec: 0.5 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const ctx = createValuationContext(league, { week: 4, weeksLeft: 10, projections, scoring });
+    const player = { id: 'wr5', name: 'Fifth Receiver', pos: 'WR', team: 'KC', age: 26 };
+
+    const loved = marketPrice(evaluateRosterEntry(player, new Map([['wr5', 1]]), ctx), { ...ctx });
+    const hated = marketPrice(evaluateRosterEntry(player, new Map([['wr5', 300]]), ctx), { ...ctx });
+    assert.ok(
+        Math.abs(loved - hated) < 1e-9,
+        `the market does not care about my board: ${loved} vs ${hated}`
+    );
 });

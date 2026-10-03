@@ -114,14 +114,19 @@ export function cachePlayers(players) {
  * Projections change as news breaks, so they get a much shorter shelf life than
  * the player database: six hours, versus a day.
  */
-export function loadCachedProjections(season, maxAgeMs = 6 * 60 * 60 * 1000) {
+export function loadCachedProjections(season, maxAgeMs = 6 * 60 * 60 * 1000, week = null) {
     const cached = read(PROJECTIONS_KEY, null);
     if (!cached || cached.season !== String(season) || !cached.projections) return null;
+    // A new NFL week is a new set of facts, so it invalidates outright rather
+    // than waiting out a timer. Somebody who opens the app on Tuesday should
+    // not be shown Sunday's numbers because the clock has six hours left on
+    // them.
+    if (week !== null && cached.week != null && Number(cached.week) !== Number(week)) return null;
     return { projections: cached.projections, stale: Date.now() - cached.at > maxAgeMs, at: cached.at };
 }
 
-export function cacheProjections(season, projections) {
-    return write(PROJECTIONS_KEY, { at: Date.now(), season: String(season), projections });
+export function cacheProjections(season, projections, week = null) {
+    return write(PROJECTIONS_KEY, { at: Date.now(), season: String(season), week, projections });
 }
 
 /**

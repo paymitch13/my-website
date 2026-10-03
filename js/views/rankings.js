@@ -6,6 +6,7 @@ import { scoringLabel } from '../league.js';
 import * as store from '../store.js';
 import { banner, download, el, emptyState, modal, playerCell, toast } from '../ui.js';
 import { formatValue } from '../tradevalue.js';
+import { marketPrice } from '../trade.js';
 
 const POS_LABEL = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', DEF: 'D/ST' };
 
@@ -160,7 +161,12 @@ export default function renderRankings(app) {
     function paint() {
         const ids = app.order[pos] || [];
         const values = valuesFor(ids);
-        const breaks = showTiers ? new Set(autoTiers(ids, (id) => values.get(id)?.value ?? 0)) : new Set();
+        // Tiers break on the number the rows actually show, or the gaps the
+        // reader sees and the gaps the tiers mark are measuring different
+        // things and the dividers land in arbitrary places.
+        const breaks = showTiers
+            ? new Set(autoTiers(ids, (id) => priceOf(app.players[id], values.get(id)) ?? 0))
+            : new Set();
 
         listHost.replaceChildren();
 
@@ -212,6 +218,26 @@ export default function renderRankings(app) {
         }
     }
 
+    /**
+     * What this player would COST in a trade, which is not the same number as
+     * what he is worth to your starting lineup.
+     *
+     * The column has always said "trade value" and always showed the second
+     * number -- points above replacement on your own board. For a starter the
+     * two roughly agree. For anyone behind a starter they do not agree at all:
+     * a backup quarterback in a one-quarterback league is worth almost nothing
+     * to your lineup, so he read as 99 of 10,000, next to worthless, while
+     * real leagues were trading him at 795 and the finder's own ledger priced
+     * him there too. Showing a number nobody would trade at, under a label
+     * saying trade value, is what made perfectly ordinary players look
+     * valueless.
+     */
+    const priceOf = (player, val) => {
+        if (!val) return null;
+        const priced = marketPrice({ player, value: val.value }, app.ctx);
+        return app.tradeValue(priced);
+    };
+
     function row(player, index, val) {
         const node = el(
             'div',
@@ -227,11 +253,20 @@ export default function renderRankings(app) {
                 'span',
                 {
                     class: 'val',
-                    title: val?.projectedRank
-                        ? `Trade value. Projection has him ${POS_LABEL[pos]}${val.projectedRank}.`
-                        : 'Trade value in this league',
+                    title: (() => {
+                        const mine = val ? app.tradeValue(val.value) : null;
+                        const cost = priceOf(player, val);
+                        const bits = ['What he costs in a trade here.'];
+                        // Only worth saying when the two numbers actually
+                        // disagree -- for most starters they do not.
+                        if (mine !== null && cost !== null && Math.abs(cost - mine) > Math.max(50, cost * 0.2)) {
+                            bits.push(`Worth ${formatValue(mine)} to your own starting lineup.`);
+                        }
+                        if (val?.projectedRank) bits.push(`Projection has him ${POS_LABEL[pos]}${val.projectedRank}.`);
+                        return bits.join(' ');
+                    })(),
                 },
-                val ? formatValue(app.tradeValue(val.value)) : '—',
+                val ? formatValue(priceOf(player, val)) : '—',
                 val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
                     ? el(
                           'span',

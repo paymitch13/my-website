@@ -190,6 +190,101 @@ test('board seeds from projections, not from popularity', () => {
     assert.deepEqual(seedOrder(players, { seedKeys: buildSeedKeys(players, {}) }).RB, ['hyped', 'quiet']);
 });
 
+// --- Seeding the board as the season goes on -------------------------------
+//
+// The board was seeded from the PRESEASON projection all year: `buildSeedKeys`
+// read `projectedPpg` and never looked at what had actually happened. By week
+// four that is a stale opinion presented as the current one.
+//
+// It also had only two bands -- projected, or Sleeper's search rank -- and
+// 2,425 of 3,053 active fantasy players carry no projection row at all. Every
+// one of them fell to popularity rank, priced at essentially nothing, which is
+// the "valued way too low and seemingly valueless when in reality they are
+// rostered in most leagues" complaint.
+
+test('the board follows the season, not just the preseason projection', () => {
+    const players = {
+        fading: { id: 'fading', name: 'Preseason Darling', pos: 'RB', searchRank: 1 },
+        rising: { id: 'rising', name: 'Breakout', pos: 'RB', searchRank: 80 },
+    };
+    const scoring = normalizeScoring({ rush_yd: 0.1 });
+    const projections = {
+        fading: { id: 'fading', pos: 'RB', games: 17, stats: { rush_yd: 1700 } },
+        rising: { id: 'rising', pos: 'RB', games: 17, stats: { rush_yd: 700 } },
+    };
+    // Preseason, the projection is all there is.
+    assert.deepEqual(
+        seedOrder(players, { seedKeys: buildSeedKeys(players, { projections, scoring, week: 1 }) }).RB,
+        ['fading', 'rising']
+    );
+
+    // Four games in, one has been far better than his projection and the other
+    // far worse. The board has to move.
+    const actuals = {
+        fading: { id: 'fading', pos: 'RB', games: 4, stats: { rush_yd: 60 } },
+        rising: { id: 'rising', pos: 'RB', games: 4, stats: { rush_yd: 600 } },
+    };
+    assert.deepEqual(
+        seedOrder(players, {
+            seedKeys: buildSeedKeys(players, { projections, scoring, actuals, week: 4 }),
+        }).RB,
+        ['rising', 'fading']
+    );
+});
+
+test('a player with no projection is seeded on what he has actually done', () => {
+    // Sleeper publishes no projection row for most of the player pool, so this
+    // band is the difference between a real valuation and a zero.
+    const players = {
+        producing: { id: 'producing', name: 'Waiver Hero', pos: 'WR', searchRank: 600 },
+        idle: { id: 'idle', name: 'Never Played', pos: 'WR', searchRank: 300 },
+    };
+    const keys = buildSeedKeys(players, {
+        scoring: normalizeScoring({ rec_yd: 0.1 }),
+        actuals: { producing: { id: 'producing', pos: 'WR', games: 3, stats: { rec_yd: 300 } } },
+        week: 4,
+    });
+    assert.deepEqual(seedOrder(players, { seedKeys: keys }).WR, ['producing', 'idle']);
+});
+
+test('a player the market trades beats one nobody has heard of', () => {
+    // Last resort before popularity: if real leagues are paying for him, he is
+    // not waiver fodder, whatever his search rank says.
+    const players = {
+        traded: { id: 'traded', name: 'Rostered Everywhere', pos: 'TE', searchRank: 900 },
+        nobody: { id: 'nobody', name: 'Practice Squad', pos: 'TE', searchRank: 400 },
+    };
+    const keys = buildSeedKeys(players, {
+        scoring: normalizeScoring({ rec_yd: 0.1 }),
+        marketRanks: new Map([['traded', 40]]),
+        week: 4,
+    });
+    assert.deepEqual(seedOrder(players, { seedKeys: keys }).TE, ['traded', 'nobody']);
+});
+
+test('the evidence bands never cross', () => {
+    // Projected beats produced beats traded beats popular, always -- so a hot
+    // three games from a fringe body can never leapfrog a projected starter.
+    const players = {
+        projected: { id: 'projected', name: 'Projected', pos: 'RB', searchRank: 999 },
+        produced: { id: 'produced', name: 'Produced', pos: 'RB', searchRank: 999 },
+        traded: { id: 'traded', name: 'Traded', pos: 'RB', searchRank: 999 },
+        popular: { id: 'popular', name: 'Popular', pos: 'RB', searchRank: 1 },
+    };
+    const keys = buildSeedKeys(players, {
+        scoring: normalizeScoring({ rush_yd: 0.1 }),
+        // Deliberately the WORST projection and the BEST production, so only
+        // the banding keeps them in order.
+        projections: { projected: { id: 'projected', pos: 'RB', games: 17, stats: { rush_yd: 10 } } },
+        actuals: { produced: { id: 'produced', pos: 'RB', games: 4, stats: { rush_yd: 4000 } } },
+        marketRanks: new Map([['traded', 1]]),
+        week: 4,
+    });
+    assert.deepEqual(seedOrder(players, { seedKeys: keys }).RB, [
+        'projected', 'produced', 'traded', 'popular',
+    ]);
+});
+
 test('projected players always outrank unprojected ones', () => {
     const players = {
         proj: { id: 'proj', name: 'Projected', pos: 'WR', searchRank: 500 },

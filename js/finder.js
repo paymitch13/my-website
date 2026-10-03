@@ -9,12 +9,24 @@
 //   Stage 2  lineup solve, both ways    milliseconds     ~200 -> ~40
 //   Stage 3  full evaluation with odds  seconds           ~40 -> ~8
 //
-// Throughout, the counterparty's roster is valued at MARKET price -- what the
-// player actually costs in real leagues -- and never on the user's board.
-// Otherwise a player the user happens to rank low looks cheap to pry loose, and
-// the whole tool recommends offers nobody would accept. The ledger is market on
-// both sides for the same reason: what you think of your own player decides
-// whether you want the deal, never whether it is even.
+// Two invariants hold everywhere in this file, and nearly every bug it has had
+// was one of them being broken in one place:
+//
+//   1. WHAT A PLAYER COSTS is his market price -- what he actually goes for in
+//      real leagues -- on both sides of the ledger, at every gate, in both the
+//      candidate generation and the acceptance test. There is one `price`
+//      helper below and nothing compares values without it. What you think of
+//      your own player decides whether you WANT the deal; it never decides
+//      what he is worth. Mixing the two scales -- generating candidates on the
+//      user's board and judging them at market -- silently rejected most fair
+//      trades, because the two numbers disagree by a median of 25%.
+//
+//   2. WHOEVER RECEIVES A PLAYER VALUES HIM. A player crossing rosters is
+//      re-valued by the side he lands on: the user's lineup is solved on the
+//      user's board, every counterparty's on the neutral one. Carrying the
+//      origin's valuation across made the user's opinion of their own player
+//      into the counterparty's opinion of him, so ranking a starter low made
+//      the search decide the league had no use for him.
 
 import { buildEntries, buildNeutralEntries, evaluateTrade, createEvalCache, marketPrice } from './trade.js';
 import { optimizeLineup } from './lineup.js';
@@ -61,6 +73,58 @@ export async function findTrades(input) {
     // card contradicted.
     const scale = typeof tradeValue === 'function' ? tradeValue : (v) => Math.max(0, v);
 
+    // THE price of a player, used by every ledger comparison in this file.
+    //
+    // There is exactly one of these on purpose. The search used to generate
+    // candidates from `entry.value` -- my roster on my board, theirs on the
+    // neutral board -- and then judge the survivors at market inside
+    // `consider`. Two scales, one window: a player I rank above the market
+    // reads as an overpay to the gate and never reaches the evaluation that
+    // would have called the deal even.
+    //
+    // That was not a rounding difference. Board and market disagree by a
+    // median of 25% on a real roster, and 67% of rostered players disagree by
+    // more than the whole 15% window -- so the gate was rejecting fair trades
+    // as a matter of course. Shopping Justin Jefferson asked 3,746 on the
+    // board against 5,561 at market, which made an even swap for Chris Olave
+    // look like a 33% fleecing and returned no offers at all. That is the
+    // "no trades for most players" bug, and it was one scale mismatch.
+    //
+    // Market, on both sides, everywhere. What I think of my own player decides
+    // whether I WANT the deal; it never decides what he costs.
+    const price = (entry) => scale(marketPrice(entry, ctx));
+    const priceOf = (side) => sum(side, price);
+
+    // --- Which board values a player once he changes hands -------------------
+    //
+    // A player crossing between rosters has to be re-valued by whoever is
+    // receiving him, and the search was not doing it. The entry objects
+    // carried their ORIGIN's valuation: my players held my board's projection
+    // and the counterparty's held the neutral one, and `consider` dropped each
+    // side's package into the other side's lineup solve exactly as it came.
+    //
+    // So my opinion of my own player silently became the counterparty's
+    // opinion of him. Ranking one of my starters low on my own board made the
+    // search conclude that nobody in the league wanted him -- he arrived on
+    // their roster projected for almost nothing, their lineup could not
+    // improve, and every deal involving him was rejected as unacceptable to
+    // them. That is a trade suppressed by a judgement that was never theirs to
+    // make, and it is the opposite of what this file's header promises.
+    //
+    // Two views of every player in the league, built once:
+    //   mineView     - the user's board, for solving the USER's lineup
+    //   neutralView  - the league's, for solving ANY counterparty's lineup
+    const everyone = teams.flatMap((t) => t.players);
+    const mineView = new Map(
+        buildEntries(everyone, rankings, ctx).map((e) => [e.player.id, e])
+    );
+    const neutralView = new Map(
+        buildNeutralEntries(everyone, ctx).map((e) => [e.player.id, e])
+    );
+    /** The same players, as the receiving manager would value them. */
+    const asMine = (side) => side.map((e) => mineView.get(e.player.id) ?? e);
+    const asNeutral = (side) => side.map((e) => neutralView.get(e.player.id) ?? e);
+
     // Generous by default: the funnel exists to make the search affordable, not
     // to hide what it found. Everything that survives stage 2 is returned; only
     // the top slice gets the expensive odds simulation.
@@ -92,6 +156,23 @@ export async function findTrades(input) {
         // value on an eight-hundred-point deal, both lineups unmoved -- ended
         // up on the board as a recommendation.
         minValueEdge = 0.04,
+        // How much starting lineup a DECLARED offer may cost me.
+        //
+        // Naming a player as trade bait relaxes my side of the acceptance test
+        // -- "this costs you 1.2 points a week" is the answer to "what can I
+        // get for him", not a reason to show nothing. But relaxing it to
+        // nothing at all is how shopping a player returned an offer that cost
+        // 17.7 points a week: not an answer, just a bad trade with a fair
+        // ledger attached. 95% of shop offers lowered the user's lineup and
+        // half of them led with one.
+        //
+        // 1.5 points a week is a real sale -- you give up a little of this
+        // week to fix a hole or bank depth. Past that the honest reply is that
+        // nothing on the board is worth it. Measured across 37 shops on a live
+        // roster, this bound drops 70% of the offers and 34 of them still
+        // answer; the three that stop answering had nothing inside any sane
+        // bound to begin with.
+        declaredSlack = 1.5,
         // How many results may feature the same incoming player. Without this
         // the whole board fills with variations on acquiring one man, because
         // the best available target produces the most acceptable packages.
@@ -171,6 +252,10 @@ export async function findTrades(input) {
 
     // --- Stage 2: lineup solve, both directions ----------------------------
     const candidates = [];
+    // Declared offers the counterparty would accept but that cost me more
+    // lineup than `declaredSlack` allows. Only ever shown if nothing cheaper
+    // exists: see the promotion below.
+    const overBudget = [];
     let pairings = 0;
     const myBase = mine.lineup.points;
     const forcedGiveIds = new Set(offerEntries.map((e) => e.player.id));
@@ -180,18 +265,20 @@ export async function findTrades(input) {
      * Returns the gains either way, so a bigger package can be measured against
      * the smaller one it is built on.
      */
-    function consider({ other, theirs, gives, gets, mustBeat = null, mustBeatMine = null, pinned = false }) {
+    function consider({ other, theirs, gives, gets, mustBeat = null, mustBeatMine = null, pinned = false, declared = false }) {
         const giveIds = new Set(gives.map((e) => e.player.id));
         const getIds = new Set(gets.map((e) => e.player.id));
         // A package that sends and receives the same man is not a package.
         for (const id of getIds) if (giveIds.has(id)) return null;
 
+        // Each side's lineup is solved on that side's own board, incoming
+        // players included: see `asMine` / `asNeutral` above.
         const myAfter = optimizeLineup(
-            [...mine.entries.filter((e) => !giveIds.has(e.player.id)), ...gets],
+            [...mine.entries.filter((e) => !giveIds.has(e.player.id)), ...asMine(gets)],
             cfg.starterSlots
         ).points;
         const theirAfter = optimizeLineup(
-            [...theirs.entries.filter((e) => !getIds.has(e.player.id)), ...gives],
+            [...theirs.entries.filter((e) => !getIds.has(e.player.id)), ...asNeutral(gives)],
             cfg.starterSlots
         ).points;
 
@@ -210,8 +297,8 @@ export async function findTrades(input) {
         // made the ledger say I was giving up more than I was, and the search
         // rejected deals that were fine. What I think of him decides whether I
         // want the trade, never whether it is even.
-        const valueIn = sum(gets, (e) => scale(marketPrice(e, ctx)));
-        const valueOut = sum(gives, (e) => scale(marketPrice(e, ctx)));
+        const valueIn = priceOf(gets);
+        const valueOut = priceOf(gives);
         const split = fairness(valueIn, valueOut);
 
         // Lopsided on value is lopsided however well it fits a lineup slot.
@@ -256,7 +343,22 @@ export async function findTrades(input) {
         // of lineup" is the ANSWER to what it would take, not a reason to hide
         // the offer -- so my own side of the test is dropped and the cost is
         // reported on the card instead.
-        if (!pinned && !accepts(myGain, valueIn - valueOut)) return gains;
+        // Naming a player -- as a target to get or a piece to move -- is a
+        // declaration. "This costs you 1.2 points a week" is the ANSWER to what
+        // it would take, not a reason to show nothing; the cost is reported on
+        // the card instead. The counterparty's side is never relaxed, because
+        // an offer they would refuse is not an answer to anything.
+        // A declared offer is allowed to cost me lineup points, but not an
+        // unbounded number of them: see `declaredSlack`. Held rather than
+        // dropped, because "what can I get for him" must not answer with
+        // silence -- for a genuinely elite player every fair return costs
+        // lineup, and the cost IS the answer. These are promoted below only if
+        // nothing inside the bound exists, and they arrive labelled.
+        if (declared && myGain <= -declaredSlack) {
+            overBudget.push(record({ costly: true }));
+            return gains;
+        }
+        if (!pinned && !declared && !accepts(myGain, valueIn - valueOut)) return gains;
         if (requireMutualGain && !accepts(theirGain, valueOut - valueIn)) return gains;
         // A bigger package has to buy something, on whichever side grew. An
         // extra piece that leaves the lineup exactly where the smaller version
@@ -265,32 +367,38 @@ export async function findTrades(input) {
         if (mustBeat && theirGain <= mustBeat.theirGain + minGain) return gains;
         if (mustBeatMine && myGain <= mustBeatMine.myGain + minGain) return gains;
 
-        candidates.push({
-            other,
-            // Kept as arrays throughout so multi-player packages are a
-            // first-class shape rather than a special case.
-            gives,
-            gets,
-            give: gives[0],
-            get: gets[0],
-            myGain,
-            theirGain,
-            // Why this partner: the shape of their roster, so a card can say
-            // "thin at RB, deep at WR" instead of asking the reader to take the
-            // pairing on faith.
-            theirNeed: biggestNeed(theirs),
-            theirSurplus: biggestSurplus(theirs),
-            jointGain: myGain + theirGain,
-            neutralGap: sum(gets, (e) => e.value) - sum(gives, (e) => e.value),
-            // Kept so a card can print the ledger it was actually judged on.
-            valueIn,
-            valueOut,
-            valueGap: split.gap,
-            valueNet: valueIn - valueOut,
-            mutual: theirGain > minGain,
-            pinned,
-        });
+        candidates.push(record());
         return gains;
+
+        /** The candidate shape, built once so a demoted one matches a kept one. */
+        function record(extra = {}) {
+            return {
+                other,
+                // Kept as arrays throughout so multi-player packages are a
+                // first-class shape rather than a special case.
+                gives,
+                gets,
+                give: gives[0],
+                get: gets[0],
+                myGain,
+                theirGain,
+                // Why this partner: the shape of their roster, so a card can
+                // say "thin at RB, deep at WR" instead of asking the reader to
+                // take the pairing on faith.
+                theirNeed: biggestNeed(theirs),
+                theirSurplus: biggestSurplus(theirs),
+                jointGain: myGain + theirGain,
+                neutralGap: sum(gets, (e) => e.value) - sum(gives, (e) => e.value),
+                // Kept so a card can print the ledger it was actually judged on.
+                valueIn,
+                valueOut,
+                valueGap: split.gap,
+                valueNet: valueIn - valueOut,
+                mutual: theirGain > minGain,
+                pinned,
+                ...extra,
+            };
+        }
     }
 
     const baseCache = new Map();
@@ -310,26 +418,35 @@ export async function findTrades(input) {
         // What I can send: pinned to the named players when there are any, so
         // "here is my trade bait, what can I get" is answered with offers that
         // actually contain the bait.
-        const offers = shopping ? offerEntries : tradeablePool(mine.entries, 14);
+        const offers = shopping ? offerEntries : tradeablePool(mine.entries, price, 14);
         const targets = shopping
             ? theirs.entries.filter((e) => TRADEABLE.has(e.player.pos))
-            : tradeablePool(theirs.entries, 14);
+            : tradeablePool(theirs.entries, price, 14);
         if (!targets.length || !offers.length) continue;
 
         if (shopping) {
             // The give side is settled, so the search is over what comes back.
-            for (const target of sortBy(targets, (e) => e.value, -1).slice(0, 10)) {
-                const solo = consider({ other, theirs, gives: offerEntries, gets: [target] });
+            const asking = priceOf(offerEntries);
+
+            for (const target of targets) {
+                const tv = price(target);
+                const solo = withinLedger(tv, asking)
+                    ? consider({ other, theirs, gives: offerEntries, gets: [target], declared: true })
+                    : null;
 
                 // One good player back is not the only answer to "what can I
-                // get for him". Two starters for one stud is the same
-                // consolidation trade read from the other end, and a team
-                // shopping a star is often the team that wants quantity.
-                if (solo && sum(offerEntries, (e) => e.value) > target.value * 1.15) {
-                    for (const second of cheapest(theirs.entries, [target], 4)) {
+                // get for him", and for a genuinely elite player it is never
+                // the answer: nothing on one roster matches the best player in
+                // the league inside a 15% ledger. The return has to be built
+                // the same way the open search builds a package -- pieces
+                // chosen to reach the asking price -- and not from whoever
+                // happens to be cheapest, which was the old behaviour and
+                // could not close a gap of any size.
+                if (tv < asking) {
+                    for (const extra of completing(targets, [target], tv, asking, false)) {
                         consider({
-                            other, theirs, gives: offerEntries, gets: [target, second],
-                            mustBeatMine: solo,
+                            other, theirs, gives: offerEntries, gets: [target, ...extra],
+                            declared: true, mustBeatMine: solo,
                         });
                     }
                 }
@@ -342,12 +459,12 @@ export async function findTrades(input) {
         // before a lineup is ever solved, which is what pays for the wider
         // player pool above.
         for (const give of offers) {
-            const gv = scale(give.value);
+            const gv = price(give);
             pairings++;
 
             for (const target of targets) {
                 if (give.player.id === target.player.id) continue;
-                const tv = scale(target.value);
+                const tv = price(target);
 
                 const solo = withinLedger(tv, gv)
                     ? consider({ other, theirs, gives: [give], gets: [target] })
@@ -363,12 +480,12 @@ export async function findTrades(input) {
                 // second player who leaves the receiving lineup exactly where
                 // the one-for-one left it has been given away for nothing.
                 if (tv > gv) {
-                    for (const second of completing(offers, [give, target], gv, tv, true)) {
-                        consider({ other, theirs, gives: [give, second], gets: [target], mustBeat: solo });
+                    for (const extra of completing(offers, [give, target], gv, tv, true)) {
+                        consider({ other, theirs, gives: [give, ...extra], gets: [target], mustBeat: solo });
                     }
                 } else if (gv > tv) {
-                    for (const second of completing(targets, [give, target], tv, gv, false)) {
-                        consider({ other, theirs, gives: [give], gets: [target, second], mustBeatMine: solo });
+                    for (const extra of completing(targets, [give, target], tv, gv, false)) {
+                        consider({ other, theirs, gives: [give], gets: [target, ...extra], mustBeatMine: solo });
                     }
                 }
             }
@@ -392,22 +509,49 @@ export async function findTrades(input) {
     function completing(pool, exclude, have, need, mine_) {
         const skip = new Set(exclude.map((e) => e.player.id));
         const before = fairness(have, need).gap;
-        const out = [];
-        for (const e of pool) {
-            if (skip.has(e.player.id)) continue;
-            const filled = have + scale(e.value);
-            if (fairness(filled, need).gap < before && withinLedger(filled, need)) out.push(e);
+        const usable = pool.filter((e) => !skip.has(e.player.id) && price(e) > 0);
+
+        const singles = [];
+        for (const e of usable) {
+            const filled = have + price(e);
+            if (fairness(filled, need).gap < before && withinLedger(filled, need)) singles.push([e]);
         }
 
+        // Pairs, when no single piece can bridge the gap.
+        //
+        // Without this the open search could only ever build a two-for-one,
+        // because exactly one balancing piece was ever added. That is fine in
+        // the middle of a roster and silently fatal at the top of it: matching
+        // the best player in the league inside a 15% ledger needs roughly 85%
+        // of his price back, and no single rival asset reaches that. So the
+        // three most valuable players on a roster -- the ones a manager most
+        // wants to know the price of -- had no trades at all.
+        const pairs = [];
+        if (!singles.length) {
+            // Nearest-first, so the search reaches a workable pair quickly
+            // rather than grinding the whole roster.
+            const near = sortBy(usable, (e) => Math.abs(need - have - price(e))).slice(0, 8);
+            for (let i = 0; i < near.length && pairs.length < 12; i++) {
+                for (let j = i + 1; j < near.length && pairs.length < 12; j++) {
+                    const filled = have + price(near[i]) + price(near[j]);
+                    if (fairness(filled, need).gap < before && withinLedger(filled, need)) {
+                        pairs.push([near[i], near[j]]);
+                    }
+                }
+            }
+        }
+
+        const all = singles.length ? singles : pairs;
+        if (!all.length) return [];
+
+        const worth = (combo) => combo.reduce((a, e) => a + price(e), 0);
         // Two different offers are worth making out of the same window, and
-        // taking only one end of it loses the other. The piece that lands the
-        // ledger closest to even is the offer a manager sends when they want a
-        // yes; the piece at the end that favours me -- the least of mine, the
-        // most of theirs -- is the one they send when they want a bargain.
-        // Slicing the cheapest two alone was quietly dropping the receiver that
-        // made the trade and pairing a spare back instead.
-        const fairest = sortBy(out, (e) => fairness(have + scale(e.value), need).gap).slice(0, 2);
-        const greedy = sortBy(out, (e) => e.value, mine_ ? 1 : -1)[0];
+        // taking only one end of it loses the other. The combination that lands
+        // the ledger closest to even is the offer a manager sends when they
+        // want a yes; the one at the end that favours me -- the least of mine,
+        // the most of theirs -- is the one they send when they want a bargain.
+        const fairest = sortBy(all, (c) => fairness(have + worth(c), need).gap).slice(0, 2);
+        const greedy = sortBy(all, (c) => worth(c), mine_ ? 1 : -1)[0];
         return greedy && !fairest.includes(greedy) ? [...fairest, greedy] : fairest;
     }
 
@@ -426,13 +570,13 @@ export async function findTrades(input) {
                 (e) =>
                     TRADEABLE.has(e.player.pos) &&
                     !forcedGiveIds.has(e.player.id) &&
-                    e.value > 0
+                    price(e) > 0
             ),
-            (e) => e.value,
+            price,
             -1
         ).slice(0, 12);
 
-        const targetValue = sum(wantEntries, (e) => e.value);
+        const targetValue = priceOf(wantEntries);
 
         // Minimal packages only.
         //
@@ -457,8 +601,8 @@ export async function findTrades(input) {
             // Overpaying badly is a signal, not a result. If my package is
             // worth far more than the man I am chasing, the realistic version
             // of the deal has something coming back the other way.
-            if (sum(gives, (e) => e.value) > targetValue * 1.2) {
-                for (const filler of cheapest(theirs.entries, wantEntries, 3)) {
+            if (priceOf(gives) > targetValue * 1.2) {
+                for (const filler of cheapest(theirs.entries, wantEntries, price, 3)) {
                     consider({
                         other, theirs, gives, gets: [...wantEntries, filler],
                         pinned: true, mustBeatMine: solo,
@@ -466,6 +610,19 @@ export async function findTrades(input) {
                 }
             }
         }
+    }
+
+    // Nothing inside the lineup budget, but the question was still asked.
+    //
+    // Shopping an elite player is the case: every return fair enough for the
+    // counterparty to accept costs real lineup points, because he is the best
+    // thing in my starting eleven. Reporting "no trades found" there is simply
+    // false -- the trades exist, they just cost something -- and it was the
+    // whole of the user's complaint about the finder having nothing for most
+    // players. So the cheapest few are promoted, carrying the flag that makes
+    // the card say what the deal costs.
+    if (!candidates.length && overBudget.length) {
+        candidates.push(...sortBy(overBudget, (c) => c.myGain, -1).slice(0, stage2Keep));
     }
 
     // Deduplicate: identical packages can surface from several position
@@ -720,21 +877,29 @@ export function spread(list, { perTargetCap = 2, perTeamCap = 4, perPieceCap = 3
 const modeOf = (targeted, shopping) =>
     targeted && shopping ? 'target+offer' : targeted ? 'target' : shopping ? 'offer' : 'open';
 
-/** The tradeable players on a roster worth pricing, best first. */
-function tradeablePool(entries, limit) {
+/**
+ * The tradeable players on a roster worth pricing, most expensive first.
+ *
+ * Priced at market like every other ledger decision here. Ranking the pool on
+ * the user's own board decided WHICH players the search would even look at
+ * from the wrong list: a player the user had slid down their board dropped out
+ * of their own top 14 and became untradeable, however much the league would
+ * have given up for him.
+ */
+function tradeablePool(entries, price, limit) {
     return sortBy(
-        entries.filter((e) => TRADEABLE.has(e.player.pos) && e.value > 0),
-        (e) => e.value,
+        entries.filter((e) => TRADEABLE.has(e.player.pos) && price(e) > 0),
+        price,
         -1
     ).slice(0, limit);
 }
 
 /** The pieces I can most afford to add, cheapest useful first. */
-function cheapest(entries, exclude, limit) {
+function cheapest(entries, exclude, price, limit) {
     const skip = new Set(exclude.map((e) => e.player.id));
     return sortBy(
-        entries.filter((e) => !skip.has(e.player.id) && TRADEABLE.has(e.player.pos) && e.value > 0),
-        (e) => e.value
+        entries.filter((e) => !skip.has(e.player.id) && TRADEABLE.has(e.player.pos) && price(e) > 0),
+        price
     ).slice(0, limit);
 }
 

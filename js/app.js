@@ -89,6 +89,12 @@ export const app = {
         const seedKeys = buildSeedKeys(this.players, {
             projections: this.projections,
             scoring: cfg.scoring,
+            // The board has to know what has happened this season, not just
+            // what August predicted, and it has to have somewhere to put a
+            // productive waiver add that Sleeper never projected.
+            actuals: this.actuals,
+            week: this.league?.currentWeek || 1,
+            marketRanks: this.market?.ranks || null,
         });
         this.order = Object.keys(store.state.order || {}).length
             ? mergeOrder(store.state.order, this.players, { seedKeys })
@@ -280,6 +286,7 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         updateChip();
         if (!silent) toast(`Synced ${app.league.cfg.name}`, 'good');
         watchForTrades();
+        watchForWeekRollover();
         app.render();
     } catch (err) {
         console.error(err);
@@ -298,6 +305,48 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
  */
 const TRADE_POLL_MS = 90 * 1000;
 let tradePoll = null;
+
+/** The NFL week this session booted on, as Sleeper reported it. */
+const nflWeek = () => app.nflState?.week ?? app.league?.currentWeek ?? null;
+
+/**
+ * Roll the whole app over when the NFL week changes.
+ *
+ * Every cache here is keyed to a week or a short timer, which is right for a
+ * visit and wrong for a tab that stays open. People leave this open from Sunday
+ * to Tuesday; without this, the projections, the odds and the standings all
+ * still describe a week that finished. Checking costs one small request against
+ * an endpoint the app already calls at boot.
+ */
+const WEEK_POLL_MS = 15 * 60 * 1000;
+let weekPoll = null;
+
+export function watchForWeekRollover() {
+    clearInterval(weekPoll);
+    weekPoll = setInterval(async () => {
+        const state = await api.getState().catch(() => null);
+        const week = state?.week;
+        if (!week || !app.nflState) return;
+        if (Number(week) === Number(app.nflState.week) && state.season === app.nflState.season) return;
+
+        app.nflState = state;
+        app.season = state.season || app.season;
+        toast(`Week ${week} — refreshing`, 'good');
+
+        // Everything week-shaped is now wrong, so it is refetched rather than
+        // patched: projections carry the week, the odds are a different slate,
+        // and the standings have moved.
+        const fresh = await data.loadProjections(String(app.season), { week }).catch(() => null);
+        if (fresh?.projections) app.projections = fresh.projections;
+        app.actuals = await data.loadSeasonStats(String(app.season)).catch(() => null);
+        if (app.league) {
+            await connectLeague(app.league.cfg.id, { silent: true });
+        } else {
+            app.rebuild();
+            app.render();
+        }
+    }, WEEK_POLL_MS);
+}
 
 export function watchForTrades() {
     clearInterval(tradePoll);
@@ -576,6 +625,7 @@ async function boot() {
             const h = host.querySelector('h1');
             if (h) h.textContent = msg;
         },
+        week: nflWeek(),
     });
     app.projections = projResult.projections;
     if (!app.projections) {

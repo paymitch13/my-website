@@ -138,10 +138,16 @@ test('the counterparty is valued neutrally, not on the user’s board', async ()
 
 test('teams with nothing to offer each other are filtered out in stage 1', async () => {
     const { projections, mk, rank } = pool();
+    // Identical AND full. The eight-player version of this fixture left the
+    // FLEX slot empty on every roster, which makes any package that nets a
+    // body a genuine ten-point upgrade -- so the funnel was right to find
+    // trades and the test was only passing because a pricing bug elsewhere
+    // suppressed them. "Nothing to offer each other" has to mean full rosters
+    // with the same shape, or it is testing roster size instead of need.
     const same = (rosterId) => {
         const players = [
             ['QB', 15], ['RB', 11], ['RB', 10], ['WR', 11], ['WR', 10],
-            ['TE', 7], ['K', 6], ['DEF', 6],
+            ['TE', 7], ['K', 6], ['DEF', 6], ['RB', 5], ['WR', 5],
         ].map(([pos, ppg]) => mk(pos, ppg));
         return { rosterId, name: `T${rosterId}`, players, wins: 3, losses: 3, ties: 0, pointsFor: 700 };
     };
@@ -1066,5 +1072,195 @@ test('dynasty keeps the older rule, where banking value is a real strategy', asy
     for (const t of [...res.trades, ...res.others]) {
         assert.ok(t.myGain > -0.6 - 1e-9, `even dynasty has a floor, got ${t.myGain.toFixed(2)}`);
         assert.ok(t.theirGain > -0.6 - 1e-9);
+    }
+});
+
+// --- One price, used by every gate ----------------------------------------
+//
+// The bug these cover was a scale mismatch, and it was the whole of the user's
+// "the trade finder still doesn't have trades for most players, or aren't good
+// trades."
+//
+// Candidates were GENERATED from `entry.value` -- the user's own board for
+// their roster, the neutral board for everyone else -- and then JUDGED at
+// market inside `consider`. Two scales, one 15% window. On a live twelve-team
+// roster the two numbers disagreed by a median of 25%, and 67% of rostered
+// players disagreed by more than the entire window, so fair trades were
+// discarded before anything ever evaluated them. Shopping Justin Jefferson
+// asked 3,746 on the board against 5,561 at market, which made an even swap
+// for Chris Olave read as a 33% fleecing and returned no offers at all.
+
+/** The mirror-image league, with the user's own board deliberately wrecked. */
+function boardAtOddsWithMarket() {
+    const base = formatLeague(0);
+    // Slide the user's own best players to the bottom of their board. Market
+    // price is derived from projections, so it does not move -- which is
+    // exactly the disagreement that broke the gate.
+    const wrecked = new Map(base.rankings);
+    for (const p of base.teams[0].players) wrecked.set(p.id, 400);
+    return { ...base, wrecked };
+}
+
+test('what a player costs does not depend on what I think of him', async () => {
+    const { league, ctx, teams, rankings, wrecked } = boardAtOddsWithMarket();
+    const run = (board) =>
+        findTrades({
+            cfg: league, ctx, teams, myRosterId: 1, rankings: board,
+            tradeValue: marketScale(teams, rankings, ctx),
+            iterations: 0, limits: { stage2Keep: 200, stage3Keep: 0 },
+        });
+
+    const sane = await run(rankings);
+    const trashed = await run(wrecked);
+
+    const ledger = (res) => {
+        const m = new Map();
+        for (const t of [...res.trades, ...res.others]) {
+            m.set(
+                `${t.other.rosterId}:${t.gives.map((e) => e.player.id).sort().join('+')}` +
+                    `>${t.gets.map((e) => e.player.id).sort().join('+')}`,
+                t.valueOut
+            );
+        }
+        return m;
+    };
+
+    const a = ledger(sane);
+    const b = ledger(trashed);
+    const shared = [...a.keys()].filter((k) => b.has(k));
+    assert.ok(shared.length > 0, 'the two boards must still produce comparable packages');
+    for (const key of shared) {
+        assert.ok(
+            Math.abs(a.get(key) - b.get(key)) < 1e-9,
+            `the same package priced differently once I re-ranked my own roster: ` +
+                `${a.get(key).toFixed(1)} vs ${b.get(key).toFixed(1)}`
+        );
+    }
+});
+
+test('a player slid down my own board is still tradeable', async () => {
+    // `tradeablePool` ranked the search pool by board value, so demoting a
+    // player on my own board dropped him out of my top 14 and he stopped
+    // being offered at all -- however much the league would have paid.
+    const { league, ctx, teams, rankings, wrecked } = boardAtOddsWithMarket();
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings: wrecked,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    const offered = new Set();
+    for (const t of [...res.trades, ...res.others]) for (const e of t.gives) offered.add(e.player.id);
+    assert.ok(offered.size > 0, 'a wrecked board must not empty the finder');
+
+    // The best RB on roster 1 is the one most worth trading and the one the
+    // sabotage hit hardest.
+    const bestRb = teams[0].players.filter((p) => p.pos === 'RB')[0];
+    assert.ok(
+        offered.has(bestRb.id),
+        'my best running back vanished from the search because I ranked him low'
+    );
+});
+
+// --- Shopping a player you have declared you want to move -----------------
+
+test('shopping a player answers, and says what the answer costs', async () => {
+    const { league, ctx, teams, rankings } = formatLeague(0);
+    // The best player on the roster: no single rival asset matches him inside
+    // a 15% ledger, so every fair return costs starting points. Silence is the
+    // wrong answer to "what can I get for him" -- the cost IS the answer.
+    const star = teams[0].players.find((p) => p.pos === 'RB');
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, offer: [star.id], limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+
+    const all = [...res.trades, ...res.others];
+    assert.equal(res.mode, 'offer');
+    assert.ok(all.length > 0, 'shopping a star must return offers rather than nothing');
+    for (const t of all) {
+        assert.ok(
+            t.gives.some((e) => e.player.id === star.id),
+            'every offer must contain the player I said I wanted to move'
+        );
+        assert.ok(t.theirGain > 0, 'the counterparty side is never relaxed');
+        // Either it is inside the lineup budget, or it is labelled as costing.
+        assert.ok(
+            t.myGain > -1.5 || t.costly === true,
+            `an offer costing ${(-t.myGain).toFixed(2)} pts/wk must be flagged costly`
+        );
+    }
+    // Best return first, so the cheapest option is the one read first.
+    const gains = all.map((t) => t.myGain);
+    assert.ok(gains[0] === Math.max(...gains), 'the first card must be the best one available');
+});
+
+test('an unbounded lineup loss is never presented as a return', async () => {
+    // Before the bound, shopping a player returned an offer that cost 17.7
+    // points a week with a fair ledger attached. Fair is not the same as good.
+    const { league, ctx, teams, rankings } = formatLeague(0);
+    const star = teams[0].players.find((p) => p.pos === 'RB');
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, offer: [star.id], limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    const all = [...res.trades, ...res.others];
+    const inBudget = all.filter((t) => !t.costly);
+    if (inBudget.length) {
+        // When anything clears the budget, nothing over it is shown at all.
+        assert.ok(
+            all.every((t) => !t.costly),
+            'over-budget offers must stay hidden while affordable ones exist'
+        );
+        for (const t of all) assert.ok(t.myGain > -1.5, `${t.myGain} is outside the declared budget`);
+    } else {
+        // Otherwise every card is a promoted one, and every card says so.
+        assert.ok(all.every((t) => t.costly === true), 'promoted offers must all be labelled');
+    }
+});
+
+test('a package can be built from more than one piece to reach a price', async () => {
+    // `completing` used to add exactly one balancing piece, so a three-for-one
+    // was unconstructible -- and the three most valuable players on a roster,
+    // the ones a manager most wants the price of, had no trades at all.
+    const { league, ctx, teams, rankings } = formatLeague(0);
+    const star = teams[0].players.find((p) => p.pos === 'RB');
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, offer: [star.id], limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    const all = [...res.trades, ...res.others];
+    assert.ok(
+        all.some((t) => t.gets.length >= 2),
+        'one elite player must be matchable by a combination, not just a single body'
+    );
+});
+
+test('my opinion of my own player is not imposed on the counterparty', async () => {
+    // The deeper half of the same bug. A player crossing rosters kept his
+    // ORIGIN's valuation, so my board's projection travelled with him: ranking
+    // one of my own starters low made the search conclude the whole league had
+    // no use for him. He arrived on their roster projected for nothing, their
+    // lineup could not improve, and every deal containing him was rejected as
+    // unacceptable to THEM -- a trade killed by a judgement that was never
+    // theirs. On the wrecked board the finder returned no deals at all.
+    const { league, ctx, teams, rankings, wrecked } = boardAtOddsWithMarket();
+    const res = await findTrades({
+        cfg: league, ctx, teams, myRosterId: 1, rankings: wrecked,
+        tradeValue: marketScale(teams, rankings, ctx),
+        iterations: 0, limits: { stage2Keep: 200, stage3Keep: 0 },
+    });
+    const all = [...res.trades, ...res.others];
+    assert.ok(all.length > 0, 'trashing my own board must not empty the league of partners');
+
+    // And their gain is theirs: every proposal still has to clear the
+    // counterparty's own acceptance test, computed on the neutral board.
+    for (const t of all) {
+        assert.ok(
+            t.theirGain > 0,
+            `the counterparty must still be gaining on their own board, got ${t.theirGain.toFixed(2)}`
+        );
     }
 });
