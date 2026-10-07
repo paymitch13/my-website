@@ -19,7 +19,7 @@
 import { americanToProbability, devig } from './odds.js';
 import { politeFetch } from './net.js';
 import { scoreStats } from './projections.js';
-import { mean } from './util.js';
+import { mean, sortBy } from './util.js';
 
 const CORE = 'https://sports.core.api.espn.com/v2/sports/football/leagues/nfl';
 
@@ -372,4 +372,97 @@ export async function resolveAthlete(athleteId, index, { store = null } = {}) {
     }
     if (!name) return null;
     return index.byName.get(`${normalizeName(name)}|${pos}`) || null;
+}
+
+/**
+ * Where the market and the projections disagree, across the WHOLE slate.
+ *
+ * Every piece of this already existed and was only ever applied to the user's
+ * own roster, as one factor inside a start/sit call. That is the least useful
+ * place to put it. A posted player market is a number with money behind it,
+ * and the players it disagrees with the consensus about are the actionable
+ * finding on this entire screen -- for starting, for streaming, for buying low
+ * and for knowing when the projection you are about to trade on is stale.
+ *
+ * Reported as a share of the projection, because two points of disagreement on
+ * a 20-point quarterback and on a 5-point tight end are not the same thing.
+ *
+ * @param {object} input
+ * @param {Map}    input.marketProps   playerId -> prop row
+ * @param {object} input.projectedPpg  playerId -> projected points for the week
+ * @param {object} input.players       id -> player
+ * @param {object} input.scoring
+ * @param {number} [input.threshold]   minimum disagreement worth reporting
+ * @param {number} [input.minProjection] floor, because a 40% disagreement on a
+ *   2-point projection is arithmetic rather than information
+ */
+export function slateEdges({
+    marketProps,
+    projectedPpg,
+    players,
+    scoring,
+    threshold = 0.12,
+    minProjection = 4,
+    limit = 12,
+}) {
+    const rows = [];
+    if (!marketProps || !players || !scoring) return { higher: [], lower: [], counted: 0 };
+
+    for (const [id, row] of marketProps) {
+        const player = players[id];
+        if (!player) continue;
+
+        const market = marketPoints(row, scoring);
+        if (market === null) continue;
+
+        const projected = projectedPpg?.[id] ?? null;
+        if (!Number.isFinite(projected) || projected < minProjection) continue;
+
+        const gap = disagreement(market, projected, { threshold });
+        if (!gap) continue;
+
+        rows.push({
+            player,
+            market,
+            projected,
+            diff: gap.diff,
+            share: gap.share,
+            direction: gap.direction,
+            // The individual lines, so the claim can be checked rather than
+            // taken on faith. "Vegas is higher" means little; "his receiving
+            // yards line is 78.5" is something a reader can weigh.
+            stats: row.stats,
+            movement: row.movement || {},
+        });
+    }
+
+    return {
+        higher: sortBy(rows.filter((r) => r.diff > 0), (r) => r.share, -1).slice(0, limit),
+        lower: sortBy(rows.filter((r) => r.diff < 0), (r) => r.share).slice(0, limit),
+        counted: rows.length,
+    };
+}
+
+/**
+ * What an implied team total means for the two positions nobody projects well.
+ *
+ * A kicker's scoring is almost entirely a function of how often his offence
+ * gets into field-goal range, and a defence's is a function of how little the
+ * other offence is expected to do. Both are better predicted by one Vegas
+ * number than by any season-long projection, which is why streaming them off
+ * the implied totals is standard practice -- and why it was worth surfacing
+ * here rather than leaving the reader to work it out from the board.
+ */
+export function streamingSpots(byTeam, { limit = 6 } = {}) {
+    const rows = [...(byTeam?.values?.() || [])].filter(
+        (c) => Number.isFinite(c.impliedTotal) && Number.isFinite(c.opponentImplied)
+    );
+    if (!rows.length) return { kickers: [], defenses: [] };
+
+    return {
+        // A kicker wants his own offence moving the ball.
+        kickers: sortBy(rows, (c) => c.impliedTotal, -1).slice(0, limit),
+        // A defence wants the opposite: an opponent expected to do nothing.
+        defenses: sortBy(rows, (c) => c.opponentImplied).slice(0, limit),
+    };
 }

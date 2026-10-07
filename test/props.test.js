@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     statKeyFor, athleteIdFrom, parseProps, marketPoints, disagreement, blendMarket,
     parseCoreOdds, parsePredictor, normalizeName, buildPlayerIndex, resolveAthlete,
+    slateEdges, streamingSpots,
 } from '../js/props.js';
 import { normalizeScoring } from '../js/league.js';
 import { applyCoreOdds } from '../js/data.js';
@@ -334,4 +335,121 @@ test('ESPN’s model rides along when there is one', () => {
         byTeam: teamCtx(),
     });
     assert.ok(game.predictor.notable);
+});
+
+// --- Slate-wide edges ------------------------------------------------------
+//
+// All of this machinery existed and was applied only to the user's own roster,
+// as one factor inside a start/sit call -- the least useful place for it. The
+// players the market disagrees with the consensus about are the actionable
+// finding on the whole Vegas screen.
+
+const edgeScoring = normalizeScoring({ rec: 0.5, rec_yd: 0.1, rush_yd: 0.1, rec_td: 6, rush_td: 6, pass_yd: 0.04, pass_td: 4 });
+
+const edgePlayers = {
+    hot: { id: 'hot', name: 'Market Loves Him', pos: 'WR', team: 'KC' },
+    cold: { id: 'cold', name: 'Market Hates Him', pos: 'WR', team: 'DEN' },
+    agreed: { id: 'agreed', name: 'Everyone Agrees', pos: 'WR', team: 'SF' },
+    tiny: { id: 'tiny', name: 'Barely Plays', pos: 'WR', team: 'NYJ' },
+};
+
+/** A prop row carrying two markets, which is the minimum to be a projection. */
+const propRow = (yards, tds) => ({ stats: { rec_yd: yards, rec_td: tds }, movement: {} });
+
+test('the slate edge scan finds both directions and ignores agreement', () => {
+    const edges = slateEdges({
+        marketProps: new Map([
+            // 110 yards + 0.6 TD = 11 + 3.6 = 14.6 against a projected 10.
+            ['hot', propRow(110, 0.6)],
+            // 40 yards + 0.1 TD = 4 + 0.6 = 4.6 against a projected 10.
+            ['cold', propRow(40, 0.1)],
+            // 100 yards + 0.5 TD = 10 + 3 = 13 against a projected 13.
+            ['agreed', propRow(100, 0.5)],
+        ]),
+        projectedPpg: { hot: 10, cold: 10, agreed: 13 },
+        players: edgePlayers,
+        scoring: edgeScoring,
+    });
+
+    assert.deepEqual(edges.higher.map((r) => r.player.id), ['hot']);
+    assert.deepEqual(edges.lower.map((r) => r.player.id), ['cold']);
+    assert.equal(edges.counted, 2, 'agreement is not an edge');
+});
+
+test('an edge on a tiny projection is arithmetic, not information', () => {
+    // 40% of two points is not a finding, and letting it through would fill
+    // the board with players nobody is choosing between.
+    const edges = slateEdges({
+        marketProps: new Map([['tiny', propRow(30, 0.05)]]),
+        projectedPpg: { tiny: 2 },
+        players: edgePlayers,
+        scoring: edgeScoring,
+    });
+    assert.equal(edges.counted, 0);
+});
+
+test('a player with one posted market is not treated as a projection', () => {
+    // A lone receiving-yards line is a fact about receiving yards. Scoring it
+    // as a full projection would systematically under-project everyone whose
+    // touchdown market has not been posted yet.
+    const edges = slateEdges({
+        marketProps: new Map([['hot', { stats: { rec_yd: 110 }, movement: {} }]]),
+        projectedPpg: { hot: 10 },
+        players: edgePlayers,
+        scoring: edgeScoring,
+    });
+    assert.equal(edges.counted, 0);
+});
+
+test('an edge carries the underlying lines so the claim can be checked', () => {
+    const edges = slateEdges({
+        marketProps: new Map([['hot', propRow(110, 0.6)]]),
+        projectedPpg: { hot: 10 },
+        players: edgePlayers,
+        scoring: edgeScoring,
+    });
+    assert.equal(edges.higher[0].stats.rec_yd, 110);
+    assert.ok(edges.higher[0].market > edges.higher[0].projected);
+});
+
+test('a player with no projection is skipped rather than counted as an edge', () => {
+    const edges = slateEdges({
+        marketProps: new Map([['hot', propRow(110, 0.6)]]),
+        projectedPpg: {},
+        players: edgePlayers,
+        scoring: edgeScoring,
+    });
+    assert.equal(edges.counted, 0);
+});
+
+test('missing inputs produce an empty scan rather than throwing', () => {
+    assert.deepEqual(slateEdges({}), { higher: [], lower: [], counted: 0 });
+});
+
+// --- Streaming spots -------------------------------------------------------
+
+test('kickers want their own offense moving, defenses want the opposite', () => {
+    const byTeam = new Map([
+        ['KC', { team: 'KC', impliedTotal: 29, opponentImplied: 17 }],
+        ['CAR', { team: 'CAR', impliedTotal: 15, opponentImplied: 27 }],
+        ['SF', { team: 'SF', impliedTotal: 26, opponentImplied: 13 }],
+        ['NYJ', { team: 'NYJ', impliedTotal: 18, opponentImplied: 24 }],
+    ]);
+    const spots = streamingSpots(byTeam, { limit: 2 });
+    assert.deepEqual(spots.kickers.map((c) => c.team), ['KC', 'SF'], 'highest own total first');
+    assert.deepEqual(spots.defenses.map((c) => c.team), ['SF', 'KC'], 'lowest opponent total first');
+});
+
+test('a team with no posted line is not a streaming spot', () => {
+    const byTeam = new Map([
+        ['KC', { team: 'KC', impliedTotal: 29, opponentImplied: 17 }],
+        ['XX', { team: 'XX', impliedTotal: null, opponentImplied: null }],
+    ]);
+    const spots = streamingSpots(byTeam);
+    assert.deepEqual(spots.kickers.map((c) => c.team), ['KC']);
+});
+
+test('an empty board yields no streaming spots rather than throwing', () => {
+    assert.deepEqual(streamingSpots(null), { kickers: [], defenses: [] });
+    assert.deepEqual(streamingSpots(new Map()), { kickers: [], defenses: [] });
 });

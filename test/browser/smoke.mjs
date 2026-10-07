@@ -80,6 +80,12 @@ for (const [pos, per] of Object.entries(POS)) {
             player_id: id, first_name: pos, last_name: `Player ${i + 1}`,
             position: pos, fantasy_positions: [pos], team: NFL_TEAMS[n % NFL_TEAMS.length], age: 25,
             injury_status: null, active: true, search_rank: n,
+            // Sleeper carries espn_id for a share of players, and it is the
+            // key the prop markets join on. Without it the props pipeline
+            // falls back to a name lookup against an endpoint this fixture
+            // does not serve, so every market silently failed to resolve and
+            // the slate-edge board rendered empty.
+            espn_id: 900000 + n,
         };
         const ppg = 22 - i * 0.35;
         projections.push({
@@ -281,7 +287,40 @@ const fixtures = [
         const week = Number(new URL(url).searchParams.get('week')) || 7;
         return json(scoreboardFor(week));
     }],
-    [/sports\.core\.api\.espn.*propBets/, () => json({ count: 0, items: [] })],
+    // Player prop markets. These used to be empty, so the slate-edge board had
+    // nothing to find and the whole feature rendered only its empty state.
+    //
+    // Two things the first attempt got wrong, both worth stating: the market
+    // names have to match the loose patterns in props.js ("Receiving Yards",
+    // not "receivingYards"), and there is no anytime-touchdown pattern at all,
+    // so a touchdown market has to be named per phase. Two markets per player
+    // minimum, because one line is a fact about one stat rather than a
+    // projection -- and deliberately disagreeing with the projection in both
+    // directions so both halves of the board populate.
+    [/sports\.core\.api\.espn.*propBets/, () => {
+        const items = [];
+        let k = 0;
+        for (const [id, p] of Object.entries(players)) {
+            if (!['QB', 'RB', 'WR', 'TE'].includes(p.position)) continue;
+            const athleteId = 900000 + Number(id.slice(1));
+            // Alternate who the market likes, so neither list is empty.
+            const lean = k++ % 2 === 0 ? 1.5 : 0.5;
+            const mk = (name, value) => ({
+                athlete: { $ref: `http://x/athletes/${athleteId}?lang=en` },
+                type: { name },
+                current: { target: { value } },
+                open: { target: { value: Math.round(value * 0.95 * 10) / 10 } },
+            });
+            if (p.position === 'QB') {
+                items.push(mk('Passing Yards', Math.round(250 * lean)), mk('Passing Touchdowns', 1.5 * lean));
+            } else if (p.position === 'RB') {
+                items.push(mk('Rushing Yards', Math.round(70 * lean)), mk('Rushing Touchdowns', 0.5 * lean));
+            } else {
+                items.push(mk('Receiving Yards', Math.round(70 * lean)), mk('Receiving Touchdowns', 0.45 * lean));
+            }
+        }
+        return json({ count: items.length, items });
+    }],
     [/sports\.core\.api\.espn.*predictor/, () => json({ gameProjection: 64.2, matchupQuality: 70 })],
     [/sports\.core\.api\.espn.*\/odds/, () => json({
         count: 1,
@@ -550,6 +589,46 @@ if (await addPlayerToSide(0)) {
     console.log(`  cash trade: analysed at market price, ${text.trim().length} chars of result`);
 } else {
     errors.push('trade: could not add a player to a side');
+}
+
+// --- Vegas: where the money disagrees with the projection ------------------
+//
+// All of this machinery already existed and was applied only to the user's own
+// roster, buried as one factor inside a start/sit call. These assertions are
+// about it being a slate-wide board that names players and shows its working.
+{
+    await page.click('#tabs .tab[data-view="vegas"]');
+    await page.waitForTimeout(4000);
+
+    const text = (await page.textContent('#view')) || '';
+    if (!/Where Vegas disagrees with the projection/.test(text)) {
+        errors.push('vegas: no slate-wide edge board');
+    }
+    // Both directions, because they are different actions.
+    if (!/Vegas is higher/.test(text) || !/Vegas is lower/.test(text)) {
+        errors.push('vegas: the edge board does not split the two directions');
+    }
+    const edgeRows = await page.$$eval('#view .edge-row', (els) => els.length);
+    if (!edgeRows) {
+        errors.push('vegas: the edge board found nobody');
+        const diag = (text.match(/No player markets[^.]*\.|players have markets posted[^.]*\./) || ['(no diagnostic)'])[0];
+        console.log(`    edge board said: ${diag}`);
+    }
+    // The underlying lines, so the claim is checkable.
+    if (!/market .* vs projected/.test(text)) {
+        errors.push('vegas: edges do not show the market against the projection');
+    }
+
+    // Streaming spots: the two positions a single Vegas number predicts best.
+    if (!/Streaming spots/.test(text)) errors.push('vegas: no streaming spots');
+    if (!/highest own total/.test(text) || !/lowest opponent total/.test(text)) {
+        errors.push('vegas: streaming spots do not explain what drives each position');
+    }
+
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`vegas edges: scrolls horizontally by ${o.scrolled}px`);
+    if (o.wide.length) errors.push(`vegas edges: overflows — ${o.wide.join(', ')}`);
+    console.log(`  vegas edges: ${edgeRows} player edges + streaming spots`);
 }
 
 // --- Stats -----------------------------------------------------------------

@@ -1,7 +1,8 @@
 // Vegas — the full slate, and what each line means for fantasy.
 
 import { loadOdds, loadWeekContext } from '../data.js';
-import { loadSlateProps } from '../props.js';
+import { scoreStats } from '../projections.js';
+import { loadSlateProps, slateEdges, streamingSpots } from '../props.js';
 import { rosterStatLines, formatStat, describeSource, slateBooks } from '../statlines.js';
 import * as store from '../store.js';
 import { describeMovement, gameScript, fmtSpread, fmtMoneyline } from '../odds.js';
@@ -188,6 +189,18 @@ async function build(app, { scope = 'week', roster = null } = {}) {
                 : null
         )
     );
+
+    // --- Where the money disagrees with the projection ---------------------
+    //
+    // The most actionable thing on this screen, and it was already being
+    // computed -- for the user's own roster only, buried as one factor inside
+    // a start/sit call. A posted player market is a number with real money
+    // behind it; the players it disagrees with the consensus about are worth
+    // knowing about whoever owns them.
+    if (!seasonScope) {
+        wrap.append(await edgeSection(app, games));
+        wrap.append(streamSection(odds.byTeam));
+    }
 
     // --- Best and worst spots ----------------------------------------------
     // --- The season ahead, not just this week ------------------------------
@@ -539,4 +552,191 @@ function vegasCell(label, value, detail) {
         el('div', { class: 'v num' }, value),
         detail ? el('div', { class: 'd' }, detail) : null
     );
+}
+
+/**
+ * Where the posted markets disagree with the projections, across the slate.
+ *
+ * Two lists rather than one ranking, because the two directions are different
+ * actions. Vegas higher than the projection is a start-him or buy-him signal;
+ * Vegas lower is a fade, and it is the one people ignore because the
+ * projection they are looking at still says he is fine.
+ */
+async function edgeSection(app, games) {
+    const wrap = el('div', {});
+    const cfg = app.league?.cfg;
+    if (!cfg) return wrap;
+
+    const season = app.league.raw?.season || app.season;
+    const week = app.league.currentWeek;
+
+    const [ctx, marketProps] = await Promise.all([
+        loadWeekContext(season, week, app.league.lastPlayed ?? 0).catch(() => null),
+        loadSlateProps(games, app.players, { store }).catch(() => new Map()),
+    ]);
+
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {}, 'Where Vegas disagrees with the projection'),
+            el('span', { class: 'hint' }, 'posted player markets against the consensus number')
+        )
+    );
+
+    if (!marketProps.size) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'card' },
+                el('p', { class: 'muted' },
+                    'No player markets are posted for this slate yet. Books put them up a few days before ' +
+                    'kickoff, so this fills in as the week goes on — and it stays empty rather than guessing.')
+            )
+        );
+        return wrap;
+    }
+
+    // The projection each market is being measured against: this week's
+    // number, scored under this league's own rules.
+    //
+    // scoreStats, NOT projectedPpg: a weekly row is already one game, and
+    // projectedPpg divides by a season's games. Running a weekly row through
+    // it would compare every market against a seventeenth of the projection
+    // and report the entire slate as a massive Vegas edge.
+    const projected = {};
+    for (const [id, row] of Object.entries(ctx?.weekly || {})) {
+        if (!row?.stats) continue;
+        const ppg = scoreStats(row.stats, cfg.scoring);
+        if (Number.isFinite(ppg) && ppg > 0) projected[id] = ppg;
+    }
+
+    const edges = slateEdges({
+        marketProps,
+        projectedPpg: projected,
+        players: app.players,
+        scoring: cfg.scoring,
+    });
+
+    if (!edges.counted) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'card' },
+                el('p', { class: 'muted' },
+                    `${marketProps.size} players have markets posted and none of them disagree with the ` +
+                    'projection by enough to be worth acting on. That is a real answer: the two sources agree ' +
+                    'about this slate.')
+            )
+        );
+        return wrap;
+    }
+
+    wrap.append(
+        el(
+            'div',
+            { class: 'grid grid-2' },
+            edgeCard('Vegas is higher', edges.higher, 'good',
+                'The market expects more than the projection does. Start them, and they are cheap to acquire.'),
+            edgeCard('Vegas is lower', edges.lower, 'bad',
+                'The market expects less. This is the list people ignore, because the projection still says they are fine.')
+        )
+    );
+    return wrap;
+}
+
+function edgeCard(title, rows, tone, blurb) {
+    const card = el('div', { class: 'card' });
+    card.append(
+        el('h3', { style: 'margin:0 0 4px' }, title),
+        el('p', { class: 'small muted', style: 'margin:0 0 10px' }, blurb)
+    );
+
+    if (!rows.length) {
+        card.append(el('p', { class: 'muted small' }, 'Nothing on this side of the slate.'));
+        return card;
+    }
+
+    for (const r of rows) {
+        card.append(
+            el(
+                'div',
+                { class: 'edge-row' },
+                el(
+                    'div',
+                    { class: 'row', style: 'gap:8px;align-items:center;min-width:0' },
+                    posBadge(r.player.pos),
+                    el('span', { class: 'grow ellipsis', style: 'min-width:0' }, playerLink(r.player)),
+                    el('span', { class: `num small ${tone}` }, `${r.diff > 0 ? '+' : ''}${round(r.diff, 1)}`),
+                    el('span', { class: 'tiny dim', style: 'min-width:44px;text-align:right' }, fmtPct(Math.abs(r.share)))
+                ),
+                // The lines themselves, so the claim is checkable rather than
+                // something the reader has to take on faith.
+                el(
+                    'div',
+                    { class: 'tiny dim', style: 'margin-top:2px' },
+                    `market ${round(r.market, 1)} vs projected ${round(r.projected, 1)}`,
+                    Object.keys(r.stats).length
+                        ? ` · ${Object.entries(r.stats)
+                              .slice(0, 3)
+                              .map(([k, v]) => `${formatStat(k, v)}`)
+                              .join(', ')}`
+                        : ''
+                )
+            )
+        );
+    }
+    return card;
+}
+
+/**
+ * Kickers and defenses, off the implied totals.
+ *
+ * These are the two positions nobody projects well and the two that are best
+ * predicted by a single Vegas number: a kicker's scoring tracks how often his
+ * offence reaches field-goal range, and a defence's tracks how little the
+ * other offence is expected to do. Streaming them off the board is standard
+ * practice, and leaving the reader to derive it from the full slate was making
+ * them do arithmetic the page could do for them.
+ */
+function streamSection(byTeam) {
+    const spots = streamingSpots(byTeam, { limit: 6 });
+    const wrap = el('div', {});
+    if (!spots.kickers.length) return wrap;
+
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {}, 'Streaming spots'),
+            el('span', { class: 'hint' }, 'the two positions a single Vegas number predicts better than any projection')
+        )
+    );
+
+    const list = (rows, label, pick) =>
+        el(
+            'div',
+            { class: 'card' },
+            el('h3', { style: 'margin:0 0 4px' }, label),
+            ...rows.map((c, i) =>
+                el(
+                    'div',
+                    { class: 'row', style: 'gap:8px;padding:3px 0' },
+                    el('span', { class: 'tiny dim', style: 'min-width:18px' }, `${i + 1}.`),
+                    el('span', { class: 'grow', style: 'font-weight:600' }, c.team),
+                    el('span', { class: 'tiny dim' }, `vs ${c.opponent || '—'}`),
+                    el('span', { class: 'num small' }, round(pick(c), 1))
+                )
+            )
+        );
+
+    wrap.append(
+        el(
+            'div',
+            { class: 'grid grid-2' },
+            list(spots.kickers, 'Kickers — highest own total', (c) => c.impliedTotal),
+            list(spots.defenses, 'Defenses — lowest opponent total', (c) => c.opponentImplied)
+        )
+    );
+    return wrap;
 }

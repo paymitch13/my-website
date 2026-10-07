@@ -941,3 +941,8 @@ input::placeholder { color: var(--text-3); }
 .stat-compare td:first-child { white-space: nowrap; }
 .mover { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
 .mover:last-child { border-bottom: 0; }
+
+/* Vegas edge rows: the market against the projection, with the lines beneath
+   so the claim is checkable rather than taken on faith. */
+.edge-row { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.edge-row:last-child { border-bottom: 0; }
