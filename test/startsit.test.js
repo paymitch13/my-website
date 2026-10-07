@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     vegasImpact, defenseVegasImpact, evaluatePlayerWeek, buildStartSitReport,
     lineupChanges, slateAverage, comparePlayers, describeComparison,
+    compareField, describeField,
 } from '../js/startsit.js';
 import { buildDefenseProfiles, matchupImpact, rankDefenses, describeMatchup } from '../js/matchup.js';
 import { weatherImpact, pickHour, STADIUMS } from '../js/weather.js';
@@ -488,4 +489,130 @@ test('only the factors that differ are offered as reasons', () => {
 test('comparing needs two players', () => {
     assert.equal(comparePlayers(null, null), null);
     assert.equal(describeComparison(null), '');
+});
+
+// --- A field of two to four ------------------------------------------------
+//
+// "Nix or Herbert?" has a pairwise answer. "Who do I start out of these three
+// flex options" does not, and running the pair comparison three times gives
+// three sentences that each ignore the third man. Nor does the field have to
+// be the user's own players: plenty of these questions are about a waiver
+// pickup, somebody else's roster, or a league the user is not in.
+
+test('a field of three is ranked, not compared in pairs', () => {
+    const evaluations = roster();
+    const field = [
+        { ...evaluations[0], adjusted: 11 },
+        { ...evaluations[1], adjusted: 17 },
+        { ...evaluations[2], adjusted: 14 },
+    ];
+    const cmp = compareField(field);
+    assert.equal(cmp.ranked.length, 3);
+    assert.deepEqual(cmp.ranked.map((r) => r.score), [17, 14, 11]);
+    assert.equal(cmp.leader.score, 17);
+    assert.equal(cmp.runnerUp.score, 14);
+    // The margin is first over second, which is the decision being made.
+    assert.equal(cmp.margin, 3);
+    // And everyone is measured against the leader.
+    assert.deepEqual(cmp.ranked.map((r) => r.behind), [0, 3, 6]);
+});
+
+test('the sentence names the whole field, not just the top two', () => {
+    const evaluations = roster();
+    const field = [
+        { ...evaluations[0], adjusted: 20, player: { ...evaluations[0].player, name: 'Top' } },
+        { ...evaluations[1], adjusted: 14, player: { ...evaluations[1].player, name: 'Second' } },
+        { ...evaluations[2], adjusted: 9, player: { ...evaluations[2].player, name: 'Third' } },
+    ];
+    const text = describeField(compareField(field));
+    assert.match(text, /Start Top/);
+    assert.match(text, /Second/);
+    assert.match(text, /Third/, 'the third man must not vanish from the explanation');
+});
+
+test('two players still work through the field comparison', () => {
+    const evaluations = roster();
+    const cmp = compareField([
+        { ...evaluations[0], adjusted: 18 },
+        { ...evaluations[1], adjusted: 10 },
+    ]);
+    assert.equal(cmp.ranked.length, 2);
+    assert.equal(cmp.margin, 8);
+    assert.match(describeField(cmp), /8 points clear/);
+});
+
+test('fewer than two players is not a comparison', () => {
+    assert.equal(compareField([]), null);
+    assert.equal(compareField([roster()[0]]), null);
+    assert.equal(compareField(null), null);
+});
+
+test('a coin flip is called one rather than dressed up with a reason', () => {
+    const evaluations = roster();
+    const cmp = compareField([
+        { ...evaluations[0], adjusted: 12.4 },
+        { ...evaluations[1], adjusted: 12.0 },
+    ]);
+    assert.equal(cmp.tooClose, true);
+    assert.match(describeField(cmp), /coin flip/);
+});
+
+test('a player who cannot play is set aside, not ranked last', () => {
+    // Ranking a bye-week player last with a projection of zero would be a lie
+    // dressed as a comparison: he is not a worse option, he is not an option.
+    const evaluations = roster();
+    const field = [
+        { ...evaluations[0], adjusted: 11 },
+        { ...evaluations[1], adjusted: 25, hasGame: false, player: { ...evaluations[1].player, name: 'On Bye' } },
+    ];
+    const cmp = compareField(field);
+    assert.equal(cmp.ranked.length, 1, 'only the startable player is ranked');
+    assert.equal(cmp.blocked.length, 1);
+    assert.equal(cmp.leader.player.id, field[0].player.id, 'the higher projection does not win if he cannot play');
+    const text = describeField(cmp);
+    assert.match(text, /only one/);
+    assert.match(text, /On Bye/, 'and the blocked player is still accounted for');
+});
+
+test('a field where nobody can play says so', () => {
+    const evaluations = roster();
+    const cmp = compareField([
+        { ...evaluations[0], hasGame: false },
+        { ...evaluations[1], ruledOut: true },
+    ]);
+    assert.equal(cmp.ranked.length, 0);
+    assert.match(describeField(cmp), /None of these players can be started/);
+});
+
+test('the reason cites a factor that actually separates the top two', () => {
+    const evaluations = roster();
+    const a = {
+        ...evaluations[0],
+        adjusted: 18,
+        player: { ...evaluations[0].player, name: 'Soft Matchup' },
+        factors: [{ kind: 'matchup', label: 'Matchup', multiplier: 1.18, detail: '', tone: 'good' }],
+    };
+    const b = {
+        ...evaluations[1],
+        adjusted: 12,
+        player: { ...evaluations[1].player, name: 'Hard Matchup' },
+        factors: [{ kind: 'matchup', label: 'Matchup', multiplier: 0.9, detail: '', tone: 'bad' }],
+    };
+    const cmp = compareField([a, b]);
+    assert.equal(cmp.swings[0].kind, 'matchup');
+    assert.match(describeField(cmp), /matchup is softer/);
+});
+
+test('a factor both players share is not offered as the reason', () => {
+    // Two men in the same game, in the same weather: the weather is identical
+    // and therefore explains nothing about choosing between them, however
+    // extreme it is.
+    const evaluations = roster();
+    const shared = { kind: 'weather', label: 'Weather', multiplier: 0.8, detail: '', tone: 'bad' };
+    const cmp = compareField([
+        { ...evaluations[0], adjusted: 18, factors: [shared, { kind: 'vegas', label: 'Vegas', multiplier: 1.1 }] },
+        { ...evaluations[1], adjusted: 12, factors: [shared] },
+    ]);
+    assert.ok(!cmp.swings.some((s) => s.kind === 'weather'), 'a shared factor must not be a swing');
+    assert.equal(cmp.swings[0].kind, 'vegas');
 });

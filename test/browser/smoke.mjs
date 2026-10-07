@@ -629,9 +629,28 @@ await page.click('#tabs .tab[data-view="startsit"]');
 await page.waitForTimeout(4000);
 {
     const text = (await page.textContent('#view')) || '';
-    if (!/Bench/.test(text)) errors.push('start/sit: the bench is not rendered');
+    // The bench is a divider inside the roster table now, not a section of
+    // its own, so assert the divider AND that rows follow it.
+    const benchDivider = await page.$('#view table tr.row-divider');
+    const benchRows = await page.$$eval('#view table tr.row-bench', (els) => els.length);
+    if (!benchDivider) errors.push('start/sit: no bench divider in the roster table');
+    if (benchRows < 3) errors.push(`start/sit: only ${benchRows} bench rows in the roster table`);
     if (!/Every decision/.test(text)) errors.push('start/sit: per-slot decisions are missing');
-    if (!/Head to head/.test(text)) errors.push('start/sit: no head-to-head comparison');
+    if (!/Compare players/.test(text)) errors.push('start/sit: no comparison card');
+
+    // Starters and bench in ONE table with the same columns, which is the
+    // whole point of merging them: the projections used to be "at the top" for
+    // the nine already starting and in a separate section far below for the
+    // fifteen being decided between.
+    if (!/Your roster this week/.test(text)) errors.push('start/sit: the roster is not one table');
+    const tableCount = await page.$$eval('#view table', (els) => els.length);
+    const bodies = await page.$$eval('#view table tbody tr', (els) => els.length);
+    if (bodies < 12) errors.push(`start/sit: only ${bodies} roster rows rendered across ${tableCount} tables`);
+    // Every row carries a margin, starter and bench alike.
+    const margins = await page.$$eval('#view table tbody tr td:nth-child(6)', (els) =>
+        els.map((e) => e.textContent.trim()).filter((t) => /^[+\u2212-]/.test(t))
+    );
+    if (margins.length < 8) errors.push(`start/sit: only ${margins.length} rows show a margin`);
 
     // Every rostered player with a projection has to appear somewhere on the
     // page -- that is the whole complaint.
@@ -651,7 +670,54 @@ await page.waitForTimeout(4000);
     const o = await overflowOf();
     if (o.scrolled > 0) errors.push(`start/sit: scrolls horizontally by ${o.scrolled}px`);
     if (o.wide.length) errors.push(`start/sit: overflows — ${o.wide.join(', ')}`);
-    console.log(`  start/sit: bench + decisions + head-to-head, ${text.trim().length} chars`);
+    console.log(`  start/sit: one roster table (${bodies} rows, ${benchRows} bench, ${margins.length} margins)`);
+
+    // --- Comparing players, including ones off the roster -------------------
+    // The card opens on two. It has to reach four, and the picker has to offer
+    // the whole database rather than just this roster -- most of these
+    // questions are about a waiver pickup or somebody else's starter.
+    const addBtn = await page.$('#view button:has-text("+ Add a player")');
+    if (!addBtn) {
+        errors.push('start/sit: cannot add a third player to the comparison');
+    } else {
+        const before = await page.$$eval('#view .h2h-side', (els) => els.length);
+        await addBtn.click();
+        await page.waitForSelector('.pick', { timeout: 5000 });
+        const offered = await page.$$eval('.pick', (els) => els.length);
+        // The roster is 12 players; the fixture database is far bigger. If the
+        // picker only offered the roster, this is the assertion that catches it.
+        if (offered <= 12) errors.push(`compare: picker offered only ${offered} players, so it is roster-only`);
+        await page.click('.pick');
+        await page.waitForTimeout(600);
+
+        const after = await page.$$eval('#view .h2h-side', (els) => els.length);
+        if (after !== before + 1) errors.push(`compare: adding a player gave ${after} slots, expected ${before + 1}`);
+
+        const cmpText = (await page.textContent('#view')) || '';
+        if (!/THE ORDER/.test(cmpText)) errors.push('compare: a field of three does not show the full order');
+        if (!/Start |Too close|Not a decision/.test(cmpText)) errors.push('compare: no verdict');
+
+        const o3 = await overflowOf();
+        if (o3.scrolled > 0) errors.push(`compare (3 players): scrolls horizontally by ${o3.scrolled}px`);
+        if (o3.wide.length) errors.push(`compare (3 players): overflows — ${o3.wide.join(', ')}`);
+
+        // And up to four, which is the documented maximum.
+        const more = await page.$('#view button:has-text("+ Add a player")');
+        if (more) {
+            await more.click();
+            await page.waitForSelector('.pick', { timeout: 5000 });
+            await page.click('.pick');
+            await page.waitForTimeout(600);
+            const four = await page.$$eval('#view .h2h-side', (els) => els.length);
+            if (four !== 4) errors.push(`compare: expected 4 slots, got ${four}`);
+            const capped = (await page.textContent('#view')) || '';
+            if (!/Four is the most/.test(capped)) errors.push('compare: the cap is not explained at four');
+            const o4 = await overflowOf();
+            if (o4.scrolled > 0) errors.push(`compare (4 players): scrolls horizontally by ${o4.scrolled}px`);
+            if (o4.wide.length) errors.push(`compare (4 players): overflows — ${o4.wide.join(', ')}`);
+            console.log('  compare: 2 -> 3 -> 4 players, off-roster picker, order + verdict');
+        }
+    }
 
     // Opt-in visual capture, for looking at the page rather than counting it.
     if (process.env.SHOOT) {

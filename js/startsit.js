@@ -412,6 +412,127 @@ export function comparePlayers(a, b) {
     };
 }
 
+/**
+ * A field of two to four players, ranked, with the reason for the order.
+ *
+ * `comparePlayers` answers "Nix or Herbert?" and that is genuinely the most
+ * common question -- but it is not the only shape it arrives in. "Who do I
+ * start out of these three flex options" has no pairwise answer, and running
+ * the pair comparison three times gives three sentences that each ignore the
+ * third man. Neither does the field have to be the user's own players: half of
+ * these questions are about somebody else's roster, or a waiver pickup, or a
+ * player in a league the user is not even in.
+ *
+ * So: rank the field, report the margin that actually matters (first over
+ * second), and explain the ORDER rather than a pair.
+ *
+ * @param {Array} evaluations 2-4 results from `evaluatePlayerWeek`
+ */
+export function compareField(evaluations) {
+    const field = (evaluations || []).filter(Boolean);
+    if (field.length < 2) return null;
+
+    const scoreOf = (e) => (Number.isFinite(e.adjusted) ? e.adjusted : null);
+    const startable = field.filter((e) => e.hasGame && !e.ruledOut && scoreOf(e) !== null);
+    const blocked = field.filter((e) => !e.hasGame || e.ruledOut);
+
+    const ranked = sortBy(startable, (e) => scoreOf(e), -1).map((e, i) => ({
+        evaluation: e,
+        player: e.player,
+        score: scoreOf(e),
+        rank: i + 1,
+    }));
+
+    // Everything is measured against the leader, because that is the decision:
+    // who to start, and what it costs to start somebody else instead.
+    const leader = ranked[0] || null;
+    for (const row of ranked) row.behind = leader ? leader.score - row.score : null;
+
+    const margin = ranked.length >= 2 ? ranked[0].score - ranked[1].score : null;
+
+    return {
+        field,
+        ranked,
+        blocked,
+        leader,
+        runnerUp: ranked[1] || null,
+        margin,
+        // Inside a point, the projections are not separating these players and
+        // saying so is more useful than inventing a reason.
+        tooClose: margin !== null && margin < 1,
+        // What separates the top two, which is the only comparison that
+        // decides anything. A factor both men share explains nothing.
+        swings: leader && ranked[1] ? separatingFactors(leader.evaluation, ranked[1].evaluation) : [],
+    };
+}
+
+/** The factors that actually differ between two players, biggest first. */
+function separatingFactors(a, b) {
+    const factorOf = (e, kind) => e.factors?.find((f) => f.kind === kind)?.multiplier ?? 1;
+    const kinds = ['vegas', 'matchup', 'weather', 'health', 'market', 'script', 'movement'];
+    return sortBy(
+        kinds
+            .map((kind) => ({ kind, a: factorOf(a, kind), b: factorOf(b, kind) }))
+            .map((row) => ({ ...row, edge: row.a - row.b }))
+            .filter((row) => Math.abs(row.edge) >= 0.02),
+        (s) => Math.abs(s.edge),
+        -1
+    );
+}
+
+/** Why the field is in the order it is, in one or two sentences. */
+export function describeField(cmp) {
+    if (!cmp) return '';
+
+    const blockedNames = cmp.blocked.map((e) => e.player.name);
+    const blockedNote = blockedNames.length
+        ? ` ${joinNames(blockedNames)} ${blockedNames.length === 1 ? 'cannot' : 'cannot'} be started this week — bye, no game, or ruled out.`
+        : '';
+
+    if (!cmp.ranked.length) {
+        return `None of these players can be started this week.${blockedNote}`.trim();
+    }
+    if (cmp.ranked.length === 1) {
+        return `${cmp.leader.player.name} is the only one of these you can start this week.${blockedNote}`;
+    }
+
+    if (cmp.tooClose) {
+        return (
+            `${cmp.leader.player.name} and ${cmp.runnerUp.player.name} are ${round(Math.abs(cmp.margin), 1)} points apart — ` +
+            `a coin flip. Start whichever you would rather be wrong about.${blockedNote}`
+        );
+    }
+
+    const top = cmp.swings[0];
+    const because = top
+        ? {
+              vegas: 'his offence is expected to score more',
+              matchup: 'the matchup is softer',
+              weather: 'the weather is kinder',
+              health: 'he is the healthier of the two',
+              market: 'the betting market is higher on him',
+              script: 'the way this game should be played suits him',
+              movement: 'the line has moved his way since it opened',
+          }[top.kind]
+        : null;
+
+    const over =
+        cmp.ranked.length === 2
+            ? cmp.runnerUp.player.name
+            : `${cmp.runnerUp.player.name}, with ${joinNames(cmp.ranked.slice(2).map((r) => r.player.name))} behind`;
+
+    return (
+        `Start ${cmp.leader.player.name} — ${round(cmp.margin, 1)} points clear of ${over}` +
+        (because ? `, mostly because ${because}.` : '.') +
+        blockedNote
+    );
+}
+
+const joinNames = (names) =>
+    names.length <= 1
+        ? names[0] || ''
+        : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+
 /** One sentence explaining a head-to-head. */
 export function describeComparison(cmp) {
     if (!cmp) return '';

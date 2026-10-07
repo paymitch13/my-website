@@ -638,6 +638,22 @@ input::placeholder { color: var(--text-3); }
     align-items: start;
     gap: var(--sp-3);
 }
+/* Three and four players, each with a VS divider between them. Written out
+   rather than generated because the divider columns are fixed width and the
+   player columns share the rest -- auto-fit cannot express that. */
+.h2h-3 { grid-template-columns: 1fr 34px 1fr 34px 1fr; }
+.h2h-4 { grid-template-columns: 1fr 28px 1fr 28px 1fr 28px 1fr; }
+/* Four across is too narrow for a phone or a tablet, so the field wraps into
+   rows well before the two-player card needs to. */
+@media (max-width: 1000px) {
+    .h2h-4 { grid-template-columns: 1fr 28px 1fr; }
+    /* The third divider would start a row with "VS" in it. */
+    .h2h-4 > .h2h-mid:nth-of-type(2) { display: none; }
+}
+@media (max-width: 760px) {
+    .h2h-3 { grid-template-columns: 1fr; }
+    .h2h-3 > .h2h-mid { padding: 0; }
+}
 .h2h-side {
     min-width: 0;
     padding: var(--sp-3);
@@ -656,8 +672,9 @@ input::placeholder { color: var(--text-3); }
 @media (max-width: 560px) {
     /* Stacked, with the divider becoming a rule between the two cards rather
        than a column that would squeeze both sides to nothing. */
-    .h2h { grid-template-columns: 1fr; gap: var(--sp-2); }
+    .h2h, .h2h-3, .h2h-4 { grid-template-columns: 1fr; gap: var(--sp-2); }
     .h2h-mid { padding: 0; }
+    .h2h-4 > .h2h-mid:nth-of-type(2) { display: flex; }
 }
 
 /* ---------- Skip link ---------- */
@@ -883,3 +900,14 @@ input::placeholder { color: var(--text-3); }
     gap: var(--sp-3);
     margin-top: var(--sp-3);
 }
+
+/* --- One roster table, starters above the bench ------------------------- */
+/* Starters and bench share a table so their projections can be read against
+   each other. The divider and the dimmed slot label are what keep the two
+   halves legible as separate things without separating them. */
+.table tr.row-divider td {
+    padding-top: 14px;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--line);
+}
+.table tr.row-bench td:first-child { color: var(--text-3); }

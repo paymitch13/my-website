@@ -1,7 +1,7 @@
 // Start/Sit — weekly lineup decisions.
 
 import {
-    buildStartSitReport, comparePlayers, describeComparison, evaluatePlayerWeek,
+    buildStartSitReport, compareField, describeField, evaluatePlayerWeek,
     lineupChanges, slateAverage,
 } from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
@@ -136,7 +136,13 @@ async function build(app, team) {
     for (const pos of ['QB', 'RB', 'WR', 'TE']) defenseRanks[pos] = rankDefenses(defenseProfiles, pos);
 
     const neutralImplied = slateAverage(oddsByTeam);
-    const evaluations = team.players.map((player) =>
+
+    // Scoring ONE player for this week, as a closure over the whole week's
+    // context. Pulled out so the comparison card can score players who are not
+    // on this roster -- somebody else's starter, a waiver pickup, a name from
+    // a league the user is not even in. Nothing in the engine ever needed the
+    // player to be rostered; only this function's shape implied it.
+    const evaluateOne = (player) =>
         evaluatePlayerWeek({
             neutralImplied,
             player,
@@ -149,8 +155,9 @@ async function build(app, team) {
             weeksLeft: Math.max(1, app.league.weeksLeft),
             onBye: isOnBye(app.byeWeeks, player.team, currentWeek),
             marketRow: marketProps.get(player.id) || null,
-        })
-    );
+        });
+
+    const evaluations = team.players.map(evaluateOne);
 
     const report = buildStartSitReport({ team, cfg, evaluations });
     const changes = lineupChanges(report, team.starterIds);
@@ -254,8 +261,27 @@ async function build(app, team) {
         wrap.append(banner('Your Sleeper lineup already matches the recommendation. Nothing to change.', ''));
     }
 
-    // --- Recommended lineup ------------------------------------------------
-    wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Recommended lineup')));
+    // --- The whole roster, one table ---------------------------------------
+    //
+    // Starters and bench together, in the same table, with the same columns.
+    //
+    // They used to be two sections with the bench far below the per-slot
+    // decision cards, and that made the comparison the page exists for into a
+    // scrolling exercise: the projections were "at the top" for the nine men
+    // already starting and nowhere near them for the fifteen the manager is
+    // deciding between. Numbers you have to hold in your head while you scroll
+    // are numbers you cannot compare.
+    //
+    // The margin column carries the whole decision in one number: how clear a
+    // starter is, or how far off the lineup a bench player is.
+    wrap.append(
+        el(
+            'div',
+            { class: 'section-head' },
+            el('h2', {}, 'Your roster this week'),
+            el('span', { class: 'hint' }, `${report.lineup.slots.filter((s) => s.entry).length} starting · ${report.bench.length} on the bench · same numbers throughout`)
+        )
+    );
     wrap.append(
         el(
             'div',
@@ -277,6 +303,7 @@ async function build(app, team) {
                             el('th', { class: 'hide-sm' }, 'Matchup'),
                             el('th', { class: 'right hide-sm' }, 'Base'),
                             el('th', { class: 'right' }, 'Adjusted'),
+                            el('th', { class: 'right hide-sm' }, 'Margin'),
                             el('th', {}, 'Why')
                         )
                     ),
@@ -284,8 +311,20 @@ async function build(app, team) {
                         'tbody',
                         {},
                         ...report.lineup.slots.map((slot) =>
-                            slot.entry ? playerRow(slot, slot.entry.evaluation) : emptySlotRow(slot)
-                        )
+                            slot.entry
+                                ? rosterRow({ entry: slot.entry, slot, report })
+                                : emptySlotRow(slot)
+                        ),
+                        ...(report.bench.length
+                            ? [
+                                  el(
+                                      'tr',
+                                      { class: 'row-divider' },
+                                      el('td', { colspan: '7', class: 'tiny dim' }, 'BENCH')
+                                  ),
+                                  ...report.bench.map((entry) => rosterRow({ entry, report })),
+                              ]
+                            : [])
                     )
                 )
             )
@@ -375,64 +414,19 @@ async function build(app, team) {
         wrap.append(card);
     }
 
-    // --- The rest of the roster --------------------------------------------
-    //
-    // The bench was computed and then never rendered, so most of the roster was
-    // invisible on the one page whose entire job is choosing between the
-    // players on it. Same columns as the starters, because the comparison only
-    // works if the numbers are the same numbers.
-    if (report.bench.length) {
-        wrap.append(
-            el(
-                'div',
-                { class: 'section-head' },
-                el('h2', {}, 'Bench'),
-                el('span', { class: 'hint' }, `${report.bench.length} players, same numbers as above`)
-            )
-        );
-        wrap.append(
-            el(
-                'div',
-                { class: 'card' },
-                el(
-                    'div',
-                    { class: 'table-scroll' },
-                    el(
-                        'table',
-                        { class: 'table' },
-                        el(
-                            'thead',
-                            {},
-                            el(
-                                'tr',
-                                {},
-                                el('th', {}, 'Player'),
-                                el('th', { class: 'hide-sm' }, 'Matchup'),
-                                el('th', { class: 'right hide-sm' }, 'Base'),
-                                el('th', { class: 'right' }, 'Adjusted'),
-                                el('th', { class: 'right hide-sm' }, 'Behind'),
-                                el('th', {}, 'Why')
-                            )
-                        ),
-                        el('tbody', {}, ...report.bench.map((e) => benchRow(e, report)))
-                    )
-                )
-            )
-        );
-    }
 
-    // --- Head to head -------------------------------------------------------
-    // The question people actually ask, which nothing on this page could answer
-    // before: two names, one call.
+    // --- Compare players ----------------------------------------------------
+    // The question people actually type into a group chat. Two to four names,
+    // one call, and they do not have to be players the user owns.
     wrap.append(
         el(
             'div',
             { class: 'section-head' },
-            el('h2', {}, 'Head to head'),
-            el('span', { class: 'hint' }, 'compare any two players on this roster')
+            el('h2', {}, 'Compare players'),
+            el('span', { class: 'hint' }, 'two to four, any player in the league')
         )
     );
-    wrap.append(headToHead(app, evaluations));
+    wrap.append(compareCard(app, evaluations, evaluateOne));
 
     // --- Bench and byes ----------------------------------------------------
     if (report.unavailable.length) {
@@ -573,13 +567,29 @@ function swapSide(label, tone, entry) {
     );
 }
 
-function playerRow(slot, ev) {
-    const p = ev.player;
+/**
+ * One row of the roster table, starter or bench.
+ *
+ * Deliberately ONE function. There used to be two near-identical ones, and the
+ * duplication was not free: the bench row grew a "behind the lineup" column
+ * that the starter row never got, so the two halves of the same roster were
+ * described with different columns and could not be read against each other.
+ *
+ * @param {object} input
+ * @param {object} input.entry   the scored entry
+ * @param {object} [input.slot]  the starting slot, when this player holds one
+ * @param {object} input.report  for the per-slot margins
+ */
+function rosterRow({ entry, slot = null, report }) {
+    const ev = entry.evaluation;
+    const p = entry.player;
     const delta = ev.adjusted - ev.baseProjection;
+    const margin = marginFor({ entry, slot, report });
+
     return el(
         'tr',
-        {},
-        el('td', { class: 'tiny dim nowrap' }, slot.label),
+        { class: slot ? '' : 'row-bench' },
+        el('td', { class: 'tiny dim nowrap' }, slot ? slot.label : 'BN'),
         el(
             'td',
             {},
@@ -598,8 +608,61 @@ function playerRow(slot, ev) {
             { class: `num right ${delta > 0.4 ? 'good' : delta < -0.4 ? 'bad' : ''}` },
             round(ev.adjusted, 1)
         ),
+        el(
+            'td',
+            { class: `num right small hide-sm ${margin.tone}`, title: margin.title },
+            margin.text
+        ),
         el('td', {}, factorChips(ev))
     );
+}
+
+/**
+ * The decision, as one number.
+ *
+ * For a starter: how far clear he is of the best alternative for his slot --
+ * the number that says whether this call is settled or worth a second look.
+ * For a bench player: how far off the lineup he is, measured against the
+ * closest slot he could legally fill. A receiver 0.3 behind the flex is a live
+ * decision; the same receiver 12 behind is depth.
+ */
+function marginFor({ entry, slot, report }) {
+    if (slot) {
+        const d = report.decisions.find((x) => x.starter.player.id === entry.player.id);
+        if (!d || d.margin === null) {
+            return { text: '—', tone: 'dim', title: 'Nobody else on the roster can fill this slot.' };
+        }
+        const tight = d.margin <= 1.5;
+        return {
+            text: `+${round(d.margin, 1)}`,
+            tone: tight ? 'warn' : 'good',
+            title: tight
+                ? `Only ${round(d.margin, 1)} clear of the next best option — worth a second look.`
+                : `${round(d.margin, 1)} clear of the next best option for this slot.`,
+        };
+    }
+
+    const gaps = report.decisions
+        .filter((d) => d.alternatives.some((a) => a.entry.player.id === entry.player.id))
+        .map((d) => d.alternatives.find((a) => a.entry.player.id === entry.player.id).gap);
+    if (!gaps.length) {
+        return { text: '—', tone: 'dim', title: 'No starting slot on this roster he is eligible for.' };
+    }
+    const closest = Math.min(...gaps);
+    // A negative gap means he is actually ahead of somebody currently starting,
+    // which is a recommendation, not depth.
+    if (closest < 0) {
+        return {
+            text: `+${round(-closest, 1)}`,
+            tone: 'good',
+            title: `Projects ${round(-closest, 1)} AHEAD of a player currently in your lineup.`,
+        };
+    }
+    return {
+        text: `−${round(closest, 1)}`,
+        tone: closest <= 1.5 ? 'warn' : 'dim',
+        title: `${round(closest, 1)} behind the closest slot he could fill.`,
+    };
 }
 
 function emptySlotRow(slot) {
@@ -607,7 +670,10 @@ function emptySlotRow(slot) {
         'tr',
         {},
         el('td', { class: 'tiny dim nowrap' }, slotLabel(slot.slot)),
-        el('td', { class: 'dim', colspan: '5' }, 'Nobody on the roster can fill this slot')
+        // Six, not five: the roster table gained a margin column when the
+        // bench was merged into it, and a short colspan silently shifts every
+        // cell to its right.
+        el('td', { class: 'dim', colspan: '6' }, 'Nobody on the roster can fill this slot')
     );
 }
 
@@ -627,48 +693,6 @@ function factorChips(ev) {
 }
 
 /** A bench player, with the same numbers the starters are judged on. */
-function benchRow(entry, report) {
-    const ev = entry.evaluation;
-    const p = entry.player;
-    const delta = ev.adjusted - ev.baseProjection;
-
-    // How far off the lineup he is: the smallest gap to any slot he could
-    // legally fill. A receiver 0.3 behind the flex is a live decision; the same
-    // receiver 12 behind is depth.
-    const behind = report.decisions
-        .filter((d) => d.alternatives.some((a) => a.entry.player.id === p.id))
-        .map((d) => d.alternatives.find((a) => a.entry.player.id === p.id).gap);
-    const closest = behind.length ? Math.min(...behind) : null;
-
-    return el(
-        'tr',
-        {},
-        el(
-            'td',
-            {},
-            el(
-                'div',
-                { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' },
-                posBadge(p.pos),
-                el('span', { class: 'ellipsis' }, playerLink(p)),
-                p.injury ? tag(p.injury, 'bad') : null
-            )
-        ),
-        el('td', { class: 'small nowrap hide-sm' }, ev.opponent ? `vs ${ev.opponent}` : '—'),
-        el('td', { class: 'num right small muted hide-sm' }, round(ev.baseProjection, 1)),
-        el(
-            'td',
-            { class: `num right ${delta > 0.4 ? 'good' : delta < -0.4 ? 'bad' : ''}` },
-            round(ev.adjusted, 1)
-        ),
-        el(
-            'td',
-            { class: `num right small hide-sm ${closest !== null && closest <= 1.5 ? 'warn' : 'dim'}` },
-            closest === null ? '—' : `−${round(closest, 1)}`
-        ),
-        el('td', {}, factorChips(ev))
-    );
-}
 
 /**
  * Two players, side by side.
@@ -677,82 +701,181 @@ function benchRow(entry, report) {
  * repaints just this card, so choosing a player never costs a full re-render of
  * a page that took several network calls to build.
  */
-function headToHead(app, evaluations) {
-    const startable = sortBy(
-        evaluations.filter((e) => e.adjusted !== null),
-        (e) => e.adjusted,
-        -1
-    );
+/**
+ * Compare two to four players for this week.
+ *
+ * Two things this replaces a pairwise card to do.
+ *
+ * First, a field rather than a pair. "Who do I start out of these three" has no
+ * pairwise answer, and running the pair comparison three times produces three
+ * sentences that each pretend the third man is not there.
+ *
+ * Second, ANY player. The old card could only choose from the user's own
+ * roster, which quietly excluded most of the questions people actually ask: a
+ * waiver pickup against the man he would replace, a trade target against the
+ * starter he would displace, or just settling an argument about somebody
+ * else's team. The engine never needed the player to be rostered -- only the
+ * picker's player list implied it.
+ */
+function compareCard(app, evaluations, evaluateOne) {
     const host = el('div', { class: 'card' });
-    if (startable.length < 2) {
-        host.append(el('p', { class: 'muted' }, 'Not enough players with a projection this week to compare.'));
+
+    // State is a list of evaluations, 2 to 4 of them.
+    let field = [];
+    const opener = bestPair(evaluations);
+    if (opener) {
+        field = [opener.a, opener.b];
+    } else {
+        const startable = sortBy(evaluations.filter((e) => e.adjusted !== null), (e) => e.adjusted, -1);
+        field = startable.slice(0, 2);
+    }
+    if (field.length < 2) {
+        host.append(
+            el('p', { class: 'muted' },
+                'Not enough players with a projection this week to compare. Once the week’s projections are posted this ' +
+                'will compare any two to four players, on your roster or not.')
+        );
         return host;
     }
 
-    // Open on the closest call there is, so the card is useful before it is
-    // touched rather than being two empty boxes.
-    let a = startable[0];
-    let b = startable[1];
-    const opener = bestPair(evaluations);
-    if (opener) {
-        a = opener.a;
-        b = opener.b;
-    }
+    /** Everyone in the database worth offering, scored for this week on demand. */
+    const poolFor = (exclude) => {
+        const taken = new Set(exclude.map((e) => e.player.id));
+        // Scored lazily: evaluating two thousand players to populate a picker
+        // would cost more than the whole page. The rank is enough to order the
+        // list, and the real evaluation happens on the one that gets chosen.
+        return sortBy(
+            Object.values(app.players)
+                .filter((p) => !taken.has(p.id) && (app.rankings.get(p.id) ?? 999) < 900)
+                .map((p) => ({ player: p, posRank: app.rankings.get(p.id), value: null })),
+            (e) => e.posRank ?? 999
+        );
+    };
 
-    const pick = async (which) => {
+    const pick = async (index) => {
         const chosen = await pickPlayer({
-            title: which === 'a' ? 'First player' : 'Second player',
-            entries: startable.map((e) => ({ player: e.player, value: e.adjusted, posRank: null })),
-            emptyText: 'Nobody on this roster has a projection this week.',
-            formatValue: (v) => round(v, 1),
+            title: index < field.length ? 'Swap this player' : 'Add a player',
+            entries: poolFor(field),
+            emptyText: 'No players available.',
+            formatValue: () => '',
         });
         if (!chosen) return;
-        const picked = startable.find((e) => e.player.id === chosen.player.id);
-        if (!picked) return;
-        if (which === 'a') a = picked;
-        else b = picked;
+        const ev = evaluateOne(chosen.player);
+        if (index < field.length) field[index] = ev;
+        else field.push(ev);
         paint();
     };
 
-    function side(entry, which) {
-        const ev = entry;
+    function slot(entry, index) {
+        const blocked = !entry.hasGame || entry.ruledOut;
         return el(
             'div',
             { class: 'h2h-side' },
             el(
-                'button',
-                { class: 'btn btn-sm', style: 'width:100%;justify-content:flex-start', onclick: () => pick(which) },
-                posBadge(ev.player.pos),
-                el('span', { class: 'ellipsis', style: 'min-width:0' }, ev.player.name),
-                el('span', { class: 'tiny dim' }, '▾')
+                'div',
+                { class: 'row', style: 'gap:4px' },
+                el(
+                    'button',
+                    {
+                        class: 'btn btn-sm grow',
+                        style: 'justify-content:flex-start;min-width:0',
+                        onclick: () => pick(index),
+                    },
+                    posBadge(entry.player.pos),
+                    el('span', { class: 'ellipsis', style: 'min-width:0' }, entry.player.name),
+                    el('span', { class: 'tiny dim' }, '▾')
+                ),
+                field.length > 2
+                    ? el(
+                          'button',
+                          {
+                              class: 'x',
+                              title: `Remove ${entry.player.name}`,
+                              onclick: () => {
+                                  field.splice(index, 1);
+                                  paint();
+                              },
+                          },
+                          '✕'
+                      )
+                    : null
             ),
-            el('div', { class: 'num', style: 'font-size:26px;margin-top:8px' }, round(ev.adjusted, 1)),
-            el('div', { class: 'tiny dim' }, ev.opponent ? `vs ${ev.opponent}` : 'no game'),
-            el('div', { style: 'margin-top:8px' }, factorChips(ev))
+            el(
+                'div',
+                { class: `num ${blocked ? 'dim' : ''}`, style: 'font-size:26px;margin-top:8px' },
+                blocked ? '—' : round(entry.adjusted, 1)
+            ),
+            el('div', { class: 'tiny dim' },
+                entry.ruledOut ? 'ruled out' : !entry.hasGame ? 'no game this week' : `vs ${entry.opponent}`),
+            el('div', { style: 'margin-top:8px' }, factorChips(entry))
         );
     }
 
     function paint() {
-        const cmp = comparePlayers(a, b);
+        const cmp = compareField(field);
+        const leaderId = cmp?.leader?.player.id;
+
+        const sides = [];
+        field.forEach((entry, i) => {
+            if (i) sides.push(el('div', { class: 'h2h-mid' }, el('span', { class: 'tiny dim' }, 'VS')));
+            sides.push(slot(entry, i));
+        });
+
         host.replaceChildren(
+            el('div', { class: `h2h h2h-${field.length}` }, ...sides),
             el(
                 'div',
-                { class: 'h2h' },
-                side(a, 'a'),
-                el('div', { class: 'h2h-mid' }, el('span', { class: 'tiny dim' }, 'VS')),
-                side(b, 'b')
+                { class: 'row', style: 'margin-top:12px;gap:8px;flex-wrap:wrap' },
+                field.length < 4
+                    ? el('button', { class: 'btn btn-sm', onclick: () => pick(field.length) }, '+ Add a player')
+                    : el('span', { class: 'tiny dim' }, 'Four is the most this compares at once.'),
+                el('span', { class: 'grow' }),
+                el('span', { class: 'tiny dim' }, 'Any player, on your roster or not')
             ),
             el(
                 'div',
-                { class: `verdict tone-${cmp.blocked ? 'bad' : cmp.tooClose ? 'warn' : 'good'}`, style: 'margin-top:14px' },
-                el('div', { class: 'label' }, cmp.blocked ? 'Not a decision' : cmp.tooClose ? 'Too close to call' : 'Start'),
-                el('div', { class: 'headline' }, describeComparison(cmp))
+                { class: `verdict tone-${!cmp || !cmp.ranked.length ? 'bad' : cmp.tooClose ? 'warn' : 'good'}`, style: 'margin-top:14px' },
+                el(
+                    'div',
+                    { class: 'label' },
+                    !cmp || !cmp.ranked.length ? 'Not a decision' : cmp.tooClose ? 'Too close to call' : `Start ${cmp.leader.player.name}`
+                ),
+                el('div', { class: 'headline' }, describeField(cmp))
             ),
-            cmp.swings.length
+            // The full order, because with three or four players the ranking
+            // below first place is the rest of the answer -- which one is the
+            // fallback if somebody is a late scratch.
+            cmp && cmp.ranked.length > 2
                 ? el(
                       'div',
                       { style: 'margin-top:12px' },
-                      el('div', { class: 'tiny dim', style: 'margin-bottom:6px' }, 'WHAT SEPARATES THEM'),
+                      el('div', { class: 'tiny dim', style: 'margin-bottom:6px' }, 'THE ORDER'),
+                      ...cmp.ranked.map((r) =>
+                          el(
+                              'div',
+                              { class: 'row', style: 'gap:8px;padding:3px 0;min-width:0' },
+                              el('span', { class: 'tiny dim', style: 'min-width:18px' }, `${r.rank}.`),
+                              posBadge(r.player.pos),
+                              el('span', { class: 'small ellipsis', style: 'min-width:0;flex:1' }, playerLink(r.player)),
+                              el('span', { class: 'num small' }, round(r.score, 1)),
+                              el(
+                                  'span',
+                                  { class: `num tiny ${r.behind === 0 ? 'good' : r.behind <= 1 ? 'warn' : 'dim'}`, style: 'min-width:52px;text-align:right' },
+                                  r.behind === 0 ? 'best' : `−${round(r.behind, 1)}`
+                              )
+                          )
+                      )
+                  )
+                : null,
+            cmp && cmp.swings.length
+                ? el(
+                      'div',
+                      { style: 'margin-top:12px' },
+                      el(
+                          'div',
+                          { class: 'tiny dim', style: 'margin-bottom:6px' },
+                          cmp.ranked.length > 2 ? 'WHAT SEPARATES THE TOP TWO' : 'WHAT SEPARATES THEM'
+                      ),
                       ...cmp.swings.slice(0, 4).map((sw) =>
                           el(
                               'div',
@@ -761,13 +884,16 @@ function headToHead(app, evaluations) {
                               el(
                                   'span',
                                   { class: `small ${sw.edge > 0 ? 'good' : 'bad'}`, style: 'min-width:0;flex:1' },
-                                  `${(sw.edge > 0 ? a : b).player.name} by ${Math.round(Math.abs(sw.edge) * 100)}%`
+                                  `${(sw.edge > 0 ? cmp.leader : cmp.runnerUp).player.name} by ${Math.round(Math.abs(sw.edge) * 100)}%`
                               )
                           )
                       )
                   )
-                : el('p', { class: 'tiny dim', style: 'margin-top:10px' }, 'Nothing in the matchup separates them — the gap is the raw projection.')
+                : cmp && cmp.ranked.length >= 2
+                  ? el('p', { class: 'tiny dim', style: 'margin-top:10px' }, 'Nothing in the matchup separates them — the gap is the raw projection.')
+                  : null
         );
+        void leaderId;
     }
 
     paint();
