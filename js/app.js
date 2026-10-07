@@ -19,6 +19,7 @@ import renderNews from './views/news.js';
 import renderStartSit from './views/startsit.js';
 import renderFinder from './views/finder.js';
 import renderCritique from './views/critique.js';
+import renderWaivers from './views/waivers.js';
 import renderVegas from './views/vegas.js';
 import { decodeOffer } from './share.js';
 import { loadSeasonOutlook } from './schedule.js';
@@ -38,6 +39,7 @@ const VIEWS = {
     finder: { render: renderFinder, title: 'Trade Finder' },
     critique: { render: renderCritique, title: 'Roster Check' },
     startsit: { render: renderStartSit, title: 'Start/Sit' },
+    waivers: { render: renderWaivers, title: 'Waiver Wire' },
     vegas: { render: renderVegas, title: 'Vegas' },
     power: { render: renderPower, title: 'Power Rankings' },
     rankings: { render: renderRankings, title: 'My Rankings' },

@@ -911,3 +911,19 @@ input::placeholder { color: var(--text-3); }
     border-bottom: 1px solid var(--line);
 }
 .table tr.row-bench td:first-child { color: var(--text-3); }
+
+/* --- Waiver wire -------------------------------------------------------- */
+.waiver-row { padding: var(--sp-3) 0; border-bottom: 1px solid var(--line-soft); }
+.waiver-row:last-child { border-bottom: 0; }
+/* The top recommendation in each group carries the spelled-out move, so it
+   gets a little weight to mark it as the one to read first. */
+.waiver-lead {
+    background: linear-gradient(90deg, var(--accent-glow), transparent 60%);
+    border-left: 2px solid var(--accent-dim);
+    margin: 0 calc(var(--sp-3) * -1);
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+}
+.waiver-why { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+.waiver-why li { font-size: 13px; color: var(--text-2); }
+.waiver-why li::marker { color: var(--text-3); }

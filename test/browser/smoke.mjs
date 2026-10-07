@@ -476,6 +476,45 @@ if (await addPlayerToSide(0)) {
     errors.push('trade: could not add a player to a side');
 }
 
+// --- Waiver wire -----------------------------------------------------------
+//
+// The recommendations used to be five rows in a FAAB panel saying "adds 1.2
+// pts/wk" and nothing else. This asserts the four things that were missing:
+// a reason, the trap warning, who to drop, and the move spelled out.
+{
+    await page.click('#tabs .tab[data-view="waivers"]');
+    await page.waitForTimeout(5000);
+
+    const text = (await page.textContent('#view')) || '';
+    if (/Could not build/.test(text)) errors.push('waivers: the view errored');
+    if (!/Scanned/.test(text)) errors.push('waivers: no summary tiles');
+
+    // Recommendations grouped by what kind of add each one is.
+    const groups = await page.$$eval('#view .section-head h2', (els) => els.map((e) => e.textContent.trim()));
+    const known = ['Must add', 'Starts for you', 'Stream this week', 'Stash for the breakout', 'Playoff schedule', 'Depth'];
+    if (!groups.some((g) => known.includes(g))) {
+        errors.push(`waivers: no role groups rendered, saw: ${groups.join(', ')}`);
+    }
+
+    // Every recommendation carries reasons, not just a number.
+    const rows = await page.$$eval('#view .waiver-row', (els) => els.length);
+    const whys = await page.$$eval('#view .waiver-why li', (els) => els.length);
+    if (!rows) errors.push('waivers: no recommendations at all');
+    if (whys < rows) errors.push(`waivers: ${rows} rows but only ${whys} reasons`);
+
+    // The drop side of the move, which is what makes it an action.
+    if (!/Cheapest to drop/.test(text)) errors.push('waivers: never says who to drop');
+    if (!/The move: add/.test(text)) errors.push('waivers: the move is not spelled out');
+    if (!/different players/.test(text)) {
+        errors.push('waivers: does not explain that lineup cost and trade value differ');
+    }
+
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`waivers: scrolls horizontally by ${o.scrolled}px`);
+    if (o.wide.length) errors.push(`waivers: overflows — ${o.wide.join(', ')}`);
+    console.log(`  waivers: ${rows} recommendations, ${whys} reasons, ${groups.length} sections`);
+}
+
 // --- Players-only mode, end to end -----------------------------------------
 //
 // The question this answers -- "who won this trade" -- used to require
@@ -565,8 +604,11 @@ if (await addPlayerToSide(0)) {
     if (hostileErrors.length) {
         errors.push(`private mode: page threw — ${[...new Set(hostileErrors)].slice(0, 2).join(' | ')}`);
     }
+    // Counted, not hardcoded: a new tab should not quietly fail this check,
+    // and a hardcoded 9 reported "10/9 tabs" the moment one was added.
+    const total = await hostile.$$eval('#tabs .tab', (ns) => ns.length);
     const enabled = await hostile.$$eval('#tabs .tab', (ns) => ns.filter((n) => !n.disabled).length);
-    if (enabled < 9) errors.push(`private mode: only ${enabled} of 9 tabs usable`);
+    if (enabled < total) errors.push(`private mode: only ${enabled} of ${total} tabs usable`);
 
     // And the app has to actually work, not just boot.
     let painted = 0;
@@ -584,7 +626,7 @@ if (await addPlayerToSide(0)) {
     if (!/not letting the page save|gone when you close/i.test(warned)) {
         errors.push('private mode: the app forgets everything and never says so');
     }
-    console.log(`  private mode (localStorage throws): booted, ${enabled}/9 tabs, ${painted}/4 views render, warns`);
+    console.log(`  private mode (localStorage throws): booted, ${enabled}/${total} tabs, ${painted}/4 views render, warns`);
     await hostile.close();
 }
 
