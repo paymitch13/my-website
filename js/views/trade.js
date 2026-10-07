@@ -14,6 +14,7 @@ import { byeConflicts } from '../schedule.js';
 import { formatValue, fairness } from '../tradevalue.js';
 import { offerUrl } from '../share.js';
 import { bidHistory, waiverTargets, estimateBid } from '../faab.js';
+import vacuumMode from './vacuum.js';
 import {
     banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, idpNotice, pickPlayer,
     playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
@@ -37,33 +38,71 @@ export default function renderTrade(app) {
         )
     );
 
-    const idp = idpNotice(app.league?.cfg);
-    if (idp) root.append(idp);
+    // Two questions, two modes.
+    //
+    // "Should I make this trade" needs a roster, a lineup and a schedule, and
+    // is the mode the app opens in. "Who won this trade" needs none of them --
+    // it gets asked about deals that already happened and about hypotheticals
+    // in other people's leagues, and forcing a roster onto it meant the only
+    // way to ask was to disconnect your league first.
+    const modeHost = el('div', {});
+    let mode = app.tradeMode === 'vacuum' || !connected ? 'vacuum' : 'league';
+
+    const modeBar = el(
+        'div',
+        { class: 'seg', 'aria-label': 'Calculator mode' },
+        ...[
+            ['league', 'My league', 'Roster fit, schedule and playoff odds'],
+            ['vacuum', 'Players only', 'Pure value — any players, any format'],
+        ].map(([id, label, hint]) =>
+            el(
+                'button',
+                {
+                    'data-mode': id,
+                    'aria-pressed': String(mode === id),
+                    title: hint,
+                    disabled: id === 'league' && !connected,
+                    onclick: () => {
+                        if (mode === id) return;
+                        app.tradeMode = id;
+                        app.render();
+                    },
+                },
+                label
+            )
+        )
+    );
+    root.append(el('div', { style: 'margin-bottom:16px' }, modeBar), modeHost);
 
     // A pasted link names the league it came from. Roster ids are meaningless
     // without it, so offer the one-click sync rather than showing an empty
     // calculator to somebody who followed a link about a specific deal.
     const linkedLeague = app.pendingOffer?.leagueId || null;
 
-    if (!connected) {
-        root.append(
-            linkedLeague
-                ? el(
-                      'div',
-                      { class: 'banner banner-warn' },
-                      el('span', { class: 'grow' }, 'This trade link is for a league you have not synced yet. Connect it to see roster fit, schedule and playoff odds for the deal.'),
-                      el('button', { class: 'btn btn-sm btn-primary', onclick: () => connectLeague(linkedLeague) }, 'Sync that league')
-                  )
-                : el(
-                      'div',
-                      { class: 'banner banner-warn' },
-                      el('span', { class: 'grow' }, 'Not connected to a league. You can still compare player values, but roster fit, schedule and playoff odds need a synced league.'),
-                      el('button', { class: 'btn btn-sm btn-primary', onclick: openSyncModal }, 'Connect Sleeper')
-                  )
-        );
-        root.append(quickMode(app));
+    if (mode === 'vacuum') {
+        if (!connected) {
+            modeHost.append(
+                linkedLeague
+                    ? el(
+                          'div',
+                          { class: 'banner banner-warn' },
+                          el('span', { class: 'grow' }, 'This trade link is for a league you have not synced yet. Connect it to see roster fit, schedule and playoff odds for the deal — or price the players below as they stand.'),
+                          el('button', { class: 'btn btn-sm btn-primary', onclick: () => connectLeague(linkedLeague) }, 'Sync that league')
+                      )
+                    : el(
+                          'div',
+                          { class: 'banner banner-warn' },
+                          el('span', { class: 'grow' }, 'Not connected to a league, so this is pure player value — set the format below and it will price any trade. Roster fit, schedule and playoff odds need a synced league.'),
+                          el('button', { class: 'btn btn-sm btn-primary', onclick: openSyncModal }, 'Connect Sleeper')
+                      )
+            );
+        }
+        modeHost.append(vacuumMode(app));
         return root;
     }
+
+    const idp = idpNotice(app.league?.cfg);
+    if (idp) root.append(idp);
 
     // Connected, but to a different league than the link describes. Silently
     // matching roster 3 against whatever roster 3 is here would render a deal
@@ -908,123 +947,3 @@ function lineupCard(app, side) {
 // Quick mode (no league connected)
 // ---------------------------------------------------------------------------
 
-function quickMode(app) {
-    const wrap = el('div', { class: 'card' });
-    const sideA = [];
-    const sideB = [];
-    const out = el('div', { style: 'margin-top:20px' });
-
-    const pool = () =>
-        sortBy(
-            Object.values(app.players)
-                .filter((p) => (app.rankings.get(p.id) ?? 999) < 900)
-                .map((p) => {
-                    const posRank = app.rankings.get(p.id);
-                    return { player: p, posRank, value: valuePlayer(p, posRank, app.ctx).value };
-                }),
-            (e) => e.value,
-            -1
-        );
-
-    async function add(list) {
-        // A player cannot be on both sides of a trade. Full mode enforces this
-        // structurally; quick mode has to do it explicitly.
-        const taken = new Set([...sideA, ...sideB].map((e) => e.player.id));
-        const chosen = await pickPlayer({
-            title: 'Add a player',
-            entries: pool().filter((e) => !taken.has(e.player.id)),
-            formatValue: (v) => formatValue(app.tradeValue(v)),
-        });
-        if (!chosen) return;
-        list.push(chosen);
-        paint();
-    }
-
-    function column(title, list) {
-        const zone = el('div', { class: `picklist${list.length ? '' : ' empty'}` });
-        if (!list.length) zone.append('Nobody selected yet');
-        for (const e of list) {
-            zone.append(
-                el(
-                    'div',
-                    { class: 'chip' },
-                    posBadge(e.player.pos),
-                    el('span', { class: 'grow' }, playerLink(e.player)),
-                    el('span', { class: 'num tiny', style: 'color:var(--accent)' }, formatValue(app.tradeValue(e.value))),
-                    el(
-                        'button',
-                        {
-                            class: 'x',
-                            onclick: () => {
-                                list.splice(list.indexOf(e), 1);
-                                paint();
-                            },
-                        },
-                        '✕'
-                    )
-                )
-            );
-        }
-        return el(
-            'div',
-            { class: 'side-panel' },
-            el('div', { class: 'tiny dim', style: 'margin-bottom:8px' }, title),
-            zone,
-            el('button', { class: 'btn btn-sm', style: 'margin-top:10px;width:100%', onclick: () => add(list) }, '+ Add player')
-        );
-    }
-
-    function paint() {
-        // Scaled, like everything else on screen. Summing raw points here and
-        // printing market values in the chips above put two different scales
-        // in one panel and made the split disagree with the pieces.
-        const va = sideA.reduce((s, e) => s + app.tradeValue(e.value), 0);
-        const vb = sideB.reduce((s, e) => s + app.tradeValue(e.value), 0);
-
-        wrap.replaceChildren(
-            el(
-                'div',
-                { class: 'trade-grid' },
-                column('SIDE A SENDS AWAY', sideA),
-                el('div', { class: 'trade-mid' }, el('div', { class: 'swap-arrows' }, '⇄')),
-                column('SIDE B SENDS AWAY', sideB)
-            ),
-            out
-        );
-
-        if (!sideA.length || !sideB.length) {
-            out.replaceChildren(el('p', { class: 'muted small', style: 'margin-top:16px' }, 'Add at least one player to each side.'));
-            return;
-        }
-
-        // Side A sends `sideA`, so Side A RECEIVES the value of sideB.
-        const receivesA = vb;
-        const receivesB = va;
-        const diff = receivesA - receivesB;
-        const pctGap = fairness(receivesA, receivesB).gap;
-        const label = pctGap < 0.07 ? 'Even' : `${diff > 0 ? 'Side A' : 'Side B'} wins the value`;
-        const tone = pctGap < 0.07 ? 'neutral' : pctGap < 0.2 ? 'warn' : 'bad';
-
-        out.replaceChildren(
-            el(
-                'div',
-                { class: `verdict tone-${tone}`, style: 'margin-top:20px' },
-                el('div', { class: 'label' }, label),
-                el(
-                    'div',
-                    { class: 'headline' },
-                    `Side A receives ${formatValue(receivesA)}, Side B receives ${formatValue(receivesB)} in trade value — a gap of ${round(pctGap * 100, 0)}%. This is the ledger only; connect a league to see whether either side can actually start these players.`
-                ),
-                el(
-                    'div',
-                    { class: 'meter' },
-                    el('i', { class: 'fill-a', style: `width:${(receivesA / total) * 100}%` }),
-                    el('i', { class: 'fill-b', style: `width:${(receivesB / total) * 100}%` })
-                )
-            )
-        );
-    }
-
-    paint();
-    return wrap;
-}

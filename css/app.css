@@ -849,3 +849,37 @@ input::placeholder { color: var(--text-3); }
 .vegas-cell .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-3); font-weight: 650; }
 .vegas-cell .v { font-size: 18px; font-weight: 700; margin-top: 2px; }
 .vegas-cell .d { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
+
+/* --- Players-only trade calculator ------------------------------------- */
+/* The format controls. These matter more here than anywhere else in the app:
+   with no roster to fit, format is the only thing left that moves a value. */
+.vac-format {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--sp-3);
+}
+.vac-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vac-field select { width: 100%; }
+.vac-field label { letter-spacing: 0.04em; }
+/* An editable side name, so a saved summary reads "Pay beat Dave" rather than
+   "Side A beat Side B". Styled to look like the label it replaces until it is
+   focused, so it does not read as a form to fill in. */
+.vac-name {
+    width: 100%;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    padding: 4px 6px;
+    margin: -4px -6px;
+    font: inherit;
+    font-weight: 650;
+    color: var(--text);
+}
+.vac-name:hover { border-color: var(--line); }
+.vac-name:focus { border-color: var(--accent-dim); background: var(--bg-1); outline: none; }
+.vac-ledger {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: var(--sp-3);
+    margin-top: var(--sp-3);
+}

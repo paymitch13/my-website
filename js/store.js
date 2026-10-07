@@ -186,12 +186,21 @@ export function cacheOutlook(season, { byes, schedule }) {
 // league, and a superflex snapshot must never be handed to a one-quarterback
 // one. Values move on a scale of days, so this is cached hard -- a fresh fetch
 // on every visit would be a lot of traffic to learn nothing.
-const MARKET_KEY = 'ffc:market:v1';
+// v2 holds SEVERAL shapes at once rather than one.
+//
+// The vacuum calculator lets a format be chosen -- superflex, TE premium, PPR,
+// team count -- and each of those is a different market. With a single slot,
+// flipping superflex on and off refetched the whole board every time, because
+// each shape evicted the other. Keyed by shape, with a small cap: a handful of
+// shapes is all anyone compares, and the payload is a few hundred kilobytes.
+const MARKET_KEY = 'ffc:market:v2';
 const MARKET_TTL = 12 * 60 * 60 * 1000;
+const MARKET_SHAPES = 6;
 
 export function loadCachedMarket(key) {
-    const cached = read(MARKET_KEY, null);
-    if (!cached || cached.key !== key) return null;
+    const all = read(MARKET_KEY, null);
+    const cached = all?.shapes?.[key];
+    if (!cached) return null;
     if (Date.now() - (cached.at || 0) > MARKET_TTL) return null;
     const byId = new Map(Object.entries(cached.byId || {}));
     if (!byId.size) return null;
@@ -199,12 +208,22 @@ export function loadCachedMarket(key) {
 }
 
 export function cacheMarket(key, snapshot) {
-    return write(MARKET_KEY, {
-        key,
+    const all = read(MARKET_KEY, null) || { shapes: {} };
+    const shapes = { ...(all.shapes || {}) };
+    shapes[key] = {
         at: snapshot.at || Date.now(),
         byId: Object.fromEntries(snapshot.byId),
         ranks: Object.fromEntries(snapshot.ranks),
-    });
+    };
+
+    // Oldest shapes out first once over the cap, so the one just fetched and
+    // the one being compared against both survive.
+    const keys = Object.keys(shapes);
+    if (keys.length > MARKET_SHAPES) {
+        const byAge = keys.sort((x, y) => (shapes[x].at || 0) - (shapes[y].at || 0));
+        for (const stale of byAge.slice(0, keys.length - MARKET_SHAPES)) delete shapes[stale];
+    }
+    return write(MARKET_KEY, { shapes });
 }
 
 // --- Power ranking history -------------------------------------------------

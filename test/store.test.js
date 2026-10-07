@@ -78,3 +78,50 @@ test('an old entry from the right week is served but flagged stale', () => {
     assert.ok(hit);
     assert.equal(hit.stale, true, 'callers refresh in the background on this flag');
 });
+
+// --- The market cache holds several league shapes --------------------------
+//
+// The vacuum calculator lets the format be chosen, and each format is a
+// different market. With one slot, flipping superflex on and off refetched the
+// whole board each time because each shape evicted the other.
+
+test('two league shapes can be cached at once', () => {
+    store.cacheMarket('12|1|0.5|redraft', { byId: new Map([['a', { id: 'a', value: 100 }]]), ranks: new Map([['a', 1]]) });
+    store.cacheMarket('12|2|0.5|redraft', { byId: new Map([['a', { id: 'a', value: 900 }]]), ranks: new Map([['a', 1]]) });
+
+    const single = store.loadCachedMarket('12|1|0.5|redraft');
+    const superflex = store.loadCachedMarket('12|2|0.5|redraft');
+    assert.ok(single, 'the first shape must survive caching the second');
+    assert.equal(single.byId.get('a').value, 100);
+    assert.equal(superflex.byId.get('a').value, 900);
+});
+
+test('a shape that was never cached reads as a miss, not as another shape', () => {
+    store.cacheMarket('12|1|0.5|redraft', { byId: new Map([['a', { id: 'a', value: 100 }]]), ranks: new Map() });
+    assert.equal(store.loadCachedMarket('10|1|1|dynasty'), null);
+});
+
+test('an expired shape is a miss', () => {
+    store.cacheMarket('k', { at: Date.now() - 13 * 60 * 60 * 1000, byId: new Map([['a', {}]]), ranks: new Map() });
+    assert.equal(store.loadCachedMarket('k'), null);
+});
+
+test('an empty snapshot is never served as a hit', () => {
+    store.cacheMarket('k', { byId: new Map(), ranks: new Map() });
+    assert.equal(store.loadCachedMarket('k'), null);
+});
+
+test('cached shapes are capped, evicting the oldest first', () => {
+    const now = Date.now();
+    for (let i = 0; i < 9; i++) {
+        store.cacheMarket(`shape${i}`, {
+            at: now + i * 1000,
+            byId: new Map([['a', { id: 'a', value: i }]]),
+            ranks: new Map(),
+        });
+    }
+    assert.equal(store.loadCachedMarket('shape0'), null, 'the oldest shape must be evicted');
+    const newest = store.loadCachedMarket('shape8');
+    assert.ok(newest, 'the newest shape must survive');
+    assert.equal(newest.byId.get('a').value, 8);
+});

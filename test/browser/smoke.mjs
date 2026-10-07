@@ -476,6 +476,62 @@ if (await addPlayerToSide(0)) {
     errors.push('trade: could not add a player to a side');
 }
 
+// --- Players-only mode, end to end -----------------------------------------
+//
+// The question this answers -- "who won this trade" -- used to require
+// disconnecting your league, and the fallback view it dropped you into threw a
+// ReferenceError on an undefined `total` the moment both sides had a player.
+// So the mode has to be driven, not just rendered: switched into while
+// connected, filled on both sides, and re-priced under a changed format.
+{
+    await page.click('#tabs .tab[data-view="trade"]');
+    await page.waitForTimeout(300);
+    await page.click('.seg button[data-mode="vacuum"]');
+    // The format change refetches the market for the new shape.
+    await page.waitForTimeout(1500);
+
+    let text = (await page.textContent('#view')) || '';
+    if (!/League format/.test(text)) errors.push('vacuum: no format controls');
+    if (!/Add at least one player to each side/.test(text)) {
+        errors.push('vacuum: an empty board does not say what to do');
+    }
+
+    const added = (await addPlayerToSide(0)) && (await addPlayerToSide(1));
+    if (!added) {
+        errors.push('vacuum: could not build a two-sided deal');
+    } else {
+        text = (await page.textContent('#view')) || '';
+        // A verdict, with a reason, and the honest limitation stated.
+        if (!/receives/.test(text)) errors.push('vacuum: no ledger after filling both sides');
+        if (!/who would win it today/.test(text)) {
+            errors.push('vacuum: does not disclose that prices are current rather than historical');
+        }
+        if (!/Copy summary/.test(text)) errors.push('vacuum: no way to take the verdict away');
+
+        // Format actually moves the numbers. Superflex roughly doubles a
+        // quarterback, so the priced board must not be identical afterwards.
+        const before = await page.$$eval('.chip .num', (els) => els.map((e) => e.textContent));
+        const qbSelect = await page.$('.vac-field:has-text("QUARTERBACKS") select');
+        if (!qbSelect) {
+            errors.push('vacuum: no superflex control');
+        } else {
+            await qbSelect.selectOption('sf');
+            await page.waitForTimeout(1800);
+            const after = await page.$$eval('.chip .num', (els) => els.map((e) => e.textContent));
+            if (JSON.stringify(before) === JSON.stringify(after)) {
+                errors.push('vacuum: switching to superflex changed no prices at all');
+            }
+            const shapeText = (await page.textContent('#view')) || '';
+            if (!/superflex/.test(shapeText)) errors.push('vacuum: the format in force is not stated');
+        }
+
+        const o = await overflowOf();
+        if (o.scrolled > 0) errors.push(`vacuum: scrolls horizontally by ${o.scrolled}px`);
+        if (o.wide.length) errors.push(`vacuum: overflows — ${o.wide.join(', ')}`);
+        console.log(`  players-only: verdict + ledger + format reprice, ${text.trim().length} chars`);
+    }
+}
+
 // --- Storage that refuses to work ------------------------------------------
 //
 // Safari in private mode, and any browser with site data blocked, makes
