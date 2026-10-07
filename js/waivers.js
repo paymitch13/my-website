@@ -40,25 +40,47 @@ import { outlookFor } from './outlook.js';
 import { sortBy, round } from './util.js';
 
 /** Roles a pickup can play, in the order they are worth reading. */
-export const ROLES = ['must-add', 'starter', 'streamer', 'stash', 'playoff', 'depth'];
+export const ROLES = [
+    'must-add', 'starter', 'opportunity', 'rising', 'stash', 'playoff', 'stream', 'depth',
+];
 
 export const ROLE_LABEL = {
     'must-add': 'Must add',
-    starter: 'Starts for you',
-    streamer: 'Stream this week',
+    starter: 'Starts for you now',
+    opportunity: 'Opportunity just opened',
+    rising: 'Rising in value',
     stash: 'Stash for the breakout',
     playoff: 'Playoff schedule',
+    stream: 'Good weekly option',
     depth: 'Depth',
 };
 
 export const ROLE_BLURB = {
-    'must-add': 'Improves your lineup now and the role is still growing.',
-    starter: 'Walks into your starting lineup this week.',
-    streamer: 'A one-week play on the matchup, not a long-term hold.',
+    'must-add': 'Improves your lineup now, and the role is still growing. Spend here.',
+    starter: 'Walks straight into your starting lineup this week.',
+    opportunity: 'Somebody ahead of him is hurt, so the touches are there to be taken.',
+    rising: 'Producing more than he was, with the usage to back it up.',
     stash: 'Not a starter yet. The usage says he is about to be.',
-    playoff: 'Worth a roster spot for weeks 15-17 specifically.',
+    playoff: 'Worth a roster spot for the fantasy playoff weeks specifically.',
+    stream: 'A one-week play on the matchup, not a long-term hold.',
     depth: 'Bench insurance — useful if somebody above him gets hurt.',
 };
+
+/**
+ * Which question a pickup answers.
+ *
+ * These are genuinely different decisions and they compete for different
+ * things. A season-long add is worth a permanent roster spot and real FAAB; a
+ * weekly stream is worth a dollar and the spot you will use again next week on
+ * somebody else. Ranking them together buries one in the other -- the streamed
+ * defense with a great matchup outranks the running back who will start for you
+ * in week 12, or the other way round, and either way the list is wrong for one
+ * of the two questions.
+ */
+export const HORIZONS = ['season', 'week'];
+const WEEKLY_ROLES = new Set(['stream']);
+/** Kickers and defenses are streamed by definition: nobody holds a third one. */
+const STREAM_POSITIONS = new Set(['K', 'DEF']);
 
 /** Lineup points per week below which an add is not a starter in any real sense. */
 const STARTER_GAIN = 1.0;
@@ -78,6 +100,9 @@ const DEPTH_GAIN = 0.1;
  * @param {Map}    [input.restOfSeason] team -> schedule strength
  * @param {Map}    [input.playoffs]     team -> playoff-week schedule strength
  * @param {object} [input.faab]         faabModel(), for a bid estimate
+ * @param {object} [input.players]      the whole player database, for spotting
+ *   an injured teammate ahead of a free agent on the depth chart
+ * @param {number} [input.budget]       the user's remaining FAAB
  * @param {number} [input.week]
  * @param {number} [input.limit]
  */
@@ -91,10 +116,18 @@ export function buildWaiverBoard({
     restOfSeason = null,
     playoffs = null,
     faab = null,
+    players = null,
+    budget = null,
     week = 1,
     limit = 24,
 }) {
     if (!cfg) return emptyBoard();
+
+    // Who is hurt, by team and position. Built once: for each free agent this
+    // answers "is somebody ahead of him on his own depth chart injured", which
+    // is the single most reliable source of a genuinely new opportunity and the
+    // thing experienced managers actually scan the wire for.
+    const injuredAhead = buildInjuryMap(players);
 
     const usageCache = new Map();
     // Indexed ONCE. `playerUsageSeries` rebuilds the whole season's index when
@@ -126,13 +159,16 @@ export function buildWaiverBoard({
             demand,
             schedule,
             playoffSchedule,
-            bid: faab ? estimateFrom(faab, fa) : null,
+            streamer: !!fa.streamer || STREAM_POSITIONS.has(player.pos),
+            opportunity: opportunityFor(player, injuredAhead, fa.posRank),
         };
 
         row.role = classify(row, { week });
+        row.horizon = horizonOf(row);
         row.reasons = reasonsFor(row, { cfg, week });
         row.score = rankScore(row);
         row.caution = cautionFor(row);
+        row.bid = suggestBid(row, faab, budget);
         rows.push(row);
     }
 
@@ -149,17 +185,38 @@ export function buildWaiverBoard({
     ).slice(0, 5);
 
     const fadeIds = new Set(fades.map((r) => r.player.id));
-    const targets = ranked.filter((r) => !fadeIds.has(r.player.id)).slice(0, limit);
+    const live = ranked.filter((r) => !fadeIds.has(r.player.id));
+
+    // Two lists, ranked separately.
+    //
+    // Mixing them buries one in the other: a streamed defence with a dream
+    // matchup outscores the running back who will start for you in week 12, or
+    // the other way round, and either way the single list is wrong for one of
+    // the two questions being asked.
+    const season = live.filter((r) => r.horizon === 'season').slice(0, limit);
+    const weekly = sortBy(
+        live.filter((r) => r.horizon === 'week'),
+        (r) => weeklyScore(r),
+        -1
+    ).slice(0, Math.max(8, Math.round(limit / 2)));
 
     return {
-        targets,
+        // `targets` is the season-long list. Kept under its original name
+        // because the FAAB panel and its tests consume it.
+        targets: season,
+        season,
+        weekly,
         fades,
         drops: dropCandidates(entries, cfg),
-        byRole: groupByRole(targets),
+        byRole: groupByRole(season),
+        byWeeklyPosition: groupByPosition(weekly),
     };
 }
 
-const emptyBoard = () => ({ targets: [], fades: [], drops: [], byRole: new Map() });
+const emptyBoard = () => ({
+    targets: [], season: [], weekly: [], fades: [], drops: [],
+    byRole: new Map(), byWeeklyPosition: new Map(),
+});
 
 function groupByRole(targets) {
     const map = new Map();
@@ -168,6 +225,100 @@ function groupByRole(targets) {
         if (list.length) map.set(role, list);
     }
     return map;
+}
+
+/**
+ * Weekly targets grouped by position, because a stream is a per-slot decision:
+ * nobody wants eight defences when the question is "who do I start at kicker".
+ */
+function groupByPosition(weekly) {
+    const map = new Map();
+    for (const pos of ['DEF', 'K', 'QB', 'RB', 'WR', 'TE']) {
+        const list = weekly.filter((r) => r.player.pos === pos);
+        if (list.length) map.set(pos, list);
+    }
+    return map;
+}
+
+/**
+ * Which question does this pickup answer?
+ *
+ * A kicker or a defence is a weekly decision by definition -- nobody holds a
+ * third one -- and so is anybody whose entire case is this week's matchup.
+ * Everything else competes for a permanent roster spot.
+ */
+function horizonOf(row) {
+    if (STREAM_POSITIONS.has(row.player.pos)) return 'week';
+    if (WEEKLY_ROLES.has(row.role)) return 'week';
+    return 'season';
+}
+
+/**
+ * Ordering for the weekly list, which is a different question from the
+ * season-long one: not "who will be good" but "who scores most THIS Sunday".
+ * So it leans on the week's environment and ignores the role trends that
+ * decide the season-long board.
+ */
+function weeklyScore(row) {
+    const ev = row.evaluation;
+    if (ev && !ev.hasGame) return -100;
+    // The adjusted weekly projection is the honest answer where we have one.
+    if (Number.isFinite(ev?.adjusted)) return ev.adjusted;
+    // Otherwise fall back to the environment multiplier over season-long ppg.
+    return (row.ppg ?? 0) * (ev?.multiplier ?? 1);
+}
+
+/**
+ * Who is hurt, keyed by team and position.
+ *
+ * The map holds the injured players at each team/position so a free agent can
+ * be checked against his own depth chart. Only designations that actually cost
+ * somebody playing time count: "Questionable" is a coin flip the player
+ * usually wins, and treating it as an opening would mark half the league as an
+ * opportunity every week.
+ */
+const COSTS_PLAYING_TIME = new Set(['Out', 'IR', 'Doubtful', 'PUP', 'Sus', 'NA']);
+
+function buildInjuryMap(players) {
+    const map = new Map();
+    if (!players) return map;
+    for (const p of Object.values(players)) {
+        if (!p?.injury || !p.team || !p.pos) continue;
+        if (!COSTS_PLAYING_TIME.has(p.injury)) continue;
+        const key = `${p.team}:${p.pos}`;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(p);
+    }
+    return map;
+}
+
+/**
+ * Is there an opening in front of this player?
+ *
+ * The test is an injured teammate at the same position who was AHEAD of him,
+ * because a hurt player behind him on the depth chart changes nothing. Rank is
+ * the proxy for depth order -- there is no public depth chart in any of these
+ * feeds -- which is imperfect but right far more often than it is wrong: the
+ * better-ranked back is the one taking the carries.
+ */
+function opportunityFor(player, injuredAhead, posRank) {
+    if (!player?.team || !player.pos) return null;
+    const hurt = injuredAhead.get(`${player.team}:${player.pos}`);
+    if (!hurt?.length) return null;
+
+    const mine = posRank ?? 9999;
+    const ahead = hurt.filter((h) => h.id !== player.id && (h.searchRank ?? 9999) < (player.searchRank ?? 9999));
+    if (!ahead.length) return null;
+
+    return {
+        players: ahead,
+        // Named, because "somebody is hurt" is not actionable and "Isiah Pacheco
+        // is out" is.
+        text:
+            `${ahead.map((h) => h.name).join(' and ')} ${ahead.length === 1 ? 'is' : 'are'} ` +
+            `${ahead[0].injury === 'IR' ? 'on IR' : ahead[0].injury.toLowerCase()}, which opens up work here.`,
+        mine,
+    };
 }
 
 /** Usage trend and touchdown dependence for one player, memoised per scan. */
@@ -212,22 +363,91 @@ function classify(row, { week }) {
     const { lineupGain, usage, evaluation, playoffSchedule } = row;
     const rising = !!usage?.rising;
 
+    // A kicker or a defence is a stream, whatever the numbers say. Nobody
+    // holds a second one, so classifying them as season-long starters would
+    // put them in competition for a roster spot they will never keep.
+    if (STREAM_POSITIONS.has(row.player.pos)) return 'stream';
+
+    // An opening in front of him outranks everything except already starting
+    // for you, because it is the one signal that is about to change the usage
+    // rather than describing usage that has already happened. This is what
+    // gets you the week ahead of the rest of the league.
+    if (row.opportunity && lineupGain < STARTER_GAIN) return 'opportunity';
+
     if (lineupGain >= STARTER_GAIN && rising) return 'must-add';
     if (lineupGain >= STARTER_GAIN) {
-        // A starter whose edge is entirely this week's matchup is a streamer,
+        // A starter whose edge is entirely this week's matchup is a stream,
         // however good the number looks. Calling that a season-long starter is
         // how managers end up holding a kicker-grade defence in week 12.
         const matchupDriven = (evaluation?.multiplier ?? 1) > 1.08 && (row.ppg ?? 0) < 9;
-        return matchupDriven ? 'streamer' : 'starter';
+        return matchupDriven ? 'stream' : 'starter';
     }
+
+    // Producing more AND seeing more work is a different thing from a role
+    // growing ahead of the box score, and it deserves its own name: this is
+    // the player whose value is climbing in front of everybody.
+    if (rising && (usage?.trend?.points?.change ?? 0) > 1) return 'rising';
     if (rising) return 'stash';
+
     // Playoff schedules only start mattering once they are close enough to
     // plan for. In week 3 a roster spot held for week 16 is a wasted one.
     if (week >= 8 && topQuartile(playoffSchedule)) return 'playoff';
-    if ((evaluation?.multiplier ?? 1) > 1.1 && evaluation?.hasGame) return 'streamer';
+    if ((evaluation?.multiplier ?? 1) > 1.1 && evaluation?.hasGame) return 'stream';
     if (lineupGain >= DEPTH_GAIN) return 'depth';
     return 'depth';
 }
+
+/**
+ * What to bid, and why that number.
+ *
+ * "$12" on its own is not advice -- it is a number with no scale attached.
+ * What makes it actionable is what it is a share OF: this league's own going
+ * rate, what anybody here has ever actually paid, and what you have left.
+ *
+ * A weekly stream is priced separately and deliberately cheaply. The going
+ * rate is fitted against season-long value, and a defence you will drop on
+ * Tuesday has almost none -- so the fit says $1 and the fit is right. Paying
+ * real money for a one-week rental is the most common way a FAAB budget gets
+ * wasted, so this says so rather than quietly quoting a season-long price.
+ */
+export function suggestBid(row, faab, budget = null) {
+    const streaming = row.horizon === 'week';
+
+    if (streaming) {
+        const note =
+            'A one-week rental. Bid the minimum — the roster spot comes back next Tuesday and so does the ' +
+            'decision, so anything more than a token is money spent twice.';
+        return { dollars: 1, minimum: true, capped: false, cap: null, note, ofBudget: null };
+    }
+
+    if (!faab?.usable || !(faab.rate > 0) || !(row.value > 0)) {
+        return null;
+    }
+
+    const raw = Math.max(1, Math.round(row.value / faab.rate));
+    // Never quote above what this league has actually paid: the rate is a line
+    // through a handful of points, and extrapolating past the observed range
+    // invents prices nobody here has ever seen.
+    const cap = faab.max ?? raw;
+    const dollars = Math.min(raw, Math.max(cap, 1));
+    const ofBudget = budget > 0 ? dollars / budget : null;
+
+    const bits = [];
+    if (faab.median) bits.push(`this league's median winning bid is $${faab.median}`);
+    if (raw > cap) bits.push(`nobody here has paid more than $${cap}`);
+    if (ofBudget !== null) bits.push(`${Math.round(ofBudget * 100)}% of your remaining budget`);
+
+    return {
+        dollars,
+        minimum: dollars <= 1,
+        capped: raw > cap,
+        cap,
+        ofBudget,
+        note: bits.length ? `${capitalize(bits[0])}${bits.length > 1 ? `; ${bits.slice(1).join('; ')}` : ''}.` : null,
+    };
+}
+
+const capitalize = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /**
  * One composite number for ordering.
@@ -317,6 +537,36 @@ function cautionFor(row) {
 function reasonsFor(row, { cfg, week }) {
     const out = [];
     const t = row.usage?.trend;
+
+    // A stream is judged on this week and nothing else, so leading with its
+    // season-long lineup contribution would be answering another question.
+    if (row.horizon === 'week') {
+        const ev = row.evaluation;
+        if (Number.isFinite(ev?.adjusted)) {
+            out.push({
+                kind: 'week',
+                tone: 'good',
+                text: `Projects ${round(ev.adjusted, 1)} points this week${ev.opponent ? ` against ${ev.opponent}` : ''}.`,
+            });
+        }
+        const top = (ev?.factors || [])[0];
+        if (top?.detail) out.push({ kind: 'matchup', tone: 'good', text: top.detail });
+        if (ev && !ev.hasGame) {
+            out.push({ kind: 'matchup', tone: 'bad', text: ev.onBye ? 'On bye this week.' : 'No game this week.' });
+        }
+        if (row.player.injury) {
+            out.push({ kind: 'health', tone: 'bad', text: `Listed ${row.player.injury}.` });
+        }
+        return out.slice(0, 4);
+    }
+
+    // An opening ahead of him leads, because it is the only reason here that
+    // is about to change the usage rather than describing usage already
+    // banked -- and it is why this player is worth having before the rest of
+    // the league works it out. Everything else is context for it.
+    if (row.opportunity) {
+        out.push({ kind: 'opportunity', tone: 'good', text: row.opportunity.text });
+    }
 
     if (row.lineupGain >= STARTER_GAIN) {
         out.push({
@@ -460,14 +710,6 @@ export function dropCandidates(entries, cfg, limit = 5) {
     // players who are equally irrelevant this week, the one with no future
     // goes first.
     return sortBy(rows, (r) => r.cost * 1000 + r.value).slice(0, limit);
-}
-
-/** A bid, in the currency this league actually bids in. */
-function estimateFrom(faab, fa) {
-    if (!faab?.usable || !(fa.value > 0) || !(faab.rate > 0)) return null;
-    const dollars = Math.max(1, Math.round(fa.value / faab.rate));
-    const cap = faab.max ?? dollars;
-    return { dollars: Math.min(dollars, Math.max(cap, 1)), capped: dollars > cap, cap };
 }
 
 /**

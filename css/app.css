@@ -927,3 +927,8 @@ input::placeholder { color: var(--text-3); }
 .waiver-why { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 3px; }
 .waiver-why li { font-size: 13px; color: var(--text-2); }
 .waiver-why li::marker { color: var(--text-3); }
+
+/* Weekly streams: a tighter row than a season-long recommendation, because
+   there is one question and padding it would imply a hold this is not. */
+.stream-row { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.stream-row:last-child { border-bottom: 0; }

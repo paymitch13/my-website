@@ -153,7 +153,17 @@ export const app = {
      * board. This is what FAAB actually buys, so it is what cash is priced
      * against before the league has bid enough to measure a rate directly.
      */
-    freeAgentEntries({ limit = 60 } = {}) {
+    /**
+     * @param {object} [opts]
+     * @param {number} [opts.limit]
+     * @param {boolean} [opts.kickersAndDefenses] Include kickers and team
+     *   defenses. Off by default because they carry almost no season-long
+     *   trade value, which is what this list was originally for -- pricing
+     *   FAAB. But they are the two most-streamed positions in fantasy, and
+     *   excluding them meant the waiver tool could not answer the most routine
+     *   waiver question there is: who do I stream at defense this week.
+     */
+    freeAgentEntries({ limit = 60, kickersAndDefenses = false } = {}) {
         if (!this.league || !this.players) return [];
         const rostered = new Set();
         for (const t of this.league.teams) for (const p of t.players) rostered.add(p.id);
@@ -165,10 +175,14 @@ export const app = {
             // Unranked players are the long tail of the database -- practice
             // squads and retirees -- not waiver targets.
             if (rank === undefined || rank >= 900) continue;
-            if (player.pos === 'K' || player.pos === 'DEF') continue;
+            const streamer = player.pos === 'K' || player.pos === 'DEF';
+            if (streamer && !kickersAndDefenses) continue;
             const v = valuePlayer(player, rank, this.ctx);
-            if (v.value <= 0) continue;
-            out.push({ player, posRank: rank, score: v.effectivePpg, value: v.value, detail: v });
+            // A streamed defense routinely prices at zero season-long value
+            // and is still the right add for one week, so the value floor only
+            // applies to the positions the floor was written for.
+            if (v.value <= 0 && !streamer) continue;
+            out.push({ player, posRank: rank, score: v.effectivePpg, value: v.value, detail: v, streamer });
         }
         return sortBy(out, (e) => e.value, -1).slice(0, limit);
     },

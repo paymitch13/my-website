@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildWaiverBoard, dropCandidates, ROLE_LABEL, ROLES } from '../js/waivers.js';
+import { buildWaiverBoard, dropCandidates, suggestBid, ROLE_LABEL, ROLES, HORIZONS } from '../js/waivers.js';
 import { normalizeLeague, defaultRosterPositions, normalizeScoring } from '../js/league.js';
 
 const cfg = normalizeLeague({
@@ -49,12 +49,17 @@ const fa = (id, pos, points, value = points * 40) => ({
  * breakout signal the whole module is built to notice.
  */
 function weeklyStats(id, weeks, opts = {}) {
-    const { ramp = false, tdHeavy = false, shrinking = false } = opts;
+    const { ramp = false, tdHeavy = false, shrinking = false, flatPoints = false } = opts;
     const map = new Map();
     for (let w = 1; w <= weeks; w++) {
         const t = (w - 1) / Math.max(1, weeks - 1);
         const snap = shrinking ? 0.8 - 0.4 * t : ramp ? 0.25 + 0.5 * t : 0.5;
         const targets = shrinking ? 9 - 5 * t : ramp ? 2 + 7 * t : 5;
+        // `flatPoints` is the stash shape specifically: the role grows while
+        // the box score does not. That is a different player from one whose
+        // usage AND production are both climbing, and the two now classify
+        // differently, so the fixture has to be able to express both.
+        const yards = flatPoints ? 45 : tdHeavy ? 20 : Math.round(targets * 9);
         map.set(w, [
             {
                 player_id: id,
@@ -62,8 +67,13 @@ function weeklyStats(id, weeks, opts = {}) {
                     off_snp: Math.round(snap * 60),
                     tm_off_snp: 60,
                     rec_tgt: targets,
-                    rec: Math.round(targets * 0.65),
-                    rec_yd: tdHeavy ? 20 : Math.round(targets * 9),
+                    // Receptions are held flat too under `flatPoints`: they
+                    // score in PPR, so ramping them kept total points rising
+                    // even with yards pinned. The shape being described is a
+                    // player seeing more snaps and more targets without
+                    // converting them yet.
+                    rec: flatPoints ? 3 : Math.round(targets * 0.65),
+                    rec_yd: yards,
                     rec_td: tdHeavy ? 1 : 0,
                     rush_att: 0,
                     gp: 1,
@@ -134,13 +144,14 @@ test('a rising role is recognised and said out loud', () => {
     );
 });
 
-test('a player who does not crack the lineup but whose role is growing is a stash', () => {
+test('a player whose role is growing ahead of the box score is a stash', () => {
     const board = buildWaiverBoard({
         cfg,
         entries: roster(),
         // 4 points a week cannot start on this roster.
         freeAgents: [fa('prospect', 'WR', 4)],
-        weeklyStats: weeklyStats('prospect', 6, { ramp: true }),
+        // Usage up, production flat: the role is arriving before the results.
+        weeklyStats: weeklyStats('prospect', 6, { ramp: true, flatPoints: true }),
         week: 7,
     });
     assert.equal(board.targets[0].role, 'stash');
@@ -467,4 +478,217 @@ test('three games is not enough history to call something a trend', () => {
         weeklyStats: weeklyStats('thin', 4, { ramp: true }), week: 5,
     });
     assert.ok(four.targets[0].usage, 'four games is enough for both halves to average two');
+});
+
+// --- Season-long and weekly are different questions ------------------------
+//
+// They compete for different things. A season-long add is worth a permanent
+// roster spot and real FAAB; a weekly stream is worth a dollar and a spot you
+// will reuse next week on somebody else. Ranking them together buries one in
+// the other.
+
+test('kickers and defenses are weekly streams, never season-long holds', () => {
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [fa('dst', 'DEF', 9), fa('kicker', 'K', 9), fa('te', 'TE', 13)],
+        weekEval: new Map([
+            ['dst', { hasGame: true, opponent: 'CAR', adjusted: 11, multiplier: 1.2, factors: [{ kind: 'vegas', detail: 'Opponent implied for 15.5 points.' }] }],
+            ['kicker', { hasGame: true, opponent: 'NYJ', adjusted: 9, multiplier: 1.1, factors: [] }],
+            ['te', { hasGame: true, opponent: 'SF', adjusted: 13, multiplier: 1, factors: [] }],
+        ]),
+        week: 6,
+    });
+
+    const weeklyIds = board.weekly.map((r) => r.player.id);
+    assert.ok(weeklyIds.includes('dst'), 'a defense belongs in the weekly list');
+    assert.ok(weeklyIds.includes('kicker'), 'so does a kicker');
+    assert.ok(!board.season.some((r) => ['dst', 'kicker'].includes(r.player.id)),
+        'neither should compete for a season-long roster spot');
+    assert.ok(board.season.some((r) => r.player.id === 'te'), 'the tight end is the season-long add');
+});
+
+test('the weekly list is ranked on this week, not on the season', () => {
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [fa('meh', 'DEF', 12), fa('spot', 'DEF', 6)],
+        weekEval: new Map([
+            // Better season-long player, ordinary matchup.
+            ['meh', { hasGame: true, opponent: 'SF', adjusted: 7, multiplier: 1, factors: [] }],
+            // Worse player, dream matchup. For ONE week he is the better start.
+            ['spot', { hasGame: true, opponent: 'CAR', adjusted: 14, multiplier: 1.4, factors: [{ kind: 'vegas', detail: 'Opponent implied for 14 points.' }] }],
+        ]),
+        week: 6,
+    });
+    assert.equal(board.weekly[0].player.id, 'spot');
+});
+
+test('a stream’s reasons are about this week, not its season-long role', () => {
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [fa('dst', 'DEF', 8)],
+        weekEval: new Map([
+            ['dst', { hasGame: true, opponent: 'CAR', adjusted: 12, multiplier: 1.3, factors: [{ kind: 'vegas', detail: 'Opponent implied for 14.5 points.' }] }],
+        ]),
+        week: 6,
+    });
+    const row = board.weekly[0];
+    assert.match(row.reasons[0].text, /12 points this week against CAR/);
+    assert.ok(!row.reasons.some((r) => /starting lineup right now/.test(r.text)),
+        'a one-week rental must not be sold on its season-long lineup contribution');
+});
+
+test('a weekly stream is never ranked without a game', () => {
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [fa('bye', 'DEF', 14), fa('plays', 'DEF', 7)],
+        weekEval: new Map([
+            ['bye', { hasGame: false, onBye: true, multiplier: 1, factors: [] }],
+            ['plays', { hasGame: true, opponent: 'CAR', adjusted: 8, multiplier: 1, factors: [] }],
+        ]),
+        week: 6,
+    });
+    assert.equal(board.weekly[0].player.id, 'plays', 'a defense on bye cannot be this week’s stream');
+});
+
+test('horizons are the two documented ones and nothing else', () => {
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [fa('a', 'TE', 13), fa('b', 'DEF', 9), fa('c', 'WR', 2)],
+    });
+    for (const r of [...board.season, ...board.weekly]) {
+        assert.ok(HORIZONS.includes(r.horizon), `${r.player.id} has horizon ${r.horizon}`);
+    }
+});
+
+// --- An opening in front of him --------------------------------------------
+
+test('an injured teammate ahead of him is spotted and named', () => {
+    // The most reliable source of a genuinely new opportunity, and the thing
+    // experienced managers actually scan the wire for.
+    const players = {
+        starter: { id: 'starter', name: 'Hurt Starter', pos: 'RB', team: 'KC', injury: 'Out', searchRank: 20 },
+        backup: { id: 'backup', name: 'The Backup', pos: 'RB', team: 'KC', injury: null, searchRank: 200 },
+    };
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [{ player: players.backup, posRank: 60, value: 120, score: 4 }],
+        players,
+        week: 6,
+    });
+    const row = board.season[0];
+    assert.ok(row.opportunity, 'the opening must be detected');
+    assert.equal(row.role, 'opportunity');
+    assert.match(row.reasons[0].text, /Hurt Starter is out/);
+});
+
+test('an injured player BEHIND him on the depth chart changes nothing', () => {
+    const players = {
+        starter: { id: 'starter', name: 'The Starter', pos: 'RB', team: 'KC', injury: null, searchRank: 20 },
+        hurtBackup: { id: 'hurtBackup', name: 'Hurt Backup', pos: 'RB', team: 'KC', injury: 'Out', searchRank: 300 },
+    };
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [{ player: players.starter, posRank: 20, value: 400, score: 8 }],
+        players,
+        week: 6,
+    });
+    assert.equal(board.season[0].opportunity, null);
+});
+
+test('a teammate at another position is not an opening', () => {
+    const players = {
+        wr: { id: 'wr', name: 'Hurt Receiver', pos: 'WR', team: 'KC', injury: 'Out', searchRank: 10 },
+        rb: { id: 'rb', name: 'A Back', pos: 'RB', team: 'KC', injury: null, searchRank: 200 },
+    };
+    const board = buildWaiverBoard({
+        cfg, entries: roster(),
+        freeAgents: [{ player: players.rb, posRank: 60, value: 120, score: 4 }],
+        players, week: 6,
+    });
+    assert.equal(board.season[0].opportunity, null);
+});
+
+test('a designation that does not cost playing time is not an opening', () => {
+    // "Questionable" is a coin flip the player usually wins. Treating it as an
+    // opening would mark half the league as an opportunity every week.
+    const players = {
+        starter: { id: 'starter', name: 'Maybe Hurt', pos: 'RB', team: 'KC', injury: 'Questionable', searchRank: 20 },
+        backup: { id: 'backup', name: 'The Backup', pos: 'RB', team: 'KC', injury: null, searchRank: 200 },
+    };
+    const board = buildWaiverBoard({
+        cfg, entries: roster(),
+        freeAgents: [{ player: players.backup, posRank: 60, value: 120, score: 4 }],
+        players, week: 6,
+    });
+    assert.equal(board.season[0].opportunity, null);
+});
+
+test('no player database means no opportunity claims, not a crash', () => {
+    const board = buildWaiverBoard({ cfg, entries: roster(), freeAgents: [fa('x', 'TE', 13)] });
+    assert.equal(board.season[0].opportunity, null);
+});
+
+// --- What to bid -----------------------------------------------------------
+
+test('a weekly stream is priced as a rental, whatever the model says', () => {
+    // The going rate is fitted against season-long value, and a defense you
+    // will drop on Tuesday has almost none. Paying real money for a one-week
+    // rental is the most common way a budget gets wasted.
+    const bid = suggestBid({ horizon: 'week', value: 900 }, { usable: true, rate: 10, max: 80, median: 12 }, 100);
+    assert.equal(bid.dollars, 1);
+    assert.equal(bid.minimum, true);
+    assert.match(bid.note, /one-week rental/);
+});
+
+test('a season-long bid cites the league’s own going rate', () => {
+    const bid = suggestBid(
+        { horizon: 'season', value: 800 },
+        { usable: true, rate: 40, max: 60, median: 14 },
+        100
+    );
+    assert.equal(bid.dollars, 20);
+    assert.match(bid.note, /median winning bid is \$14/);
+    assert.match(bid.note, /20% of your remaining budget/);
+});
+
+test('a bid is never quoted above anything this league has paid', () => {
+    const bid = suggestBid(
+        { horizon: 'season', value: 5000 },
+        { usable: true, rate: 40, max: 55, median: 14 },
+        200
+    );
+    assert.equal(bid.dollars, 55);
+    assert.equal(bid.capped, true);
+    assert.match(bid.note, /nobody here has paid more than \$55/);
+});
+
+test('an unmeasured league gets no invented price', () => {
+    assert.equal(suggestBid({ horizon: 'season', value: 800 }, null, 100), null);
+    assert.equal(suggestBid({ horizon: 'season', value: 800 }, { usable: false, rate: 0 }, 100), null);
+});
+
+test('the share of budget is omitted when the budget is unknown', () => {
+    const bid = suggestBid({ horizon: 'season', value: 800 }, { usable: true, rate: 40, max: 60, median: 14 }, null);
+    assert.equal(bid.ofBudget, null);
+    assert.ok(!/budget/.test(bid.note));
+});
+
+test('a rising player whose production is climbing too gets its own label', () => {
+    const board = buildWaiverBoard({
+        cfg,
+        entries: roster(),
+        freeAgents: [fa('breakout', 'WR', 5)],
+        // Usage AND points climbing: value is going up in front of everybody.
+        weeklyStats: weeklyStats('breakout', 6, { ramp: true }),
+        week: 7,
+    });
+    assert.equal(board.season[0].role, 'rising');
+    assert.equal(ROLE_LABEL.rising, 'Rising in value');
 });

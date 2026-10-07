@@ -91,7 +91,10 @@ async function build(app) {
 
     // A wider pool than the FAAB panel's, because this page is the one whose
     // job is to find the name nobody has noticed.
-    const freeAgents = app.freeAgentEntries({ limit: 160 });
+    // Kickers and defenses included: they are the two most-streamed positions
+    // in fantasy, and leaving them out meant this page could not answer the
+    // most routine waiver question there is.
+    const freeAgents = app.freeAgentEntries({ limit: 200, kickersAndDefenses: true });
 
     // This week's environment for each candidate. Only the ones we will
     // actually show are worth evaluating, so the pool is trimmed first by
@@ -140,6 +143,8 @@ async function build(app) {
         restOfSeason: app.restOfSeason || null,
         playoffs,
         faab: app.faab,
+        players: app.players,
+        budget: team.faabRemaining ?? null,
         week: currentWeek,
         limit: 24,
     });
@@ -164,13 +169,20 @@ async function build(app) {
     const history = bidHistory(app.faab);
     const mustAdds = board.byRole.get('must-add')?.length ?? 0;
     const starters = board.byRole.get('starter')?.length ?? 0;
+    const openings = board.byRole.get('opportunity')?.length ?? 0;
 
     wrap.append(
         el(
             'div',
             { class: 'tiles' },
             tile('Worth adding', mustAdds + starters, 'would start for you this week', mustAdds ? 'good' : ''),
-            tile('Scanned', freeAgents.length, 'available players checked against your lineup'),
+            tile(
+                'Openings',
+                openings,
+                openings ? 'somebody ahead of them is hurt' : 'no new injury openings on the wire',
+                openings ? 'good' : ''
+            ),
+            tile('Streams', board.weekly.length, 'one-week plays at every position'),
             tile(
                 'Traps flagged',
                 board.fades.length,
@@ -260,18 +272,68 @@ async function build(app) {
         );
     }
 
-    for (const [role, rows] of board.byRole) {
+    if (board.season.length) {
         wrap.append(
             el(
                 'div',
                 { class: 'section-head' },
-                el('h2', {}, ROLE_LABEL[role]),
-                el('span', { class: 'hint' }, ROLE_BLURB[role])
+                el('h2', {}, 'Season-long targets'),
+                el('span', { class: 'hint' }, 'worth a permanent roster spot and real money')
             )
         );
+    }
+
+    for (const [role, rows] of board.byRole) {
         const card = el('div', { class: 'card' });
+        card.append(
+            el(
+                'div',
+                { class: 'row', style: 'justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap' },
+                el('h3', { style: 'margin:0' }, ROLE_LABEL[role]),
+                el('span', { class: 'tiny dim' }, `${rows.length}`)
+            ),
+            el('p', { class: 'small muted', style: 'margin:4px 0 10px' }, ROLE_BLURB[role])
+        );
         rows.forEach((row, i) => card.append(targetRow(app, row, board, i === 0)));
         wrap.append(card);
+    }
+
+    // --- Weekly streams ------------------------------------------------------
+    //
+    // A separate question with a separate ranking. Season-long value decides
+    // nothing here: the only thing that matters is who scores most this Sunday,
+    // and the roster spot comes back on Tuesday.
+    if (board.weekly.length) {
+        wrap.append(
+            el(
+                'div',
+                { class: 'section-head' },
+                el('h2', {}, `Weekly streams — week ${currentWeek}`),
+                el('span', { class: 'hint' }, 'one-week plays, ranked on this week only')
+            )
+        );
+        wrap.append(
+            el(
+                'div',
+                { class: 'card' },
+                el(
+                    'p',
+                    { class: 'small muted', style: 'margin-top:0' },
+                    'Bid the minimum on these. The going rate is fitted against season-long value, and a defense ',
+                    'you will drop on Tuesday has almost none — so paying real money for a one-week rental spends ',
+                    'the same budget twice.'
+                ),
+                ...[...board.byWeeklyPosition].flatMap(([pos, rows]) => [
+                    el(
+                        'div',
+                        { class: 'row', style: 'gap:8px;margin:14px 0 4px;align-items:baseline' },
+                        posBadge(pos),
+                        el('span', { class: 'tiny dim' }, POS_STREAM_NOTE[pos] || '')
+                    ),
+                    ...rows.map((row) => streamRow(row)),
+                ])
+            )
+        );
     }
 
     // --- Who to drop --------------------------------------------------------
@@ -350,7 +412,7 @@ function targetRow(app, row, board, lead) {
                 row.lineupGain >= 0.1
                     ? tag(`${row.lineupGain > 0 ? '+' : ''}${round(row.lineupGain, 1)} pts/wk`, row.lineupGain >= 1 ? 'good' : '')
                     : null,
-                bid ? tag(`~$${bid.dollars}${bid.capped ? '+' : ''}`, 'accent') : null,
+                bid ? tag(`bid $${bid.dollars}${bid.capped ? '+' : ''}`, 'accent') : null,
                 row.demand > 0 ? tag(`${compact(row.demand)} adds`, row.demand >= 5000 ? 'warn' : '') : null,
                 row.evaluation?.hasGame && row.evaluation.opponent
                     ? tag(`vs ${row.evaluation.opponent}`, '')
@@ -367,6 +429,10 @@ function targetRow(app, row, board, lead) {
             )
         ),
         row.caution ? el('p', { class: 'small warn', style: 'margin:6px 0 0' }, row.caution.text) : null,
+        // What the number is a share OF. "$12" alone is a number with no scale
+        // attached; what makes it advice is this league's own going rate and
+        // what is left in the budget.
+        bid?.note ? el('p', { class: 'tiny dim', style: 'margin:4px 0 0' }, bid.note) : null,
         // The actual move, spelled out, for the top recommendation in each
         // group -- repeating it on every row would be noise.
         lead && drop
@@ -383,6 +449,43 @@ function targetRow(app, row, board, lead) {
             : null
     );
 }
+
+/**
+ * One weekly stream. Deliberately leaner than a season-long row: there is one
+ * question ("does he score this Sunday") and padding it with role trends would
+ * imply a hold this is not.
+ */
+function streamRow(row) {
+    const ev = row.evaluation;
+    return el(
+        'div',
+        { class: 'stream-row' },
+        el(
+            'div',
+            { class: 'row', style: 'gap:8px;align-items:center;min-width:0' },
+            el('span', { class: 'grow ellipsis', style: 'min-width:0' }, playerLink(row.player)),
+            ev?.hasGame && ev.opponent
+                ? el('span', { class: 'tiny dim nowrap' }, `vs ${ev.opponent}`)
+                : el('span', { class: 'tiny warn nowrap' }, ev?.onBye ? 'bye' : 'no game'),
+            Number.isFinite(ev?.adjusted)
+                ? el('span', { class: 'num small', style: 'min-width:46px;text-align:right' }, round(ev.adjusted, 1))
+                : el('span', { class: 'num small dim', style: 'min-width:46px;text-align:right' }, '—')
+        ),
+        row.reasons.find((r) => r.kind === 'matchup')
+            ? el('div', { class: 'tiny dim', style: 'margin-top:2px' }, row.reasons.find((r) => r.kind === 'matchup').text)
+            : null
+    );
+}
+
+/** Why anybody streams this position at all. */
+const POS_STREAM_NOTE = {
+    DEF: 'ranked by the opponent’s implied total — a defense is a bet against one offense',
+    K: 'ranked by his own offense’s implied total',
+    QB: 'a one-week fill-in, usually for a bye or an injury',
+    RB: 'matchup-driven only — a season-long back would be above',
+    WR: 'matchup-driven only',
+    TE: 'matchup-driven only',
+};
 
 /** 42,000 -> 42k, because a waiver card is not a spreadsheet. */
 const compact = (n) =>

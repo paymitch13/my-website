@@ -487,13 +487,35 @@ if (await addPlayerToSide(0)) {
 
     const text = (await page.textContent('#view')) || '';
     if (/Could not build/.test(text)) errors.push('waivers: the view errored');
-    if (!/Scanned/.test(text)) errors.push('waivers: no summary tiles');
+    if (!/Streams/.test(text)) errors.push('waivers: no summary tiles');
+
+    // Season-long and weekly are separate answers, ranked separately.
+    const sections = await page.$$eval('#view .section-head h2', (els) => els.map((e) => e.textContent.trim()));
+    if (!sections.some((g) => /Season-long targets/.test(g))) {
+        errors.push(`waivers: no season-long section, saw: ${sections.join(', ')}`);
+    }
+    if (!sections.some((g) => /Weekly streams/.test(g))) {
+        errors.push(`waivers: no weekly streams section, saw: ${sections.join(', ')}`);
+    }
 
     // Recommendations grouped by what kind of add each one is.
-    const groups = await page.$$eval('#view .section-head h2', (els) => els.map((e) => e.textContent.trim()));
-    const known = ['Must add', 'Starts for you', 'Stream this week', 'Stash for the breakout', 'Playoff schedule', 'Depth'];
+    const groups = await page.$$eval('#view .card h3', (els) => els.map((e) => e.textContent.trim()));
+    const known = ['Must add', 'Starts for you now', 'Opportunity just opened', 'Rising in value',
+        'Stash for the breakout', 'Playoff schedule', 'Good weekly option', 'Depth'];
     if (!groups.some((g) => known.includes(g))) {
         errors.push(`waivers: no role groups rendered, saw: ${groups.join(', ')}`);
+    }
+
+    // Kickers and defenses have to be streamable. They were excluded from the
+    // free agent pool entirely, so the page could not answer the most routine
+    // waiver question there is.
+    const streamRows = await page.$$eval('#view .stream-row', (els) => els.length);
+    if (!streamRows) errors.push('waivers: no weekly stream rows');
+    if (!/a defense is a bet against one offense/.test(text)) {
+        errors.push('waivers: defenses are not streamable, so K/DEF are still excluded from the pool');
+    }
+    if (!/Bid the minimum/.test(text)) {
+        errors.push('waivers: does not warn that streams should be bid at the minimum');
     }
 
     // Every recommendation carries reasons, not just a number.
@@ -512,7 +534,7 @@ if (await addPlayerToSide(0)) {
     const o = await overflowOf();
     if (o.scrolled > 0) errors.push(`waivers: scrolls horizontally by ${o.scrolled}px`);
     if (o.wide.length) errors.push(`waivers: overflows — ${o.wide.join(', ')}`);
-    console.log(`  waivers: ${rows} recommendations, ${whys} reasons, ${groups.length} sections`);
+    console.log(`  waivers: ${rows} season rows, ${streamRows} streams, ${whys} reasons, ${groups.length} role groups`);
 }
 
 // --- Players-only mode, end to end -----------------------------------------
