@@ -28,7 +28,7 @@
 //      into the counterparty's opinion of him, so ranking a starter low made
 //      the search decide the league had no use for him.
 
-import { buildEntries, buildNeutralEntries, evaluateTrade, createEvalCache, marketPrice } from './trade.js';
+import { buildEntries, buildNeutralEntries, evaluateTrade, createEvalCache, priceOf } from './trade.js';
 import { optimizeLineup } from './lineup.js';
 import { buildLeagueNeeds, matchingPositions, relativeMatches, biggestNeed, biggestSurplus } from './needs.js';
 import { fairness } from './tradevalue.js';
@@ -92,8 +92,13 @@ export async function findTrades(input) {
     //
     // Market, on both sides, everywhere. What I think of my own player decides
     // whether I WANT the deal; it never decides what he costs.
-    const price = (entry) => scale(marketPrice(entry, ctx));
-    const priceOf = (side) => sum(side, price);
+    // Market price where the market has one, the replacement curve otherwise:
+    // see `priceOf`. The distinction matters most for the pieces a package is
+    // balanced WITH, which are usually bench players -- priced through the
+    // curve they were worth nothing, so the search could not use them to close
+    // a ledger gap and quietly behaved as though a roster held nine assets.
+    const price = (entry) => priceOf(entry, ctx, scale);
+    const priceSide = (side) => sum(side, price);
 
     // --- Which board values a player once he changes hands -------------------
     //
@@ -297,8 +302,8 @@ export async function findTrades(input) {
         // made the ledger say I was giving up more than I was, and the search
         // rejected deals that were fine. What I think of him decides whether I
         // want the trade, never whether it is even.
-        const valueIn = priceOf(gets);
-        const valueOut = priceOf(gives);
+        const valueIn = priceSide(gets);
+        const valueOut = priceSide(gives);
         const split = fairness(valueIn, valueOut);
 
         // Lopsided on value is lopsided however well it fits a lineup slot.
@@ -426,7 +431,7 @@ export async function findTrades(input) {
 
         if (shopping) {
             // The give side is settled, so the search is over what comes back.
-            const asking = priceOf(offerEntries);
+            const asking = priceSide(offerEntries);
 
             for (const target of targets) {
                 const tv = price(target);
@@ -576,7 +581,7 @@ export async function findTrades(input) {
             -1
         ).slice(0, 12);
 
-        const targetValue = priceOf(wantEntries);
+        const targetValue = priceSide(wantEntries);
 
         // Minimal packages only.
         //
@@ -601,7 +606,7 @@ export async function findTrades(input) {
             // Overpaying badly is a signal, not a result. If my package is
             // worth far more than the man I am chasing, the realistic version
             // of the deal has something coming back the other way.
-            if (priceOf(gives) > targetValue * 1.2) {
+            if (priceSide(gives) > targetValue * 1.2) {
                 for (const filler of cheapest(theirs.entries, wantEntries, price, 3)) {
                     consider({
                         other, theirs, gives, gets: [...wantEntries, filler],

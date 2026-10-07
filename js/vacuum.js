@@ -30,6 +30,7 @@ import { fairness, createTradeValueScale } from './tradevalue.js';
 import { createValuationContext, valuePlayer } from './valuation.js';
 import { buildSeedKeys, seedOrder, toRankMap } from './rankings.js';
 import { marketPriceCurve } from './market.js';
+import { priceOf } from './trade.js';
 import { sum } from './util.js';
 
 /** Scoring presets, named the way managers name them. */
@@ -147,11 +148,35 @@ export function buildVacuumContext({
     }
     const tradeValue = createTradeValueScale(raw, { marketCurve: marketPriceCurve(market) });
 
-    /** Price one player, by id or object, on the displayed scale. */
+    /**
+     * Price one player on the displayed scale.
+     *
+     * The HIGHER of the two prices, which is deliberately different from the
+     * rest of the app and the difference matters.
+     *
+     * Everywhere else, a price answers "what will his manager ask for him",
+     * and the observed market price is simply the better answer -- so it wins
+     * outright. Here the question is "what is he worth under THIS format", and
+     * the format has to bite. The market can only be queried for the shapes
+     * FantasyCalc models: team count, quarterback count, points per reception
+     * and dynasty. It has no concept of a TE premium at all. So market-first
+     * pricing would have made that control inert, and turning superflex on
+     * changed nothing in the fixture at all -- which is how this was caught.
+     *
+     * Taking the maximum keeps both properties. The rank-derived price
+     * responds to every format knob, so a premium tight end and a superflex
+     * quarterback move as they should. The market price acts as a floor, which
+     * is the right shape for the thing it is correcting: a bench player's worth
+     * is option value, and option value is a floor under points above
+     * replacement rather than a rescaling of it.
+     */
     const pricePlayer = (player) => {
         if (!player) return 0;
         const rank = ranks.get(player.id) ?? 999;
-        return tradeValue(valuePlayer(player, rank, ctx).value);
+        const raw = valuePlayer(player, rank, ctx).value;
+        const byFormat = tradeValue(raw);
+        const byMarket = priceOf({ player, value: raw }, ctx, tradeValue);
+        return Math.max(byFormat, byMarket);
     };
 
     return { cfg, ctx, ranks, order, tradeValue, pricePlayer, shape: { ...DEFAULT_SHAPE, ...shape } };

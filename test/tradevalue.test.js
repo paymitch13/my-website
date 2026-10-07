@@ -208,3 +208,78 @@ test('junk in the market curve is ignored rather than trusted', () => {
     assert.equal(scale(raw[0]), TOP_VALUE);
     assert.ok(scale(raw[10]) > 0);
 });
+
+// --- A bench player's price is not his points above replacement ------------
+//
+// The bug this covers: a user reported Ollie Gordon valued at 0. He was not an
+// edge case. 101 of the 195 market-priced players on live week-5 data came out
+// under 100 of 10,000, and 17 came out at exactly 0.
+//
+// The cause is structural rather than a tuning problem. Points above
+// replacement is the right basis for what a player will SCORE, and it says a
+// sub-replacement player contributes nothing -- true of his starting lineup,
+// false of his price. A backup running back is bought for injury insurance,
+// bye coverage and upside, all of which are option value, and option value is
+// precisely what "points above replacement this season" is defined to exclude.
+// So VORP ranked Gordon about 450th in the league while the market had him
+// 123rd, and the rank matching faithfully returned the market price at rank
+// 450: nothing.
+
+test('an observed market value lands on the display scale directly', () => {
+    const market = [10000, 8000, 6000, 4000, 2000, 1000, 500, 250, 100, 50];
+    const scale = createTradeValueScale([100, 80, 60, 40, 20, 10, 5, 2, 1, 0.5], { marketCurve: market });
+    assert.equal(typeof scale.fromMarket, 'function');
+    // Normalised by the market's own top, so the best asset is the ceiling.
+    assert.equal(scale.fromMarket(10000), 10000);
+    assert.equal(scale.fromMarket(5000), 5000);
+    assert.equal(scale.fromMarket(469), 469);
+});
+
+test('a bench player keeps his market price instead of collapsing', () => {
+    // The shape of the real failure: a long tail of sub-replacement players
+    // whose raw values are all a rounding error apart, so rank matching puts
+    // them in the market curve's exponential tail whatever the market pays.
+    const market = Array.from({ length: 200 }, (_, i) => Math.round(10000 * Math.exp(-0.03 * i)));
+    const raw = [
+        ...Array.from({ length: 40 }, (_, i) => 100 - i * 2),
+        // Everybody below replacement, flattened by the softplus floor.
+        ...Array.from({ length: 160 }, (_, i) => 0.5 * Math.exp(-0.05 * i)),
+    ];
+    const scale = createTradeValueScale(raw, { marketCurve: market });
+
+    const benchRaw = 0.5 * Math.exp(-0.05 * 120);
+    const throughCurve = scale(benchRaw);
+    const atMarket = scale.fromMarket(469);
+
+    // The claim is the RATIO, not an absolute threshold: whatever the exact
+    // decay, pricing a bench player through the replacement curve costs him
+    // most of his value, and his observed price does not.
+    assert.ok(
+        atMarket > throughCurve * 3,
+        `the curve crushes him relative to his market price: ${throughCurve} vs ${atMarket}`
+    );
+    assert.ok(atMarket > 400, `his market price must survive intact: got ${atMarket}`);
+});
+
+test('no market means no market pricing, rather than a fabricated one', () => {
+    const scale = createTradeValueScale([100, 80, 60, 40, 20, 10, 5, 2]);
+    assert.equal(scale.fromMarket, null, 'callers test for this once instead of guarding every call');
+});
+
+test('a nonsensical market value is refused rather than scaled', () => {
+    const market = [10000, 8000, 6000, 4000, 2000, 1000, 500, 250];
+    const scale = createTradeValueScale([100, 80, 60, 40, 20, 10, 5, 2], { marketCurve: market });
+    assert.equal(scale.fromMarket(0), 0);
+    assert.equal(scale.fromMarket(-5), 0);
+    assert.equal(scale.fromMarket(NaN), 0);
+    assert.equal(scale.fromMarket(null), 0);
+});
+
+test('market pricing preserves order, which is the point of using it', () => {
+    const market = Array.from({ length: 100 }, (_, i) => Math.round(10000 * Math.exp(-0.04 * i)));
+    const scale = createTradeValueScale(Array.from({ length: 100 }, (_, i) => 100 - i), { marketCurve: market });
+    const values = [5000, 2000, 900, 469, 150, 60].map((v) => scale.fromMarket(v));
+    for (let i = 1; i < values.length; i++) {
+        assert.ok(values[i] < values[i - 1], `order must hold: ${values.join(' > ')}`);
+    }
+});

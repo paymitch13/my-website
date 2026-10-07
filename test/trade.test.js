@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages, createEvalCache, suggestFaab, marketPrice, evaluateRosterEntry } from '../js/trade.js';
+import { evaluateTrade, buildEntries, suggestAddOns, suggestPackages, createEvalCache, suggestFaab, marketPrice, evaluateRosterEntry, priceOf, neutralEntry } from '../js/trade.js';
 import { normalizeScoring } from '../js/league.js';
 import { faabModel } from '../js/faab.js';
 import { createValuationContext } from '../js/valuation.js';
@@ -830,4 +830,74 @@ test('a market price ignores where the user filed him on their board', () => {
         Math.abs(loved - hated) < 1e-9,
         `the market does not care about my board: ${loved} vs ${hated}`
     );
+});
+
+// --- One place that answers "what does he cost" ----------------------------
+
+/** A context carrying a market, built the way createValuationContext does. */
+function marketCtx(rows, { projections = {} } = {}) {
+    const league = normalizeLeague({
+        settings: { num_teams: 12 },
+        scoring_settings: { rec: 0.5, rec_yd: 0.1, rush_yd: 0.1 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const ranks = new Map(rows.map((r) => [r.id, r.posRank]));
+    return createValuationContext(league, {
+        week: 5, weeksLeft: 12, projections,
+        market: { byId, ranks },
+    });
+}
+
+/** A scale that reports the market value back unchanged, so maths is visible. */
+const identityScale = Object.assign((raw) => Math.round(raw), { fromMarket: (v) => Math.round(v) });
+
+test('an observed market price is used in preference to the curve', () => {
+    // The whole fix. The curve is a model of SCORING; the question is a
+    // question about COST, and where the market has answered it directly there
+    // is nothing to re-derive.
+    const ctx = marketCtx([{ id: 'bench', value: 469, posRank: 42, pos: 'RB' }]);
+    const entry = { player: { id: 'bench', name: 'Bench Back', pos: 'RB', age: 24 }, value: 0.44 };
+    assert.equal(priceOf(entry, ctx, identityScale), 469);
+});
+
+test('a player the market has never priced still gets a price', () => {
+    // Deep bench and practice-squad players are absent from the market
+    // entirely, and they must not become unpriceable.
+    const ctx = marketCtx([{ id: 'other', value: 1000, posRank: 10, pos: 'RB' }]);
+    const entry = { player: { id: 'unknown', name: 'Nobody', pos: 'RB', age: 24 }, value: 5 };
+    const price = priceOf(entry, ctx, identityScale);
+    assert.ok(Number.isFinite(price) && price >= 0, `expected a number, got ${price}`);
+});
+
+test('a scale with no market falls back to the curve rather than failing', () => {
+    const ctx = marketCtx([{ id: 'bench', value: 469, posRank: 42, pos: 'RB' }]);
+    const entry = { player: { id: 'bench', name: 'Bench Back', pos: 'RB', age: 24 }, value: 7 };
+    const plain = (raw) => Math.round(raw * 2);
+    plain.fromMarket = null;
+    assert.equal(priceOf(entry, ctx, plain), priceOf(entry, ctx, plain), 'stable');
+    assert.ok(priceOf(entry, ctx, plain) > 0);
+});
+
+test('the market price does not depend on the user’s board', () => {
+    // What he costs is not a function of what I think of him. Same player,
+    // same market, two wildly different board ranks.
+    const ctx = marketCtx([{ id: 'p', value: 800, posRank: 20, pos: 'WR' }]);
+    const loved = { player: { id: 'p', name: 'A Receiver', pos: 'WR', age: 25 }, value: 400 };
+    const hated = { player: { id: 'p', name: 'A Receiver', pos: 'WR', age: 25 }, value: 0.2 };
+    assert.equal(priceOf(loved, ctx, identityScale), priceOf(hated, ctx, identityScale));
+});
+
+test('a neutral entry carries the market’s price, not only its rank', () => {
+    const ctx = marketCtx([{ id: 'p', value: 640, posRank: 36, pos: 'RB' }]);
+    const entry = neutralEntry({ id: 'p', name: 'A Back', pos: 'RB', age: 26 }, ctx);
+    assert.equal(entry.marketValue, 640, 'the rank alone cannot express what a bench player costs');
+    assert.equal(entry.marketRank, 36);
+    assert.equal(entry.priced, 'market');
+});
+
+test('an entry with no market row reports no market value', () => {
+    const ctx = marketCtx([{ id: 'other', value: 100, posRank: 50, pos: 'RB' }]);
+    const entry = neutralEntry({ id: 'p', name: 'A Back', pos: 'RB', age: 26 }, ctx);
+    assert.equal(entry.marketValue, null);
 });

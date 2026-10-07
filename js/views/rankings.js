@@ -6,7 +6,7 @@ import { scoringLabel } from '../league.js';
 import * as store from '../store.js';
 import { banner, download, el, emptyState, modal, playerCell, toast } from '../ui.js';
 import { formatValue } from '../tradevalue.js';
-import { marketPrice } from '../trade.js';
+import { priceOf } from '../trade.js';
 
 const POS_LABEL = { QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K', DEF: 'D/ST' };
 
@@ -165,7 +165,7 @@ export default function renderRankings(app) {
         // reader sees and the gaps the tiers mark are measuring different
         // things and the dividers land in arbitrary places.
         const breaks = showTiers
-            ? new Set(autoTiers(ids, (id) => priceOf(app.players[id], values.get(id)) ?? 0))
+            ? new Set(autoTiers(ids, (id) => priceFor(app.players[id], values.get(id)) ?? 0))
             : new Set();
 
         listHost.replaceChildren();
@@ -232,10 +232,9 @@ export default function renderRankings(app) {
      * saying trade value, is what made perfectly ordinary players look
      * valueless.
      */
-    const priceOf = (player, val) => {
+    const priceFor = (player, val) => {
         if (!val) return null;
-        const priced = marketPrice({ player, value: val.value }, app.ctx);
-        return app.tradeValue(priced);
+        return priceOf({ player, value: val.value }, app.ctx, app.tradeValue);
     };
 
     function row(player, index, val) {
@@ -255,7 +254,7 @@ export default function renderRankings(app) {
                     class: 'val',
                     title: (() => {
                         const mine = val ? app.tradeValue(val.value) : null;
-                        const cost = priceOf(player, val);
+                        const cost = priceFor(player, val);
                         const bits = ['What he costs in a trade here.'];
                         // Only worth saying when the two numbers actually
                         // disagree -- for most starters they do not.
@@ -266,7 +265,7 @@ export default function renderRankings(app) {
                         return bits.join(' ');
                     })(),
                 },
-                val ? formatValue(priceOf(player, val)) : '—',
+                val ? formatValue(priceFor(player, val)) : '—',
                 val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
                     ? el(
                           'span',

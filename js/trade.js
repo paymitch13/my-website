@@ -60,6 +60,9 @@ export function buildEntries(players, rankings, ctx) {
  */
 export function neutralEntry(player, ctx) {
     const market = ctx.marketRanks?.get(player.id) ?? null;
+    // The market's own PRICE, not just its ranking. Carried because the rank
+    // cannot express what a bench player costs: see `tradeValue.fromMarket`.
+    const marketValue = ctx.market?.get(player.id)?.value ?? null;
     const proj = ctx.projections?.[player.id] || null;
     const projected = proj ? valuePlayer(player, 1, ctx).projectedRank : null;
 
@@ -92,7 +95,29 @@ export function neutralEntry(player, ctx) {
         priced: market ? 'market' : projected ? 'projection' : 'unranked',
         marketRank: market,
         projectedRank: projected,
+        marketValue,
     };
+}
+
+/**
+ * What a player COSTS, on the display scale, in one place.
+ *
+ * Every ledger and every price label in the app should go through this. The
+ * order of preference is the point: an observed market price beats a price
+ * derived from a replacement curve, because the curve is a model of scoring
+ * and the question is a question about cost.
+ *
+ * @param {object} entry   a roster or neutral entry
+ * @param {object} ctx     valuation context
+ * @param {Function} scale the league's trade value scale
+ */
+export function priceOf(entry, ctx, scale) {
+    if (!entry) return 0;
+    const observed = entry.marketValue ?? ctx.market?.get(entry.player?.id)?.value ?? null;
+    if (Number.isFinite(observed) && observed > 0 && typeof scale?.fromMarket === 'function') {
+        return scale.fromMarket(observed);
+    }
+    return scale(marketPrice(entry, ctx));
 }
 
 export function buildNeutralEntries(players, ctx) {

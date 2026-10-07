@@ -216,6 +216,29 @@ function pool() {
     return { players, projections };
 }
 
+/**
+ * A market spanning the whole pool, descending by position rank.
+ *
+ * Has to be league-wide: `createTradeValueScale` calibrates the display scale
+ * against the market's own curve, so a market containing only one position
+ * makes that position's best player the most valuable asset in the sport. It
+ * also needs at least eight entries, below which the scale cannot calibrate
+ * at all and no market pricing is offered.
+ */
+function wholeMarket(players, overrides = {}) {
+    const byId = new Map();
+    const ranks = new Map();
+    const perPos = {};
+    const ordered = Object.values(players).sort((a, b) => Number(a.id.replace(/\D/g, '')) - Number(b.id.replace(/\D/g, '')));
+    for (const p of ordered) {
+        const rank = (perPos[p.pos] = (perPos[p.pos] ?? 0) + 1);
+        const value = overrides[p.id] ?? Math.max(20, Math.round(9000 * Math.exp(-0.06 * rank)));
+        byId.set(p.id, { id: p.id, value, posRank: rank, pos: p.pos });
+        ranks.set(p.id, rank);
+    }
+    return { byId, ranks };
+}
+
 test('a player can be priced with no league, no roster and no board', () => {
     const { players, projections } = pool();
     const v = buildVacuumContext({ players, projections, shape: DEFAULT_SHAPE });
@@ -269,4 +292,45 @@ test('a full trade can be scored end to end from a format and two lists', () => 
     const verdict = vacuumVerdict(res, { labelA: 'Me', labelB: 'Them' });
     assert.ok(verdict.headline.length > 20, 'a verdict must come with a reason');
     assert.ok(['neutral', 'warn', 'bad'].includes(verdict.tone));
+});
+
+test('a format knob the market cannot express still moves prices', () => {
+    // Everywhere else in the app an observed market price wins outright,
+    // because the question is "what will his manager ask". Here the question
+    // is "what is he worth under THIS format", and FantasyCalc can only be
+    // queried for team count, quarterback count, PPR and dynasty -- it has no
+    // concept of a TE premium. Market-first pricing therefore made that
+    // control inert, which a browser test caught when switching to superflex
+    // changed nothing at all.
+    const { players, projections } = pool();
+    // Same market for both shapes, which is exactly the situation: the market
+    // cannot be re-queried for a premium it does not model. It has to span the
+    // whole player pool, not one position -- the display scale calibrates
+    // against the market's own curve, so a ten-entry market of tight ends
+    // would make the best tight end the most valuable asset in football.
+    const market = wholeMarket(players);
+
+    const plain = buildVacuumContext({ players, projections, market, shape: { tePremium: 0 } });
+    const prem = buildVacuumContext({ players, projections, market, shape: { tePremium: 1 } });
+
+    const te = players.TE4;
+    assert.ok(
+        prem.pricePlayer(te) > plain.pricePlayer(te),
+        `a TE premium must raise a tight end even with an identical market: ` +
+            `${plain.pricePlayer(te)} -> ${prem.pricePlayer(te)}`
+    );
+});
+
+test('the market acts as a floor, not a ceiling, in the vacuum', () => {
+    // A bench player whose format-derived value is nothing keeps his market
+    // price; a player the format rates highly is not held down to it.
+    const { players, projections } = pool();
+    const deep = players.WR70;
+    const market = wholeMarket(players, { [deep.id]: 450 });
+    const v = buildVacuumContext({ players, projections, market });
+
+    assert.ok(v.pricePlayer(deep) >= 400, `his market price must survive: got ${v.pricePlayer(deep)}`);
+    // And the best receiver, whom the market here does not price at all, is
+    // still worth far more than the floor.
+    assert.ok(v.pricePlayer(players.WR1) > v.pricePlayer(deep) * 3);
 });

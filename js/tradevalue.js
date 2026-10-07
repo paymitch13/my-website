@@ -70,11 +70,16 @@ export function createTradeValueScale(values, { marketCurve = null } = {}) {
         return calibrated(positive, curve);
     }
 
-    return function tradeValue(raw) {
+    const tradeValue = function tradeValue(raw) {
         if (!Number.isFinite(raw) || raw <= 0) return 0;
         const share = clamp(raw / top, 0, 1);
         return Math.round(TOP_VALUE * share ** CURVE);
     };
+    // No market to calibrate against, so there is no market value to place
+    // either. Declared rather than left undefined so callers can test for it
+    // once instead of guarding every call.
+    tradeValue.fromMarket = null;
+    return tradeValue;
 }
 
 /**
@@ -107,10 +112,41 @@ function calibrated(values, curve) {
         return curve[lo] + (curve[lo + 1] - curve[lo]) * frac;
     };
 
-    return function tradeValue(raw) {
+    const tradeValue = function tradeValue(raw) {
         if (!Number.isFinite(raw) || raw <= 0) return 0;
         return Math.round((TOP_VALUE * priceAt(fractionalRank(board, raw))) / top);
     };
+
+    /**
+     * Put an OBSERVED market value straight onto the display scale.
+     *
+     * Needed because the rank matching above cannot price a bench player, and
+     * the failure is structural rather than a tuning problem.
+     *
+     * Points above replacement is the right basis for what a player will
+     * SCORE, and it says a sub-replacement player contributes nothing -- which
+     * is true of his starting lineup. It is not true of his price. A backup
+     * running back is bought for injury insurance, bye coverage and upside, all
+     * of which are option value, and option value is exactly what "points above
+     * replacement, this season" is defined to exclude. So VORP ranked Ollie
+     * Gordon about 450th in the league while the market had him 123rd, the
+     * rank matching faithfully returned the market price at rank 450, and he
+     * displayed as 0 against a real market price of 469. He was not an edge
+     * case: 101 of the 195 market-priced players came out under 100 of 10,000.
+     *
+     * Where the market has a direct price for a player, that price IS the
+     * answer to what he costs, and re-deriving it through a replacement curve
+     * can only lose information. Normalised by the market's own top so it lands
+     * on the same 0-10,000 scale the rank matching produces -- measured against
+     * live data the two agree to within about a tenth wherever both are
+     * meaningful, which is what makes substituting one for the other sound.
+     */
+    tradeValue.fromMarket = (marketValue) => {
+        if (!Number.isFinite(marketValue) || marketValue <= 0) return 0;
+        return Math.round((TOP_VALUE * marketValue) / top);
+    };
+
+    return tradeValue;
 }
 
 /**
