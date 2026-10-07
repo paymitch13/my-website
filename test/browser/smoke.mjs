@@ -126,6 +126,76 @@ const weeklyProjections = projections.map((row, i) => ({
     ),
 }));
 
+// Completed weeks of real stat lines, keyed by week.
+//
+// The route used to answer every weekly-stats request with an empty array,
+// which made the Stats page render nothing but its empty states -- it passed
+// every assertion about headings while proving none of the content. Advanced
+// stats are computed from these rows, so they have to carry what the real feed
+// carries: offensive snaps against team snaps, air yards, yards after contact,
+// red-zone looks, and a team field, since share metrics are measured against
+// the team's own weekly totals.
+//
+// A ramp across the weeks on purpose, so "rising" and "falling" have something
+// real to find: the first player at each position grows into his role while
+// the second shrinks out of his.
+const weeklyStatsByWeek = new Map();
+for (let w = 1; w <= 6; w++) {
+    const rows = [];
+    for (const [id, p] of Object.entries(players)) {
+        const idx = Number(p.last_name.replace('Player ', '')) || 1;
+        const t = (w - 1) / 5;
+        // Player 1 at each position ramps up, player 2 ramps down, the rest
+        // hold steady. Enough to exercise both movers lists.
+        const ramp = idx === 1 ? 0.3 + 0.6 * t : idx === 2 ? 0.9 - 0.5 * t : 0.55;
+        const teamSnaps = 62;
+        const snaps = Math.round(teamSnaps * ramp);
+        const base = {
+            gp: 1,
+            off_snp: snaps,
+            tm_off_snp: teamSnaps,
+        };
+        let line;
+        if (p.position === 'QB') {
+            line = {
+                pass_att: Math.round(32 * ramp), pass_cmp: Math.round(21 * ramp),
+                pass_yd: Math.round(250 * ramp), pass_td: idx === 1 ? 2 : 1,
+                pass_air_yd: Math.round(300 * ramp), pass_sack: 2,
+                pass_rtg: 88 + idx, rush_att: 3, rush_yd: 14,
+            };
+        } else if (p.position === 'RB') {
+            line = {
+                rush_att: Math.round(18 * ramp), rush_yd: Math.round(78 * ramp),
+                rush_yac: Math.round(40 * ramp), rush_btkl: idx <= 2 ? 2 : 0,
+                rush_rz_att: Math.round(4 * ramp), rush_fd: Math.round(4 * ramp),
+                rec_tgt: Math.round(3 * ramp), rec: Math.round(2 * ramp),
+                rec_yd: Math.round(18 * ramp), rec_air_yd: Math.round(12 * ramp),
+                rush_td: idx === 1 ? 1 : 0,
+            };
+        } else if (p.position === 'WR' || p.position === 'TE') {
+            line = {
+                rec_tgt: Math.round(9 * ramp), rec: Math.round(6 * ramp),
+                rec_yd: Math.round(82 * ramp), rec_air_yd: Math.round(110 * ramp),
+                rec_rz_tgt: Math.round(2 * ramp), rec_fd: Math.round(4 * ramp),
+                rec_drop: idx === 2 ? 1 : 0, rec_td: idx === 1 ? 1 : 0,
+            };
+        } else {
+            // Kickers and defenses have no advanced stats worth the name, and
+            // the Stats page does not claim any for them.
+            line = p.position === 'K' ? { fgm: 2, xpm: 3 } : { sack: 3, int: 1, pts_allow: 17 };
+        }
+        rows.push({
+            player_id: id,
+            team: p.team,
+            opponent: NFL_TEAMS[(Number(id.slice(1)) + w) % NFL_TEAMS.length],
+            week: w,
+            player: { position: p.position, team: p.team },
+            stats: { ...base, ...line },
+        });
+    }
+    weeklyStatsByWeek.set(w, rows);
+}
+
 // Market values for the fixture league. Reversed against the projections on
 // purpose -- see the route above.
 const marketRows = [];
@@ -192,6 +262,12 @@ const fixtures = [
     // has to come first: it is the more specific pattern.
     [/projections\/nfl\/\d+\/\d+/, () => json(weeklyProjections)],
     [/projections\/nfl/, () => json(projections)],
+    // Per-week stat lines. The week is the last path segment, so a request for
+    // week 3 gets week 3 rather than every week's rows at once.
+    [/stats\/nfl\/\d+\/(\d+)/, (url) => {
+        const w = Number(url.match(/stats\/nfl\/\d+\/(\d+)/)[1]);
+        return json(weeklyStatsByWeek.get(w) || []);
+    }],
     [/stats\/nfl/, () => json([])],
     [/\/state\/nfl/, () => json(state)],
     [/\/league\/L1\/rosters/, () => json(rosters)],
@@ -474,6 +550,72 @@ if (await addPlayerToSide(0)) {
     console.log(`  cash trade: analysed at market price, ${text.trim().length} chars of result`);
 } else {
     errors.push('trade: could not add a player to a side');
+}
+
+// --- Stats -----------------------------------------------------------------
+//
+// The distinction the whole page rests on is opportunity versus efficiency, so
+// that is what gets asserted: both kinds present, labelled, and the source
+// stated honestly rather than implying Next Gen Stats it does not have.
+{
+    await page.click('#tabs .tab[data-view="stats"]');
+    await page.waitForTimeout(4000);
+
+    const text = (await page.textContent('#view')) || '';
+    if (/Could not read/.test(text)) errors.push('stats: the view errored');
+    if (!/Players measured/.test(text)) errors.push('stats: no summary tiles');
+    if (!/Leaderboards/.test(text)) errors.push('stats: no leaderboards');
+    if (!/Compare/.test(text)) errors.push('stats: no comparison');
+
+    // The source disclosure. Claiming NGS would be the easiest and worst lie
+    // this page could tell, so the absence has to be stated.
+    if (!/Next Gen Stats/.test(text)) errors.push('stats: does not say what the source is');
+    if (!/requires authentication/.test(text)) {
+        errors.push('stats: does not disclose that NGS is unavailable rather than approximated');
+    }
+
+    // Opportunity and efficiency both represented and distinguished.
+    if (!/predicts/.test(text) || !/regresses/.test(text)) {
+        errors.push('stats: opportunity and efficiency are not distinguished');
+    }
+
+    const boards = await page.$$eval('#view .card h3', (els) => els.map((e) => e.textContent.trim()));
+    if (!boards.some((b) => /Snap share|Carry share|Red-zone share/.test(b))) {
+        errors.push(`stats: no opportunity leaderboard, saw: ${boards.join(', ')}`);
+    }
+
+    // The position switcher has to actually change the boards.
+    const before = boards.join('|');
+    const wrBtn = await page.$('#view .seg button[data-pos="WR"]');
+    if (!wrBtn) {
+        errors.push('stats: no position switcher');
+    } else {
+        await wrBtn.click();
+        await page.waitForTimeout(700);
+        const after = await page.$$eval('#view .card h3', (els) => els.map((e) => e.textContent.trim()));
+        if (after.join('|') === before) errors.push('stats: switching position changed nothing');
+        if (!after.some((b) => /Target share|Air yards share/.test(b))) {
+            errors.push(`stats: receiver boards missing, saw: ${after.join(', ')}`);
+        }
+    }
+
+    // And the full table, with a row per player and a column per metric.
+    const headers = await page.$$eval('#view table thead th', (els) => els.length);
+    if (headers < 6) errors.push(`stats: the full metric table has only ${headers} columns`);
+
+    // Rising and falling have to actually find somebody. The fixture ramps one
+    // player at each position into his role and another out of it, so an empty
+    // movers list means the trend maths is not reaching the view.
+    const movers = await page.$$eval('#view .mover', (els) => els.length);
+    if (!movers) errors.push('stats: neither rising nor falling found anybody');
+    if (!/role is growing|role is shrinking|Role and production/.test(text)) {
+        errors.push('stats: no verdict on which way anybody is going');
+    }
+
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`stats: scrolls horizontally by ${o.scrolled}px`);
+    if (o.wide.length) errors.push(`stats: overflows — ${o.wide.join(', ')}`);
+    console.log(`  stats: ${boards.length} boards, ${headers} metric columns, ${movers} movers, source disclosed`);
 }
 
 // --- Waiver wire -----------------------------------------------------------

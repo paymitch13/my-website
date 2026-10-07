@@ -932,3 +932,12 @@ input::placeholder { color: var(--text-3); }
    there is one question and padding it would imply a hold this is not. */
 .stream-row { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
 .stream-row:last-child { border-bottom: 0; }
+
+/* --- Stats --------------------------------------------------------------- */
+/* Opportunity columns are tinted so the distinction that decides how to read
+   this page survives a glance: opportunity predicts, efficiency regresses. */
+.stat-opp-head { background: rgba(72, 187, 120, 0.07); }
+.table tr.stat-opp td:first-child { border-left: 2px solid rgba(72, 187, 120, 0.35); padding-left: 8px; }
+.stat-compare td:first-child { white-space: nowrap; }
+.mover { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.mover:last-child { border-bottom: 0; }
