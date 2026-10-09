@@ -10,7 +10,7 @@ import { normalizeScoring, normalizeLeague, defaultRosterPositions } from '../js
 import { buildDefenseProfiles } from '../js/matchup.js';
 import { buildStartSitReport } from '../js/startsit.js';
 import { simulateSeason, syntheticSchedule, DEFAULT_SIM_SEED } from '../js/sim.js';
-import { fromCsv } from '../js/rankings.js';
+import { seedOrder, buildSeedKeys } from '../js/rankings.js';
 import { evaluateRosterEntry, neutralEntry } from '../js/trade.js';
 import { createValuationContext } from '../js/valuation.js';
 
@@ -170,20 +170,31 @@ test('BUG: every playoff team got a first-round bye when the field was a power o
     assert.ok(Math.abs(total - 2) < 1e-9, `expected exactly 2 byes, got ${total}`);
 });
 
-// --- 9. CSV robustness -----------------------------------------------------
+// --- 9. The board no longer freezes the model -----------------------------
 
-test('BUG: a ragged CSV row crashed the importer', () => {
+test('BUG: a hand-sorted board froze the rankings permanently', () => {
+    // Saving a board edit persisted the WHOLE ordering, and the merge on each
+    // later load preserved every saved position by design -- so one drag in
+    // September left an app that never incorporated another result. There is
+    // no saved ordering any more, and this asserts the ordering is a pure
+    // function of the evidence: same inputs, same board, every time.
     const players = {
-        a: { id: 'a', name: 'Same Name', pos: 'RB', team: 'KC', searchRank: 1 },
-        b: { id: 'b', name: 'Same Name', pos: 'WR', team: 'BUF', searchRank: 2 },
+        a: { id: 'a', name: 'Aaron Ace', pos: 'RB', team: 'KC', searchRank: 3 },
+        b: { id: 'b', name: 'Bob Best', pos: 'RB', team: 'BUF', searchRank: 1 },
+        c: { id: 'c', name: 'Carl Core', pos: 'RB', team: 'SF', searchRank: 2 },
     };
-    // Two players share a name, forcing the position lookup, and the row is
-    // missing its position cell entirely.
-    const csv = 'player,position\nSame Name\n';
-    assert.doesNotThrow(() => fromCsv(csv, players));
-    const parsed = fromCsv(csv, players);
-    assert.equal(parsed.matched, 0, 'an ambiguous name with no position is unmatched, not a crash');
-    assert.deepEqual(parsed.unmatched, ['Same Name']);
+    const scoring = normalizeScoring({ rush_yd: 0.1 });
+    const projections = {
+        a: { id: 'a', pos: 'RB', games: 17, stats: { rush_yd: 1600 } },
+        b: { id: 'b', pos: 'RB', games: 17, stats: { rush_yd: 900 } },
+        c: { id: 'c', pos: 'RB', games: 17, stats: { rush_yd: 1200 } },
+    };
+    const build = () => seedOrder(players, { seedKeys: buildSeedKeys(players, { projections, scoring }) });
+
+    // Projection order, not Sleeper's popularity order.
+    assert.deepEqual(build().RB, ['a', 'c', 'b']);
+    // And it is stable: nothing persists that could drift it.
+    assert.deepEqual(build().RB, build().RB);
 });
 
 // --- Neutral counterparty valuation ---------------------------------------

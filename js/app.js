@@ -5,7 +5,7 @@ import * as data from './data.js';
 import * as api from './sleeper.js';
 import { normalizeLeague, defaultRosterPositions, scoringLabel } from './league.js';
 import { createValuationContext } from './valuation.js';
-import { buildSeedKeys, mergeOrder, seedOrder, toRankMap } from './rankings.js';
+import { buildSeedKeys, seedOrder, toRankMap } from './rankings.js';
 import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, onPlayerClick } from './ui.js';
 import { openPlayerCard } from './views/player.js';
 import { loadSeasonTransactions, tradesOnly, newTradesSince } from './transactions.js';
@@ -44,7 +44,7 @@ const VIEWS = {
     stats: { render: renderStats, title: 'Stats' },
     vegas: { render: renderVegas, title: 'Vegas' },
     power: { render: renderPower, title: 'Power Rankings' },
-    rankings: { render: renderRankings, title: 'My Rankings' },
+    rankings: { render: renderRankings, title: 'Rankings' },
     league: { render: renderLeague, title: 'League' },
     news: { render: renderNews, title: 'News & Live' },
 };
@@ -100,9 +100,10 @@ export const app = {
             week: this.league?.currentWeek || 1,
             marketRanks: this.market?.ranks || null,
         });
-        this.order = Object.keys(store.state.order || {}).length
-            ? mergeOrder(store.state.order, this.players, { seedKeys })
-            : seedOrder(this.players, { seedKeys });
+        // Re-derived every load, with nothing persisted to merge in. That is
+        // the whole point: a saved ordering froze the board at the moment it
+        // was saved and quietly stopped the app incorporating results.
+        this.order = seedOrder(this.players, { seedKeys });
         this.rankings = toRankMap(this.order);
 
         this.ctx = createValuationContext(cfg, {
@@ -189,13 +190,6 @@ export const app = {
         return sortBy(out, (e) => e.value, -1).slice(0, limit);
     },
 
-    /** Persist the current board. */
-    saveOrder(order) {
-        this.order = order;
-        store.state.order = order;
-        store.save();
-        this.rankings = toRankMap(order);
-    },
 
     render() {
         renderView(this.view);

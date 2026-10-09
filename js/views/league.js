@@ -16,7 +16,7 @@ export default function renderLeague(app) {
             'div',
             { class: 'page-head' },
             el('h1', {}, 'League'),
-            el('p', { class: 'sub' }, 'Every setting the calculator reads, and how each roster grades out under your rankings.')
+            el('p', { class: 'sub' }, 'Every setting the calculator reads, and how each roster grades out under the model’s rankings.')
         )
     );
 
@@ -155,7 +155,7 @@ export default function renderLeague(app) {
             el(
                 'p',
                 { class: 'tiny dim', style: 'margin:12px 0 0' },
-                'Lineup is the optimal starting total per week under your rankings. Click a row for the full roster.',
+                'Lineup is the optimal starting total per week under the model’s rankings. Click a row for the full roster.',
                 cfg.usesFaab ? ' FAAB is what each manager has left to bid with — a team near zero cannot answer a waiver run, and cash is worth less in their hands.' : ''
             )
         )

@@ -115,17 +115,18 @@ export function openPlayerCard(app, player) {
     const tiles = el('div', { class: 'tiles', style: 'margin-bottom:18px' });
     if (v) {
         tiles.append(tile('Trade value', formatValue(app.tradeValue(v.value)), `rest of season · ${app.ctx.weeksLeft} wk left`));
-        tiles.append(tile('Your rank', `${POS_LABEL[player.pos] || player.pos}${posRank}`, 'where you have him'));
+        tiles.append(tile('Model rank', `${POS_LABEL[player.pos] || player.pos}${posRank}`, 'projection plus this season’s results'));
     }
     if (projPpg !== null) {
         tiles.append(tile('Projected', round(projPpg, 1), 'pts/game in this league'));
     }
     if (projRank) {
-        tiles.append(tile('Projected rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'where the projection has him'));
+        tiles.append(tile('Projected rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'the preseason projection alone'));
     }
-    // The third board. Your rank decides what he is worth TO YOU, the
-    // projection estimates what he will SCORE, and this is what he COSTS --
-    // the only one of the three that predicts whether his manager says yes.
+    // The third board. The model rank decides what he is worth to a lineup,
+    // the preseason projection alone estimates what he will SCORE, and this is
+    // what he COSTS -- the only one of the three that predicts whether his
+    // manager says yes.
     if (mktRank) {
         tiles.append(
             tile(
@@ -217,7 +218,12 @@ export function openPlayerCard(app, player) {
         );
     }
 
-    // --- Where you disagree with the projection ----------------------------
+    // --- Where the ranking disagrees with the raw projection ---------------
+    //
+    // The two can differ because the ranking blends this season's results into
+    // the preseason number while `projectedRank` is the preseason projection
+    // alone. A gap is therefore a statement about how much the season has
+    // changed the picture for this player, which is worth saying out loud.
     if (posRank && projRank) {
         const gap = projRank - posRank;
         if (Math.abs(gap) >= 4) {
@@ -226,8 +232,8 @@ export function openPlayerCard(app, player) {
                     'div',
                     { class: `banner ${gap > 0 ? '' : 'banner-warn'}` },
                     gap > 0
-                        ? `You are ${gap} spots higher on him than the projection. Your board is what drives his value here — the projection is only the scale.`
-                        : `You have him ${Math.abs(gap)} spots lower than the projection does. His value reflects your ranking, not the projection.`
+                        ? `Ranked ${gap} spots higher than his preseason projection alone — this season’s production has moved him up.`
+                        : `Ranked ${Math.abs(gap)} spots lower than his preseason projection alone — this season’s production has moved him down.`
                 )
             );
         }
@@ -285,17 +291,18 @@ export function openPlayerCard(app, player) {
                 el(
                     'tbody',
                     {},
-                    row('Projected points/game at your rank', round(v.ppg, 2)),
+                    row('Projected points/game at this rank', round(v.ppg, 2)),
                     row(`Replacement level (${player.pos}${app.ctx.replacement[player.pos]})`, round(repl, 2)),
                     row('Points above replacement/game', fmtDelta(v.parPerGame, 2), v.parPerGame >= 0 ? 'good' : 'bad'),
                     row('Weeks remaining', app.ctx.weeksLeft),
                     player.injury ? row('Availability', `${Math.round(v.availability * 100)}%`, 'warn') : null,
                     row('Points above replacement, rest of season', round(v.ros, 1)),
-                    row('Trade value on your board', formatValue(app.tradeValue(v.value))),
+                    row('Value to a starting lineup', formatValue(app.tradeValue(v.value))),
                     // What the deal will actually be priced at. The ledger and
                     // the fairness meter both use this rather than the row
-                    // above, because what you think of him decides whether you
-                    // want the trade, not whether it is even.
+                    // above, because the row above is points above replacement
+                    // -- which is near zero for anyone behind a starter, and
+                    // says nothing about what his manager will ask for him.
                     mktRank
                         ? row(
                               'What the market charges',

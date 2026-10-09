@@ -26,9 +26,10 @@ export default function renderFinder(app) {
             el(
                 'p',
                 { class: 'sub' },
-                'Searches every roster in the league for deals that improve both teams. Your side is valued on ',
-                'your rankings; the other side is valued on a neutral board, because they do not share your ',
-                'opinions — which is what makes the difference between a deal you like and one they accept.'
+                'Searches every roster in the league for deals that improve both teams. Both sides are scored ',
+                'on the model, but what the other manager will ASK for is priced at the market — what players ',
+                'actually cost in real leagues. That gap is the difference between a deal you like and one ',
+                'they accept.'
             )
         )
     );

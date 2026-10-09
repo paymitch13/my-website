@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { seedOrder, mergeOrder, toRankMap, reorder, nudge, toCsv, fromCsv, autoTiers, normalizeName } from '../js/rankings.js';
+import { seedOrder, toRankMap, toCsv, autoTiers, normalizeName } from '../js/rankings.js';
 
 const players = {
     a: { id: 'a', name: 'Aaron Ace', pos: 'RB', team: 'KC', searchRank: 1 },
@@ -24,73 +24,11 @@ test('rank map is 1-indexed per position', () => {
     assert.equal(m.get('w1'), 1, 'each position numbers from 1 independently');
 });
 
-test('reorder moves a player and shifts everyone else', () => {
-    const o = seedOrder(players);
-    const moved = reorder(o, 'RB', 'c', 0);
-    assert.deepEqual(moved.RB, ['c', 'a', 'b']);
-    assert.deepEqual(o.RB, ['a', 'b', 'c'], 'original order is not mutated');
-});
-
-test('nudge moves by relative spots and clamps at the ends', () => {
-    const o = seedOrder(players);
-    assert.deepEqual(nudge(o, 'RB', 'a', -1).RB, ['a', 'b', 'c'], 'cannot go above first');
-    assert.deepEqual(nudge(o, 'RB', 'a', 1).RB, ['b', 'a', 'c']);
-    assert.deepEqual(nudge(o, 'RB', 'a', 99).RB, ['b', 'c', 'a']);
-});
-
-test('merge keeps the saved board and slots new players in by seed rank', () => {
-    const saved = { RB: ['c', 'a'], WR: ['w2'] };
-    const merged = mergeOrder(saved, players);
-    // The user hand-ranked 'c' first even though Sleeper seeds him third.
-    // Newcomer 'b' must slot in below every player the user actually ranked
-    // ahead of him, and must never displace the user's #1.
-    assert.deepEqual(merged.RB, ['c', 'a', 'b']);
-    assert.deepEqual(merged.WR, ['w1', 'w2'], 'w1 seeds ahead of w2');
-});
-
-test('merge drops players who are no longer in the database', () => {
-    const merged = mergeOrder({ RB: ['ghost', 'a', 'b', 'c'] }, players);
-    assert.ok(!merged.RB.includes('ghost'));
-    assert.equal(merged.RB[0], 'a');
-});
-
-test('csv round-trips exactly', () => {
-    const order = { RB: ['b', 'a', 'c'], WR: ['w1'] };
-    const parsed = fromCsv(toCsv(order, players), players);
-    assert.deepEqual(parsed.order.RB, ['b', 'a', 'c']);
-    assert.deepEqual(parsed.order.WR, ['w1']);
-    assert.equal(parsed.unmatched.length, 0);
-});
-
-test('csv export quotes names containing commas', () => {
-    const tricky = { ...players, x: { id: 'x', name: 'Smith, John', pos: 'TE', team: 'LV', searchRank: 3 } };
-    const csv = toCsv({ TE: ['x'] }, tricky);
-    assert.match(csv, /"Smith, John"/);
-    assert.deepEqual(fromCsv(csv, tricky).order.TE, ['x']);
-});
-
-test('csv import matches by name when there is no id column', () => {
-    const csv = 'Rank,Player,Pos\n1,Carl Core,RB1\n2,Aaron Ace,RB2\n';
-    const parsed = fromCsv(csv, players);
-    assert.deepEqual(parsed.order.RB, ['c', 'a']);
-    assert.equal(parsed.matched, 2);
-});
-
 test('name matching ignores suffixes, case and punctuation', () => {
+    // Still used to join betting-market athletes to Sleeper players, which is
+    // why it survives the removal of CSV import.
     assert.equal(normalizeName("Dee'Andre O'Neal Jr."), normalizeName('deeandre oneal'));
-    const parsed = fromCsv('Player\ndeeandre oneal\n', players);
-    assert.deepEqual(parsed.order.WR, ['w1']);
-});
-
-test('csv import reports names it could not match', () => {
-    const parsed = fromCsv('Player\nAaron Ace\nNobody At All\n', players);
-    assert.deepEqual(parsed.unmatched, ['Nobody At All']);
-    assert.equal(parsed.matched, 1);
-});
-
-test('csv import honours an explicit rank column out of order', () => {
-    const csv = 'player,rank\nCarl Core,3\nAaron Ace,1\nBob Best,2\n';
-    assert.deepEqual(fromCsv(csv, players).order.RB, ['a', 'b', 'c']);
+    assert.equal(normalizeName('A.J. Brown'), normalizeName('aj brown'));
 });
 
 test('auto tiers break at the biggest value gaps', () => {
@@ -116,4 +54,15 @@ test('auto tiers spread across the board instead of bunching at the top', () => 
 
 test('auto tiers no-op on a board too short to tier', () => {
     assert.deepEqual(autoTiers(['a', 'b'], () => 1), []);
+});
+
+test('csv export writes the model ranking, quoting awkward names', () => {
+    // Export survived the board's removal: a ranking is still worth taking
+    // somewhere else. Import did not -- there is nothing to import into.
+    const tricky = { ...players, x: { id: 'x', name: 'Smith, John', pos: 'TE', team: 'LV', searchRank: 3 } };
+    const csv = toCsv({ TE: ['x'], RB: ['a', 'b'] }, tricky);
+    assert.match(csv, /"Smith, John"/);
+    assert.match(csv, /Aaron Ace/);
+    // One header plus one line per ranked player.
+    assert.equal(csv.trim().split('\n').length, 4);
 });

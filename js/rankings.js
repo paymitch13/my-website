@@ -1,9 +1,20 @@
-// The rankings board: the user's opinion, which every other number derives from.
+// The rankings: the model's ordering, which every other number derives from.
 //
 // A ranking is just an ordered list of player ids per position; a player's
-// positional rank is his index + 1. The board is seeded from Sleeper's own
-// popularity ordering so the app is usable on first load, and every edit after
-// that is the user's.
+// positional rank is his index + 1.
+//
+// This used to be a board the user could drag. It is not any more, and the
+// reason is worth recording: saving an edit persisted the WHOLE ordering, so a
+// single drag froze every one of the ~500 ranked players at that moment's
+// opinion, and the merge that ran on every later load preserved those frozen
+// positions by design. Somebody who nudged one receiver in September had an
+// app that silently stopped incorporating results from then on -- which is
+// exactly what "it doesn't feel updated through week 4" turned out to mean.
+//
+// A model that re-derives its ordering from the evidence every load cannot go
+// stale that way. The trade-off is real -- there is no way to tell the app it
+// is wrong about a player -- and it is the right trade: an opinion you can
+// express once and then cannot see is worse than no opinion at all.
 
 import { sortBy } from './util.js';
 import { blendedPpg, projectedPpg, scoreStats } from './projections.js';
@@ -114,47 +125,6 @@ export function seedOrder(players, opts = {}) {
     return out;
 }
 
-/**
- * Merge the saved board with the current player database.
- *
- * Players who retired or changed names drop out; players who did not exist when
- * the board was saved (rookies, waiver risers) get slotted in at roughly where
- * the seed rates them rather than dumped at the bottom, so a board saved in
- * August is still coherent in November.
- */
-export function mergeOrder(savedOrder, players, opts = {}) {
-    const keys = opts.seedKeys || buildSeedKeys(players, opts);
-    const seeded = seedOrder(players, { seedKeys: keys });
-    const merged = {};
-    const keyOf = (id) => keys.get(id) ?? 1e9;
-
-    for (const pos of RANKABLE) {
-        const saved = (savedOrder?.[pos] || []).filter((id) => players[id] && players[id].pos === pos);
-        const present = new Set(saved);
-        const missing = seeded[pos].filter((id) => !present.has(id));
-
-        const list = saved.slice();
-        for (const id of sortBy(missing, keyOf)) {
-            const key = keyOf(id);
-            // Place the newcomer after the last player the seed rates ahead of
-            // him. Scanning from the bottom rather than the top is deliberate:
-            // a player the user never saw must never leapfrog one the user
-            // deliberately ranked, so an August board that has been hand-sorted
-            // survives a November merge intact.
-            let at = list.length;
-            for (let i = list.length - 1; i >= 0; i--) {
-                if (keyOf(list[i]) < key) {
-                    at = i + 1;
-                    break;
-                }
-                at = i;
-            }
-            list.splice(at, 0, id);
-        }
-        merged[pos] = list;
-    }
-    return merged;
-}
 
 /** playerId -> positional rank, for the whole board. */
 export function toRankMap(order) {
@@ -165,23 +135,7 @@ export function toRankMap(order) {
     return map;
 }
 
-/** Move a player to a new index within his position. Returns a new order. */
-export function reorder(order, pos, playerId, toIndex) {
-    const list = (order[pos] || []).slice();
-    const from = list.indexOf(playerId);
-    if (from < 0) return order;
-    list.splice(from, 1);
-    list.splice(Math.max(0, Math.min(list.length, toIndex)), 0, playerId);
-    return { ...order, [pos]: list };
-}
 
-/** Move a player by a relative number of spots. */
-export function nudge(order, pos, playerId, delta) {
-    const list = order[pos] || [];
-    const from = list.indexOf(playerId);
-    if (from < 0) return order;
-    return reorder(order, pos, playerId, from + delta);
-}
 
 // --- Import / export -------------------------------------------------------
 
@@ -199,63 +153,6 @@ export function toCsv(order, players) {
 
 const csvCell = (s) => (/[",\n]/.test(s) ? `"${String(s).replace(/"/g, '""')}"` : s);
 
-/**
- * Parse a rankings CSV. Accepts either an explicit `player_id` column (what we
- * export) or a `player` name column, which is what every other site gives you.
- * Name matching is deliberately forgiving about punctuation and suffixes.
- */
-export function fromCsv(text, players) {
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    if (!lines.length) return { order: {}, matched: 0, unmatched: [] };
-
-    const header = splitCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
-    const idCol = header.findIndex((h) => h === 'player_id' || h === 'id' || h === 'sleeper_id');
-    const nameCol = header.findIndex((h) => h === 'player' || h === 'name' || h === 'player_name');
-    const posCol = header.findIndex((h) => h === 'position' || h === 'pos');
-    const rankCol = header.findIndex((h) => h === 'rank' || h === 'overall' || h === 'rk');
-    const hasHeader = idCol >= 0 || nameCol >= 0 || posCol >= 0;
-
-    const nameIndex = buildNameIndex(players);
-    const buckets = {};
-    for (const pos of RANKABLE) buckets[pos] = [];
-    const unmatched = [];
-    let matched = 0;
-
-    for (const line of lines.slice(hasHeader ? 1 : 0)) {
-        const cells = splitCsvLine(line);
-        if (!cells.length) continue;
-
-        let id = idCol >= 0 ? cells[idCol]?.trim() : null;
-        if (id && !players[id]) id = null;
-        if (!id) {
-            const raw = (nameCol >= 0 ? cells[nameCol] : cells[0]) || '';
-            const hit = nameIndex.get(normalizeName(raw));
-            if (hit && hit.length === 1) id = hit[0];
-            else if (hit && hit.length > 1 && posCol >= 0) {
-                // Ragged rows are normal in hand-edited cheat sheets.
-                const wantPos = (cells[posCol] || '').trim().toUpperCase().replace(/[0-9]/g, '');
-                id = hit.find((c) => players[c].pos === wantPos) || null;
-            }
-        }
-        if (!id) {
-            const label = (nameCol >= 0 ? cells[nameCol] : cells[0] || '').trim();
-            if (label) unmatched.push(label);
-            continue;
-        }
-
-        const p = players[id];
-        if (!buckets[p.pos]) continue;
-        const rank = rankCol >= 0 ? Number(cells[rankCol]) : buckets[p.pos].length + 1;
-        buckets[p.pos].push({ id, rank: Number.isFinite(rank) ? rank : 9999 });
-        matched++;
-    }
-
-    const order = {};
-    for (const pos of RANKABLE) {
-        order[pos] = sortBy(buckets[pos], (b) => b.rank).map((b) => b.id);
-    }
-    return { order, matched, unmatched };
-}
 
 function splitCsvLine(line) {
     const out = [];

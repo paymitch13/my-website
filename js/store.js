@@ -19,10 +19,6 @@ const DEFAULTS = {
     userId: null,
     leagueId: null,
     season: null,
-    // Positional order the user has arranged. Position -> [playerId].
-    // Tiers are derived from value gaps rather than stored: there is no manual
-    // tiering UI, so a persisted tier map would only ever go stale.
-    order: {},
     settings: {
         simIterations: 2000,
         autoRefreshLive: true,
@@ -81,6 +77,7 @@ export const persists = probePersistence();
 
 export const state = { ...DEFAULTS, ...read(KEY, {}) };
 state.settings = { ...DEFAULTS.settings, ...(state.settings || {}) };
+dropLegacyOrder();
 
 export function save() {
     state.updatedAt = new Date().toISOString();
@@ -92,8 +89,19 @@ export function update(patch) {
     save();
 }
 
-export function resetRankings() {
-    state.order = {};
+/**
+ * Drop a hand-sorted ordering left behind by an older version.
+ *
+ * The board used to be draggable, and saving an edit persisted the WHOLE
+ * ordering -- so one drag froze every ranked player at that moment and the
+ * merge on each later load kept it that way. Anyone who used it has a stale
+ * board sitting in their browser right now, and it would simply be ignored,
+ * which wastes their quota and leaves a confusing artefact behind. Cleared
+ * once, on load, rather than migrated: there is nothing to migrate it into.
+ */
+function dropLegacyOrder() {
+    if (!state.order) return;
+    delete state.order;
     save();
 }
 

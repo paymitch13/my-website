@@ -1,10 +1,14 @@
-// My Rankings — the customizable board every other number is derived from.
+// Rankings — the model's ordering, which every other number is derived from.
+//
+// This was a board the user could drag, and it is not any more. Saving an edit
+// persisted the WHOLE ordering, so one drag froze every ranked player at that
+// moment's opinion and the merge on each later load preserved it -- an app that
+// silently stopped incorporating results from the day you first touched it.
 
-import { RANKABLE, autoTiers, fromCsv, nudge, reorder, toCsv } from '../rankings.js';
+import { RANKABLE, autoTiers, toCsv } from '../rankings.js';
 import { valuePlayer } from '../valuation.js';
 import { scoringLabel } from '../league.js';
-import * as store from '../store.js';
-import { banner, download, el, emptyState, modal, playerCell, toast } from '../ui.js';
+import { banner, download, el, emptyState, playerCell, toast } from '../ui.js';
 import { formatValue } from '../tradevalue.js';
 import { priceOf } from '../trade.js';
 
@@ -15,7 +19,6 @@ export default function renderRankings(app) {
     let pos = sessionStorage.getItem('ffc:rankPos') || 'RB';
     let query = '';
     let showTiers = true;
-    let justMoved = null;
 
     const listHost = el('div', { class: 'board' });
     const countLabel = el('span', { class: 'hint' });
@@ -26,13 +29,14 @@ export default function renderRankings(app) {
         el(
             'div',
             { class: 'page-head' },
-            el('h1', {}, 'My Rankings'),
+            el('h1', {}, 'Rankings'),
             el(
                 'p',
                 { class: 'sub' },
-                'This board is the opinion the whole app runs on. Every trade value, power ranking and playoff ',
-                'projection updates from the order you set here. Drag to reorder on a desktop, or use the ',
-                '▲ ▼ buttons and # to jump a player to an exact rank.'
+                'The model’s ordering, re-derived from the evidence every time this loads: the preseason ',
+                'projection updated by what each player has actually done this season, under your league’s ',
+                'scoring. Two numbers per player — what he costs in a trade, and what he adds to a starting ',
+                'lineup. They are different questions and they disagree most for bench players.'
             )
         )
     );
@@ -40,7 +44,7 @@ export default function renderRankings(app) {
     if (app.league) {
         root.append(
             banner(
-                `Values shown for ${app.league.cfg.name} — ${app.league.cfg.teams} teams, ${scoringLabel(app.league.cfg.scoring)}${app.league.cfg.superflex ? ', superflex' : ''}. Ranking order is yours; the value column translates it into this league's scoring.`
+                `Ranked for ${app.league.cfg.name} — ${app.league.cfg.teams} teams, ${scoringLabel(app.league.cfg.scoring)}${app.league.cfg.superflex ? ', superflex' : ''}. Scoring and roster slots both move these numbers, so the order here is specific to this league.`
             )
         );
     } else {
@@ -136,14 +140,23 @@ export default function renderRankings(app) {
                     },
                     'Tiers'
                 ),
-                el('button', { class: 'btn btn-sm', onclick: openImport }, 'Import CSV'),
-                el('button', { class: 'btn btn-sm', onclick: doExport }, 'Export CSV'),
-                el('button', { class: 'btn btn-sm btn-danger', onclick: doReset }, 'Reset')
+                el('button', { class: 'btn btn-sm', onclick: doExport }, 'Export CSV')
             )
         )
     );
 
-    root.append(el('div', { class: 'section-head' }, el('h2', {}, 'Board'), countLabel));
+    root.append(el('div', { class: 'section-head' }, el('h2', {}, 'Model ranking'), countLabel));
+    root.append(
+        el(
+            'div',
+            { class: 'prow prow-head' },
+            el('span', { class: 'rank' }, ''),
+            el('span', { class: 'grow' }, 'PLAYER'),
+            el('span', { class: 'val' }, 'TRADE'),
+            el('span', { class: 'val' }, 'LINEUP'),
+            el('span', { style: 'min-width:68px' }, '')
+        )
+    );
     root.append(listHost);
 
     // ---- Painting ---------------------------------------------------------
@@ -238,196 +251,51 @@ export default function renderRankings(app) {
     };
 
     function row(player, index, val) {
-        const node = el(
+        const cost = priceFor(player, val);
+        const lineup = val ? app.tradeValue(val.value) : null;
+        // Shown side by side rather than one in a tooltip. They answer
+        // different questions and they disagree most exactly where a reader is
+        // most likely to be surprised: a backup quarterback costs real money
+        // and contributes nothing to a starting lineup, and both facts are
+        // true at once.
+        const diverges =
+            cost !== null && lineup !== null && Math.abs(cost - lineup) > Math.max(50, cost * 0.2);
+
+        return el(
             'div',
-            {
-                class: `prow${justMoved === player.id ? ' moved' : ''}`,
-                draggable: 'true',
-                dataset: { id: player.id, index: String(index) },
-            },
+            { class: 'prow prow-static', dataset: { id: player.id } },
             el('span', { class: 'rank' }, `${POS_LABEL[pos]}${index + 1}`),
-            el('span', { class: 'grip', 'aria-hidden': 'true' }, '⋮⋮'),
             playerCell(player, { showTeam: true }),
             el(
                 'span',
-                {
-                    class: 'val',
-                    title: (() => {
-                        const mine = val ? app.tradeValue(val.value) : null;
-                        const cost = priceFor(player, val);
-                        const bits = ['What he costs in a trade here.'];
-                        // Only worth saying when the two numbers actually
-                        // disagree -- for most starters they do not.
-                        if (mine !== null && cost !== null && Math.abs(cost - mine) > Math.max(50, cost * 0.2)) {
-                            bits.push(`Worth ${formatValue(mine)} to your own starting lineup.`);
-                        }
-                        if (val?.projectedRank) bits.push(`Projection has him ${POS_LABEL[pos]}${val.projectedRank}.`);
-                        return bits.join(' ');
-                    })(),
-                },
-                val ? formatValue(priceFor(player, val)) : '—',
-                val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
-                    ? el(
-                          'span',
-                          {
-                              class: 'tiny dim',
-                              style: 'margin-left:6px',
-                          },
-                          `proj ${val.projectedRank}`
-                      )
-                    : null
+                { class: 'val', title: 'What he costs in a trade in this league.' },
+                cost !== null ? formatValue(cost) : '—'
             ),
             el(
                 'span',
-                { class: 'row', style: 'gap:2px;flex-wrap:nowrap' },
-                el('button', { class: 'btn btn-sm btn-icon', title: 'Move up', onclick: () => move(player.id, -1) }, '▲'),
-                el('button', { class: 'btn btn-sm btn-icon', title: 'Move down', onclick: () => move(player.id, 1) }, '▼'),
-                el('button', { class: 'btn btn-sm btn-icon', title: 'Move to a specific rank', onclick: () => promptRank(player, index) }, '#')
+                {
+                    class: `val ${diverges ? 'dim' : 'dim'}`,
+                    title: 'What he adds to a starting lineup — points above replacement, scaled. Near zero for anyone behind a starter, which is correct and is why it is not the price.',
+                },
+                lineup !== null ? formatValue(lineup) : '—'
+            ),
+            // Where the projection disagrees with where he is ranked, which is
+            // the whole buy-low signal and worth surfacing rather than hiding.
+            el(
+                'span',
+                { class: 'tiny dim', style: 'min-width:68px;text-align:right' },
+                val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
+                    ? `proj ${POS_LABEL[pos]}${val.projectedRank}`
+                    : ''
             )
         );
-
-        node.addEventListener('dragstart', (e) => {
-            e.dataTransfer.setData('text/plain', player.id);
-            e.dataTransfer.effectAllowed = 'move';
-            node.classList.add('dragging');
-        });
-        node.addEventListener('dragend', () => node.classList.remove('dragging'));
-        node.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            node.classList.add('drop-target');
-        });
-        node.addEventListener('dragleave', () => node.classList.remove('drop-target'));
-        node.addEventListener('drop', (e) => {
-            e.preventDefault();
-            node.classList.remove('drop-target');
-            const draggedId = e.dataTransfer.getData('text/plain');
-            if (!draggedId || draggedId === player.id) return;
-            moveTo(draggedId, index);
-        });
-
-        return node;
     }
 
-    function move(id, delta) {
-        app.saveOrder(nudge(app.order, pos, id, delta));
-        justMoved = id;
-        paint();
-        setTimeout(() => (justMoved = null), 800);
-    }
-
-    function moveTo(id, index) {
-        app.saveOrder(reorder(app.order, pos, id, index));
-        justMoved = id;
-        paint();
-        setTimeout(() => (justMoved = null), 800);
-    }
-
-    function promptRank(player, index) {
-        const input = el('input', { type: 'number', min: '1', max: String((app.order[pos] || []).length), value: String(index + 1) });
-        const apply = () => {
-            const n = Number(input.value);
-            if (Number.isFinite(n) && n >= 1) moveTo(player.id, n - 1);
-            m.close();
-        };
-        const m = modal({
-            title: `Move ${player.name}`,
-            body: el('div', { class: 'field' }, el('label', {}, `New ${POS_LABEL[pos]} rank`), input),
-            footer: el('button', { class: 'btn btn-primary', onclick: apply }, 'Move'),
-        });
-        input.addEventListener('keydown', (e) => e.key === 'Enter' && apply());
-        setTimeout(() => input.select(), 30);
-    }
-
-    // ---- Import / export --------------------------------------------------
+    // ---- Export -----------------------------------------------------------
 
     function doExport() {
         download(`payton-rankings-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(app.order, app.players));
         toast('Rankings exported.', 'good');
-    }
-
-    function doReset() {
-        const m = modal({
-            title: 'Reset rankings?',
-            body: el('p', { class: 'muted' }, 'This clears every manual change to your rankings and re-seeds the board from projections. Your league connection and settings are untouched. It cannot be undone.'),
-            footer: el(
-                'div',
-                { class: 'row' },
-                el('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
-                el(
-                    'button',
-                    {
-                        class: 'btn btn-danger',
-                        onclick: () => {
-                            store.resetRankings();
-                            app.rebuild();
-                            m.close();
-                            toast('Rankings reset to the Sleeper baseline.');
-                            app.render();
-                        },
-                    },
-                    'Reset my rankings'
-                )
-            ),
-        });
-    }
-
-    function openImport() {
-        const file = el('input', { type: 'file', accept: '.csv,text/csv' });
-        const textarea = el('textarea', { rows: '8', placeholder: '…or paste CSV here.\n\nplayer,position,rank\nJustin Jefferson,WR,1' });
-        const status = el('div', { style: 'margin-top:12px' });
-
-        const handle = (text) => {
-            const parsed = fromCsv(text, app.players);
-            if (!parsed.matched) {
-                status.replaceChildren(banner('No players matched. Make sure there is a player-name column.', 'bad'));
-                return;
-            }
-            // Only replace positions the file actually covered, so importing a
-            // WR-only cheat sheet does not wipe the other five boards.
-            const merged = { ...app.order };
-            for (const p of RANKABLE) {
-                if (parsed.order[p]?.length) {
-                    const imported = parsed.order[p];
-                    const rest = (app.order[p] || []).filter((id) => !imported.includes(id));
-                    merged[p] = [...imported, ...rest];
-                }
-            }
-            app.saveOrder(merged);
-
-            const touched = RANKABLE.filter((p) => parsed.order[p]?.length);
-            status.replaceChildren(
-                banner(`Imported ${parsed.matched} players across ${touched.join(', ')}.`, ''),
-                parsed.unmatched.length
-                    ? el(
-                          'div',
-                          { class: 'small muted', style: 'margin-top:8px' },
-                          `${parsed.unmatched.length} name${parsed.unmatched.length === 1 ? '' : 's'} could not be matched: ${parsed.unmatched.slice(0, 12).join(', ')}${parsed.unmatched.length > 12 ? '…' : ''}`
-                      )
-                    : null
-            );
-            paint();
-            toast(`Imported ${parsed.matched} rankings.`, 'good');
-        };
-
-        file.addEventListener('change', () => {
-            const f = file.files?.[0];
-            if (!f) return;
-            f.text().then(handle);
-        });
-
-        modal({
-            title: 'Import rankings',
-            body: el(
-                'div',
-                {},
-                el('p', { class: 'muted small' }, 'Accepts any CSV with a player-name column. A rank column is used if present, otherwise row order wins. Positions not in the file are left alone.'),
-                file,
-                el('div', { style: 'margin-top:12px' }, textarea),
-                el('button', { class: 'btn btn-primary', style: 'margin-top:10px', onclick: () => handle(textarea.value) }, 'Import pasted text'),
-                status
-            ),
-            width: '600px',
-        });
     }
 
     paint();

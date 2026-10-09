@@ -946,3 +946,18 @@ input::placeholder { color: var(--text-3); }
    so the claim is checkable rather than taken on faith. */
 .edge-row { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
 .edge-row:last-child { border-bottom: 0; }
+
+/* The rankings board is read-only now: no grip, no drag affordance, and two
+   numeric columns instead of one plus a row of move buttons. */
+/* No grip column any more, and two numeric columns instead of one plus a row
+   of move buttons. Reusing the draggable grid left the player name squeezed
+   into the 34px handle slot, which rendered it invisible. */
+.prow-static, .prow-head { grid-template-columns: 42px 1fr auto auto 68px; cursor: default; }
+.prow-head {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--text-3);
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+}
+.prow-head:hover { background: transparent; }

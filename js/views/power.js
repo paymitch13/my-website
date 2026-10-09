@@ -27,7 +27,7 @@ export default function renderPower(app) {
             el(
                 'p',
                 { class: 'sub' },
-                'Records lie. This blends roster strength from your rankings with an all-play record that strips out ',
+                'Records lie. This blends roster strength from the model’s rankings with an all-play record that strips out ',
                 'schedule luck, recent form, injury exposure, and simulated title odds.'
             )
         )

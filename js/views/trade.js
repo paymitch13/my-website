@@ -434,7 +434,7 @@ function renderResult(app, result, repaint) {
     // Splitting the bar on raw points while labelling it with scaled values put
     // 67/33 above text that read 72/28.
     //
-    // Priced at MARKET, not on your board. "Is this fair" is a question about
+    // Priced at MARKET, not on the model's board. "Is this fair" is a question about
     // price, and answering it with your own rankings meant that being higher
     // than the league on your own player made the meter say you were winning a
     // trade you were in fact losing. What you think of him is the second
@@ -445,7 +445,7 @@ function renderResult(app, result, repaint) {
     const split = fairness(scaledA, scaledB);
     const shareA = Math.max(4, Math.min(96, split.aShare * 100));
 
-    // Where your board and the market disagree about the same deal. This is the
+    // Where the model and the market disagree about the same deal. This is the
     // whole point of keeping both: the market decides whether they accept, and
     // you decide whether you should want them to.
     const yourSplit = fairness(app.tradeValue(a.valueIn), app.tradeValue(b.valueIn));

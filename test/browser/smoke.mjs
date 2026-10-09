@@ -1015,10 +1015,58 @@ await page.waitForTimeout(4000);
     }
 }
 
+// --- The ranking is the model's, and cannot be edited ----------------------
+//
+// It used to be draggable, and saving an edit persisted the WHOLE ordering --
+// so one drag froze every ranked player at that moment and the merge on each
+// later load kept it frozen. These assertions are the guard against that
+// coming back: no drag affordance, no move controls, no import.
+{
+    await page.click('#tabs .tab[data-view="rankings"]');
+    await page.waitForTimeout(700);
+
+    const text = (await page.textContent('#view')) || '';
+    if (!/Model ranking/.test(text)) errors.push('rankings: not presented as the model’s ordering');
+
+    const draggable = await page.$$eval('#view .prow[draggable="true"]', (els) => els.length);
+    if (draggable) errors.push(`rankings: ${draggable} rows are still draggable`);
+    const grips = await page.$$eval('#view .grip', (els) => els.length);
+    if (grips) errors.push(`rankings: ${grips} drag handles remain`);
+    for (const label of ['Import CSV', 'Reset']) {
+        if (await page.$(`#view button:has-text("${label}")`)) {
+            errors.push(`rankings: the "${label}" control still exists`);
+        }
+    }
+
+    // Two numeric columns: what he costs, and what he adds to a lineup. They
+    // answer different questions and both are shown rather than one hidden in
+    // a tooltip.
+    const rows = await page.$$eval('#view .prow-static', (els) => els.length);
+    // Counted off the first static row itself: `:first-of-type` matches the
+    // first DIV among siblings, and the column header is a div too.
+    const cols = await page.$$eval('#view .prow-static', (els) =>
+        els.length ? els[0].querySelectorAll('.val').length : 0
+    );
+    if (rows < 5) errors.push(`rankings: only ${rows} rows rendered`);
+    if (cols < 2) errors.push(`rankings: ${cols} value columns, expected trade and lineup`);
+
+    // And the name has to be visible -- reusing the draggable grid squeezed it
+    // into the 34px handle slot, which is how this was caught.
+    const nameWidth = await page.$$eval('#view .prow-static .pname', (els) =>
+        els.length ? els[0].getBoundingClientRect().width : 0
+    );
+    if (nameWidth < 40) errors.push(`rankings: the player name is ${Math.round(nameWidth)}px wide`);
+
+    const o = await overflowOf();
+    if (o.scrolled > 0) errors.push(`rankings: scrolls horizontally by ${o.scrolled}px`);
+    console.log(`  rankings: read-only model board, ${rows} rows, ${cols} value columns`);
+}
+
 // --- Three boards on one card ----------------------------------------------
-// Your rank, the projection and the market price are three different questions
-// and the card has to answer all three. The market fixture is reversed against
-// the projections, so a buy-low or sell-high verdict must appear too.
+// The model's rank, the preseason projection and the market price are three
+// different questions and the card has to answer all three. The market fixture
+// is reversed against the projections, so a buy-low or sell-high verdict must
+// appear too.
 await page.click('#tabs .tab[data-view="rankings"]');
 await page.waitForTimeout(600);
 const nameLink = await page.$('#view button.plink');
@@ -1027,7 +1075,7 @@ if (nameLink) {
     await page.waitForSelector('.modal-backdrop .modal', { timeout: 5000 });
     await page.waitForTimeout(600);
     const card = (await page.textContent('.modal-backdrop .modal')) || '';
-    if (!/Your rank/.test(card)) errors.push('player card: no "your rank"');
+    if (!/Model rank/.test(card)) errors.push('player card: no model rank');
     if (!/Market rank/.test(card)) errors.push('player card: the market board is missing');
     if (!/Projected rank/.test(card)) errors.push('player card: the projection board is missing');
     if (!/(Buy low|Sell high)/.test(card)) {
