@@ -1081,11 +1081,46 @@ if (nameLink) {
     if (!/(Buy low|Sell high)/.test(card)) {
         errors.push('player card: market and projection disagree in the fixture but no edge was surfaced');
     }
+    // The replacement line has to be labelled with the board it was read off.
+    // It used to say "TE7" beside a number pooled from the whole RB/WR/TE
+    // flex, which reads as a claim that seven tight ends in the league are
+    // startable -- a contradiction with the figure next to it.
+    const repl = card.match(/Replacement level \(([^)]+)\)/);
+    if (!repl) errors.push('player card: no replacement level row');
+    else if (!/^(?:[A-Z]{1,3}\/)*[A-Z]{1,3} ?\d+$/.test(repl[1])) {
+        errors.push(`player card: replacement line labelled "${repl[1]}", which names no board`);
+    }
     console.log(`  player card: three boards, ${card.trim().length} chars`);
     await page.keyboard.press('Escape');
     await page.waitForTimeout(400);
 } else {
     errors.push('player card: could not open one');
+}
+
+// --- How the league's slots were read --------------------------------------
+// The interpretation of the roster slots decides every value in the app, and
+// it used to be invisible: a manager who believed the app had his league wrong
+// had nothing to check it against. The panel has to show the slot, who can
+// fill it, and the waiver line that follows -- named after the group it was
+// pooled from, because the fixture has a flex.
+await page.click('#tabs .tab[data-view="league"]');
+await page.waitForTimeout(600);
+const details = await page.$('#view details');
+if (details) {
+    await details.evaluate((d) => { d.open = true; });
+    await page.waitForTimeout(300);
+    const panel = (await page.textContent('#view .slot-read')) || '';
+    if (!/RB\/WR\/TE/.test(panel)) {
+        errors.push('league: the flex group that the waiver line was pooled from is not named');
+    }
+    // The fixture has a dedicated TE slot, so a tight end really is required
+    // in it; a league without one must read "flex only" instead.
+    if (!/required/.test(panel)) errors.push('league: no position is marked required');
+    const badges = await page.$$eval('#view .slot-read td .pos', (els) => els.length);
+    if (badges < 9) errors.push(`league: only ${badges} eligibility badges across the slot table`);
+    console.log(`  league slots: ${badges} eligibility badges, grouped waiver line shown`);
+} else {
+    errors.push('league: the slot-reading panel is missing');
 }
 
 for (const width of [360, 414, 768]) {

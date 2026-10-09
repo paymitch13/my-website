@@ -961,3 +961,28 @@ input::placeholder { color: var(--text-3); }
     background: transparent;
 }
 .prow-head:hover { background: transparent; }
+
+/* --- How the league's slots were read -------------------------------------
+   Two tables side by side: the slots on the left, what they imply per
+   position on the right. They are read together -- the point is the chain
+   from one to the other -- so they stack rather than scroll on a phone. */
+.slot-read {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    gap: 18px;
+    margin-top: 10px;
+}
+.slot-read table { margin: 0; }
+/* These headers are allowed to wrap. Elsewhere a table header stays on one
+   line because the table scrolls sideways; this one is a reference panel that
+   has to fit a phone, and `1fr` tracks cannot shrink below their content's
+   min-content width -- so a nowrap header here sets a floor that stretches
+   the whole grid and pushes the page into a horizontal scroll. */
+.slot-read th { font-weight: 500; white-space: normal; }
+.slot-read th,
+.slot-read td { padding-left: 6px; padding-right: 6px; }
+.slot-read th:first-child,
+.slot-read td:first-child { padding-left: 0; }
+@media (max-width: 760px) {
+    .slot-read { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+}

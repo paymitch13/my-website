@@ -292,7 +292,7 @@ export function openPlayerCard(app, player) {
                     'tbody',
                     {},
                     row('Projected points/game at this rank', round(v.ppg, 2)),
-                    row(`Replacement level (${player.pos}${app.ctx.replacement[player.pos]})`, round(repl, 2)),
+                    row(`Replacement level (${replacementLabel(app.ctx, player.pos)})`, round(repl, 2)),
                     row('Points above replacement/game', fmtDelta(v.parPerGame, 2), v.parPerGame >= 0 ? 'good' : 'bad'),
                     row('Weeks remaining', app.ctx.weeksLeft),
                     player.injury ? row('Availability', `${Math.round(v.availability * 100)}%`, 'warn') : null,
@@ -394,6 +394,22 @@ function row(label, value, cls = '') {
         el('td', { class: 'small' }, label),
         el('td', { class: `num right small ${cls}` }, value)
     );
+}
+
+/**
+ * What the replacement line sitting next to this is a line through.
+ *
+ * In a league with a flex, the line is read off one combined board for every
+ * position that can fill it, so naming the player's own position and a depth
+ * in it describes something else entirely: "TE7" next to the RB/WR/TE line
+ * reads as a claim that seven tight ends in the league are startable, when the
+ * number beside it is the 75th best flex-eligible player. Name the board.
+ */
+function replacementLabel(ctx, pos) {
+    const b = ctx.replacementBasis?.[pos];
+    if (!b) return `${pos}${ctx.replacement?.[pos] ?? ''}`;
+    if (!b.pooled) return `${pos}${b.rank}`;
+    return `${b.positions.join('/')} ${b.rank}`;
 }
 
 function findOwner(app, playerId) {

@@ -6,10 +6,20 @@
 // start three better receivers is worth almost nothing, and the only way to see
 // that is to re-solve the lineup with and without him.
 
-import { SLOT_ELIGIBILITY, slotLabel } from './league.js';
+import { SLOT_ELIGIBILITY, inferSlotEligibility, slotLabel } from './league.js';
 import { sortBy, sum } from './util.js';
 
-const eligible = (slot, pos) => (SLOT_ELIGIBILITY[slot] || []).includes(pos);
+/**
+ * Which positions can fill a slot.
+ *
+ * Falls back to reading the position tokens out of the slot's name, because an
+ * unrecognised name used to resolve to an empty eligibility set -- so the slot
+ * could never be filled by anybody and the roster quietly started a man short
+ * every week, with nothing on screen to say why.
+ */
+const positionsFor = (slot) => SLOT_ELIGIBILITY[slot] || inferSlotEligibility(slot) || [];
+
+const eligible = (slot, pos) => positionsFor(slot).includes(pos);
 
 /**
  * Fill the starting slots to maximize total projected points.
@@ -29,7 +39,7 @@ export function optimizeLineup(entries, slots) {
         slot,
         index: i,
         label: slotLabel(slot),
-        restrictiveness: (SLOT_ELIGIBILITY[slot] || []).length,
+        restrictiveness: positionsFor(slot).length,
         entry: null,
     }));
 

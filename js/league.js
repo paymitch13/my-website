@@ -20,7 +20,16 @@ export const SLOT_ELIGIBILITY = {
     WRRB_WRT: ['RB', 'WR', 'TE'],
     REC_FLEX: ['WR', 'TE'],
     SUPER_FLEX: ['QB', 'RB', 'WR', 'TE'],
+    // Sleeper's name for a superflex in some leagues: "offensive player".
+    OP: ['QB', 'RB', 'WR', 'TE'],
     IDP_FLEX: ['DL', 'LB', 'DB'],
+    // Shorthand slot names other platforms use and leagues copy across.
+    KICKER: ['K'],
+    DEFENSE: ['DEF'],
+    W_R_T: ['RB', 'WR', 'TE'],
+    W_R: ['RB', 'WR'],
+    W_T: ['WR', 'TE'],
+    Q_W_R_T: ['QB', 'RB', 'WR', 'TE'],
     DL: ['DL'],
     LB: ['LB'],
     DB: ['DB'],
@@ -28,6 +37,129 @@ export const SLOT_ELIGIBILITY = {
 
 const BENCH_SLOTS = new Set(['BN', 'IR', 'TAXI']);
 const IDP_SLOTS = new Set(['IDP_FLEX', 'DL', 'LB', 'DB']);
+
+/**
+ * Position tokens, longest first. Single letters are included because the
+ * W/R/T and Q/W/R/T conventions are widespread, and they are only ever matched
+ * as part of a decomposition that consumes a whole word -- never as a
+ * substring.
+ */
+const POS_TOKENS = {
+    SUPER: ['QB', 'RB', 'WR', 'TE'],
+    DST: ['DEF'],
+    DEF: ['DEF'],
+    QB: ['QB'],
+    RB: ['RB'],
+    WR: ['WR'],
+    TE: ['TE'],
+    DL: ['DL'],
+    LB: ['LB'],
+    DB: ['DB'],
+    K: ['K'],
+    Q: ['QB'],
+    W: ['WR'],
+    R: ['RB'],
+    T: ['TE'],
+    D: ['DEF'],
+};
+const TOKENS_LONGEST_FIRST = Object.keys(POS_TOKENS).sort((a, b) => b.length - a.length);
+
+/** Words that decorate a slot name without saying anything about eligibility. */
+const SLOT_NOISE = ['SUPERFLEX', 'FLEX', 'FLX', 'SLOT', 'START', 'UTIL', 'PLAYER', 'SPOT', 'POS', 'PPR', 'REC'];
+
+/** Whole-word names for a slot that take any offensive player. */
+const ANY_OFFENSE = new Set(['OP', 'SF', 'SUPERFLEX', 'SUPER']);
+
+/**
+ * Break one word of a slot name into position tokens, or return null if the
+ * word is not entirely made of them.
+ *
+ * Requiring the WHOLE word to decompose is the point. Matching tokens as bare
+ * substrings reads a tight end out of `MYSTERY` and `STARTER`, and a kicker
+ * out of `BACKUP` -- so an unrelated name would quietly become a roster slot
+ * with eligibility rules attached, which is worse than admitting the name is
+ * not understood.
+ */
+function decomposeSlotWord(word) {
+    if (!word) return null;
+    const out = [];
+    const walk = (rest) => {
+        if (!rest) return true;
+        for (const token of TOKENS_LONGEST_FIRST) {
+            if (!rest.startsWith(token)) continue;
+            out.push(...POS_TOKENS[token]);
+            if (walk(rest.slice(token.length))) return true;
+            out.length -= POS_TOKENS[token].length;
+        }
+        return false;
+    };
+    return walk(word) ? out : null;
+}
+
+/**
+ * Which positions can fill a slot, for a slot name we do not have a table
+ * entry for.
+ *
+ * A slot the app does not recognise used to be dropped silently: it
+ * contributed nothing to the starters-per-position counts and the lineup
+ * solver could never fill it, so the slot sat empty forever and the roster
+ * scored a starter short every week. Nothing anywhere said so. A league with a
+ * flex slot under an unfamiliar name therefore had a permanently broken lineup
+ * and a replacement level computed from the wrong number of starters -- which
+ * is a long way from an obscure edge case, because leagues rename slots and
+ * Sleeper adds them.
+ *
+ * Reading the position tokens out of the name recovers the intent for any
+ * sensible naming: TE_WR_FLEX, W_R_T, FLEX_WR_TE, TEWRFLEX. A name that is not
+ * built out of position tokens returns null and is reported to the user
+ * instead of guessed at.
+ */
+export function inferSlotEligibility(slot) {
+    const name = String(slot || '').toUpperCase();
+    if (!name) return null;
+
+    const found = [];
+    const add = (positions) => {
+        for (const pos of positions) if (!found.includes(pos)) found.push(pos);
+    };
+
+    for (const raw of name.split(/[^A-Z]+/)) {
+        if (!raw) continue;
+        if (ANY_OFFENSE.has(raw)) {
+            add(['QB', 'RB', 'WR', 'TE']);
+            continue;
+        }
+        // Strip the decoration, so a concatenated name like TEWRFLEX or
+        // SUPERFLEX still decomposes. Longest noise word first, so SUPERFLEX
+        // is not left as a bare SUPER by removing FLEX from the middle.
+        let word = raw;
+        for (const noise of SLOT_NOISE) {
+            if (noise === 'SUPERFLEX') continue;
+            word = word.split(noise).join('');
+        }
+        if (!word) continue;
+
+        const positions = decomposeSlotWord(word);
+        // A word that is not made of position tokens says nothing about
+        // eligibility; the other words in the name may still.
+        if (positions) add(positions);
+    }
+
+    if (!found.length) return null;
+    return ALL_POS.filter((p) => found.includes(p)).concat(found.filter((p) => !ALL_POS.includes(p)));
+}
+
+/**
+ * How a slot's single starting spot splits across the positions that can fill
+ * it, for a slot with no measured share. Even weights: without data on how
+ * managers actually fill it, pretending to know the split is worse than
+ * sharing it out.
+ */
+function inferredShare(positions) {
+    const share = {};
+    for (const pos of positions) share[pos] = 1 / positions.length;
+    return share;
+}
 
 /**
  * How a multi-position slot splits across the positions that can fill it.
@@ -39,7 +171,12 @@ const FLEX_SHARE = {
     WRRB_WRT: { RB: 0.36, WR: 0.5, TE: 0.14 },
     WRRB_FLEX: { RB: 0.42, WR: 0.58 },
     REC_FLEX: { WR: 0.72, TE: 0.28 },
+    W_R_T: { RB: 0.36, WR: 0.5, TE: 0.14 },
+    W_R: { RB: 0.42, WR: 0.58 },
+    W_T: { WR: 0.72, TE: 0.28 },
+    Q_W_R_T: { QB: 0.88, RB: 0.04, WR: 0.06, TE: 0.02 },
     SUPER_FLEX: { QB: 0.88, RB: 0.04, WR: 0.06, TE: 0.02 },
+    OP: { QB: 0.88, RB: 0.04, WR: 0.06, TE: 0.02 },
 };
 
 /** Sleeper omits scoring keys that are set to zero, so we need real defaults. */
@@ -103,18 +240,49 @@ export function normalizeLeague(league, opts = {}) {
     const startersByPos = {};
     for (const pos of ALL_POS) startersByPos[pos] = 0;
     let hasIdp = false;
+    // Slots whose name we could not read at all. Surfaced rather than dropped:
+    // a starting slot nobody can fill is a roster scoring a man short every
+    // week, and it must not be invisible.
+    const unreadableSlots = [];
+    // How each slot was interpreted, so the League tab can show its working
+    // and a mis-read league is something the user can see rather than guess at.
+    const slotPositions = {};
 
     for (const slot of starterSlots) {
         if (IDP_SLOTS.has(slot)) {
             hasIdp = true;
+            slotPositions[slot] = SLOT_ELIGIBILITY[slot] || [];
             continue;
         }
-        const share = FLEX_SHARE[slot];
-        if (share) {
-            for (const [pos, w] of Object.entries(share)) startersByPos[pos] += w;
-        } else if (startersByPos[slot] !== undefined) {
-            startersByPos[slot] += 1;
+
+        const known = SLOT_ELIGIBILITY[slot] || null;
+        const eligible = known || inferSlotEligibility(slot);
+        if (!eligible?.length) {
+            unreadableSlots.push(slot);
+            slotPositions[slot] = [];
+            continue;
         }
+        slotPositions[slot] = eligible;
+
+        const offensive = eligible.filter((p) => ALL_POS.includes(p));
+        if (!offensive.length) continue;
+
+        // A measured share where we have one, an even split where we do not.
+        const share = FLEX_SHARE[slot] || (offensive.length > 1 ? inferredShare(offensive) : null);
+        if (share) {
+            for (const [pos, w] of Object.entries(share)) {
+                if (startersByPos[pos] !== undefined) startersByPos[pos] += w;
+            }
+        } else {
+            startersByPos[offensive[0]] += 1;
+        }
+    }
+
+    if (unreadableSlots.length) {
+        console.warn(
+            `Roster slots this app cannot interpret: ${[...new Set(unreadableSlots)].join(', ')}. ` +
+            'They are shown on the League tab and excluded from lineup solving.'
+        );
     }
 
     const superflex = starterSlots.some((s) => s === 'SUPER_FLEX') || startersByPos.QB >= 1.5;
@@ -130,6 +298,9 @@ export function normalizeLeague(league, opts = {}) {
         benchSize,
         rosterSize: rosterPositions.length,
         startersByPos,
+        // Which positions can fill each starting slot, as the app read them.
+        slotPositions,
+        unreadableSlots: [...new Set(unreadableSlots)],
         superflex,
         hasIdp,
         tePremium: (league?.scoring_settings?.bonus_rec_te ?? 0) > 0,
@@ -180,7 +351,28 @@ export function replacementRanks(cfg) {
         const depth = startersLeaguewide + (startersLeaguewide > 0 ? cfg.teams * cushion * 0.35 : 0);
         out[pos] = Math.max(1, Math.round(depth));
     }
+
     return out;
+}
+
+/** Which positions this league believes can fill a slot. */
+export function slotEligibility(cfg, slot) {
+    return cfg?.slotPositions?.[slot] || SLOT_ELIGIBILITY[slot] || inferSlotEligibility(slot) || [];
+}
+
+/**
+ * Does this league start this position in a slot only it can fill?
+ *
+ * The question behind it is whether the position is REQUIRED. A league with a
+ * TE slot forces every manager to start a tight end; a league whose tight ends
+ * are only ever startable through a flex does not, and treating the two the
+ * same tells a manager he has a hole where he has made a choice.
+ */
+export function hasDedicatedSlot(cfg, pos) {
+    return (cfg?.starterSlots || []).some((slot) => {
+        const eligible = slotEligibility(cfg, slot);
+        return eligible.length === 1 && eligible[0] === pos;
+    });
 }
 
 /**
@@ -220,7 +412,11 @@ export function flexGroups(cfg) {
     const dedicated = {};
     const flexSlots = [];
     for (const slot of cfg.starterSlots) {
-        const eligible = (SLOT_ELIGIBILITY[slot] || []).filter((p) => parent.has(p));
+        // Read through the league's own interpretation of the slot, not the
+        // bare table: a league that renamed its flexes would otherwise have
+        // every one of them skipped here, which switches the pooling off
+        // entirely and hands each position a separate waiver line again.
+        const eligible = slotEligibility(cfg, slot).filter((p) => parent.has(p));
         if (!eligible.length) continue;
         if (eligible.length === 1) {
             dedicated[eligible[0]] = (dedicated[eligible[0]] || 0) + 1;

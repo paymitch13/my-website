@@ -12,6 +12,7 @@
 
 import { mean, sortBy } from './util.js';
 import { optimizeLineup, positionalReport } from './lineup.js';
+import { hasDedicatedSlot } from './league.js';
 
 export const NEED_POSITIONS = ['QB', 'RB', 'WR', 'TE'];
 
@@ -89,7 +90,7 @@ export function rosterNeeds(
     report,
     avgByPos,
     positions = NEED_POSITIONS,
-    { perSlotAvg = null, bestAvg = null, weakAvg = null } = {}
+    { perSlotAvg = null, bestAvg = null, weakAvg = null, cfg = null } = {}
 ) {
     const out = {};
     for (const pos of positions) {
@@ -99,9 +100,28 @@ export function rosterNeeds(
         // Measure the hole per starting slot where we can, so a different
         // lineup shape does not masquerade as a deficit.
         const perSlot = v.startingPerSlot ?? (v.startingPoints ?? 0) / Math.max(1, v.starting || 1);
-        const deficit = perSlotAvg && v.starting > 0
-            ? ((perSlotAvg[pos] ?? 0) - perSlot) * Math.max(1, v.starting)
-            : (avgByPos[pos] ?? 0) - (v.startingPoints ?? 0);
+
+        // Starting NONE of a position is only a hole if the league makes you
+        // start one.
+        //
+        // The fallback below measures a roster against the league's average
+        // starting production at the position, which is the right question for
+        // an empty REQUIRED slot -- an empty TE slot really is a man short
+        // every week. It is the wrong question entirely when the position is
+        // startable only through a flex. A league with a RB/WR/TE flex and a
+        // WR/TE flex and no dedicated TE lets a manager fill both with backs
+        // and receivers and never own a tight end; his lineup is FULL. Run the
+        // fallback on him and he is handed the largest deficit on his roster
+        // for a position he does not need, while a rival who starts a tight
+        // end and scores fewer points is told he is fine. The flexes are
+        // already counted under the positions actually filling them, so there
+        // is nothing left to charge him for.
+        const optional = cfg && v.starting === 0 && !hasDedicatedSlot(cfg, pos);
+        const deficit = optional
+            ? 0
+            : perSlotAvg && v.starting > 0
+              ? ((perSlotAvg[pos] ?? 0) - perSlot) * Math.max(1, v.starting)
+              : (avgByPos[pos] ?? 0) - (v.startingPoints ?? 0);
 
         // Surplus is bench value ABOVE REPLACEMENT, not absolute bench scoring.
         // Two backup quarterbacks out-score spare running backs and are worth
@@ -178,7 +198,7 @@ export function buildLeagueNeeds({ teams, entriesFor, cfg, replacementPpg = null
     for (const r of reports) {
         byRoster.set(r.rosterId, {
             ...r,
-            needs: rosterNeeds(r.report, avgByPos, NEED_POSITIONS, { perSlotAvg, bestAvg, weakAvg }),
+            needs: rosterNeeds(r.report, avgByPos, NEED_POSITIONS, { perSlotAvg, bestAvg, weakAvg, cfg }),
         });
     }
     // A plain object, not a property bolted onto a Map: that survives cloning,

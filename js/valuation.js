@@ -330,7 +330,16 @@ export function softplusPar(par, k = PAR_SOFTNESS) {
  */
 function sharedReplacement({ cfg, curves, ppgAtRank, replacement }) {
     const out = {};
-    for (const pos of ALL_POS) out[pos] = ppgAtRank(pos, replacement[pos]);
+    // What each line is a line THROUGH, so the number can be labelled with the
+    // board it was read off. A per-position rank printed next to a pooled
+    // number is a contradiction the user has to resolve themselves: "TE7"
+    // beside the RB/WR/TE line claims seven startable tight ends in the whole
+    // league, which is not what the points beside it mean.
+    const basis = {};
+    for (const pos of ALL_POS) {
+        out[pos] = ppgAtRank(pos, replacement[pos]);
+        basis[pos] = { positions: [pos], rank: replacement[pos], pooled: false };
+    }
 
     for (const group of flexGroups(cfg)) {
         if (group.positions.length < 2) continue;
@@ -342,10 +351,14 @@ function sharedReplacement({ cfg, curves, ppgAtRank, replacement }) {
 
         const starters = cfg.teams * group.startersPerTeam;
         const depth = starters + cfg.teams * group.cushion * 0.35;
-        const line = pooled[Math.min(pooled.length, Math.max(1, Math.round(depth))) - 1];
-        for (const pos of group.positions) out[pos] = line;
+        const rank = Math.min(pooled.length, Math.max(1, Math.round(depth)));
+        const line = pooled[rank - 1];
+        for (const pos of group.positions) {
+            out[pos] = line;
+            basis[pos] = { positions: group.positions, rank, pooled: true };
+        }
     }
-    return out;
+    return { ppg: out, basis };
 }
 
 /**
@@ -370,7 +383,12 @@ export function createValuationContext(cfg, {
     const ppgAtRank = (pos, rank) =>
         curveLookup(curves?.[pos], rank, () => ppgFor(pos, rank, cfg.scoring));
 
-    const replacementPpg = sharedReplacement({ cfg, curves, ppgAtRank, replacement });
+    const { ppg: replacementPpg, basis: replacementBasis } = sharedReplacement({
+        cfg,
+        curves,
+        ppgAtRank,
+        replacement,
+    });
 
     return {
         cfg,
@@ -380,6 +398,8 @@ export function createValuationContext(cfg, {
         seasonLength: Math.max(1, (cfg.playoffWeekStart || 15) - 1),
         replacement,
         replacementPpg,
+        // Which board each replacement line was read off, and at what depth.
+        replacementBasis,
         curves,
         projections,
         actuals,

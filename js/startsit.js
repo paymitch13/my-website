@@ -15,7 +15,7 @@
 // by the same optimizer the trade engine uses.
 
 import { optimizeLineup } from './lineup.js';
-import { SLOT_ELIGIBILITY } from './league.js';
+import { SLOT_ELIGIBILITY, inferSlotEligibility } from './league.js';
 import { scoreStats } from './projections.js';
 import { weeklyPlayProbability, ruledOutThisWeek } from './valuation.js';
 import { matchupImpact, describeMatchup } from './matchup.js';
@@ -321,7 +321,9 @@ export function buildStartSitReport({ team, cfg, evaluations }) {
     // So: for each slot, everyone eligible to fill it, ranked. The gap is
     // reported rather than used as a filter.
     const decisions = lineup.starters.map((slot) => {
-        const eligible = SLOT_ELIGIBILITY[slot.slot] || [];
+        // Same fallback as the solver: an unrecognised slot name must not
+        // silently have nobody eligible for it.
+        const eligible = SLOT_ELIGIBILITY[slot.slot] || inferSlotEligibility(slot.slot) || [];
         const alternatives = bench
             .filter((e) => eligible.includes(e.player.pos))
             .map((e) => ({ entry: e, gap: slot.entry.score - e.score }));
