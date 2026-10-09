@@ -952,7 +952,7 @@ input::placeholder { color: var(--text-3); }
 /* No grip column any more, and two numeric columns instead of one plus a row
    of move buttons. Reusing the draggable grid left the player name squeezed
    into the 34px handle slot, which rendered it invisible. */
-.prow-static, .prow-head { grid-template-columns: 42px 1fr auto auto 68px; cursor: default; }
+.prow-static, .prow-head { grid-template-columns: 42px 1fr auto auto 58px; cursor: default; }
 .prow-head {
     font-size: 11px;
     letter-spacing: 0.06em;
@@ -961,6 +961,17 @@ input::placeholder { color: var(--text-3); }
     background: transparent;
 }
 .prow-head:hover { background: transparent; }
+
+/* Movement since the preseason projection. Tabular figures so the arrows line
+   up down the column and the eye can scan for the big movers. */
+.move {
+    min-width: 58px;
+    text-align: right;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.prow-head .move { font-size: 11px; }
 
 /* --- How the league's slots were read -------------------------------------
    Two tables side by side: the slots on the left, what they imply per

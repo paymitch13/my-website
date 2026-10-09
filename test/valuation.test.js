@@ -217,3 +217,50 @@ test('IDP slots are detected so the app can say it cannot value them', () => {
     });
     assert.equal(plain.hasIdp, false);
 });
+
+// --- Where he started, versus where his old number would rank now ---------
+// Two different questions, and the rankings board's movement column depends on
+// the difference. Ranking a preseason projection against the CURRENT curve
+// drifts for everybody, because a few games of variance always lift the top of
+// a curve, so a player who has not moved reads as having fallen.
+
+const ladder = (n = 12) => {
+    const projections = {};
+    for (let i = 0; i < n; i++) {
+        projections[`rb${i}`] = { id: `rb${i}`, pos: 'RB', games: 17, stats: { rush_yd: 1700 - i * 100 } };
+    }
+    return projections;
+};
+const rbLeague = () =>
+    normalizeLeague({
+        settings: { num_teams: 12, playoff_week_start: 15 },
+        scoring_settings: { rush_yd: 0.1, rec: 0.5, rec_yd: 0.1 },
+        roster_positions: defaultRosterPositions(),
+    });
+
+test('preseasonRank measures the preseason board, not today’s', () => {
+    const projections = ladder();
+    // One back has been excellent for four games and nobody else has played.
+    // That lifts the top of the blended curve without changing a projection.
+    const actuals = { rb9: { id: 'rb9', pos: 'RB', games: 4, stats: { rush_yd: 800 } } };
+
+    const ctx = createValuationContext(rbLeague(), { week: 5, weeksLeft: 10, projections, actuals });
+    const v = valuePlayer({ id: 'rb3', name: 'Untouched', pos: 'RB', age: 25 }, 4, ctx);
+
+    // His projection is the 4th best of the twelve and it still is: the
+    // preseason curve does not know about rb9's four games.
+    assert.equal(v.preseasonRank, 4, 'a player nobody touched must sit where he started');
+    // The blended curve does know, so the same untouched projection ranks
+    // lower against it. That drift is what the column must not report as
+    // movement.
+    assert.ok(
+        v.projectedRank >= v.preseasonRank,
+        `projectedRank ${v.projectedRank} should sit at or below preseasonRank ${v.preseasonRank}`
+    );
+});
+
+test('with no results played, the two ranks are the same thing', () => {
+    const ctx = createValuationContext(rbLeague(), { week: 1, weeksLeft: 14, projections: ladder() });
+    const v = valuePlayer({ id: 'rb5', name: 'X', pos: 'RB', age: 25 }, 6, ctx);
+    assert.equal(v.preseasonRank, v.projectedRank, 'before kickoff there is nothing to drift against');
+});

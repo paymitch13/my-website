@@ -380,6 +380,19 @@ export function createValuationContext(cfg, {
     const replacement = replacementRanks(cfg);
     const curves = buildCurves({ cfg, projections, actuals, week });
 
+    // The board as it stood in August, kept so "how far has he moved this
+    // season" can be answered against the right baseline.
+    //
+    // Ranking a preseason projection against the CURRENT curve does not answer
+    // it: this season's results lift the top of every curve (the week-5 QB
+    // curve peaks at 23.9 points a game against the preseason 20.7, because
+    // four games of variance always produce somebody hot), so the same
+    // untouched projection slides a couple of ranks down it. Measured on real
+    // week-5 data that drift is a median of 4 ranks at quarterback and 2 at
+    // running back -- against a median true move of 7, enough to show movement
+    // for a player who has not moved at all.
+    const preseasonCurves = actuals ? buildCurves({ cfg, projections, actuals: null, week }) : curves;
+
     const ppgAtRank = (pos, rank) =>
         curveLookup(curves?.[pos], rank, () => ppgFor(pos, rank, cfg.scoring));
 
@@ -401,6 +414,7 @@ export function createValuationContext(cfg, {
         // Which board each replacement line was read off, and at what depth.
         replacementBasis,
         curves,
+        preseasonCurves,
         projections,
         actuals,
         ppgAtRank,
@@ -473,10 +487,11 @@ export function valuePlayer(player, posRank, ctx) {
         }
     }
 
+    // The preseason projection alone, with no results folded in. Both ranks
+    // below are derived from it; they differ in which curve they measure it
+    // against.
     const own = ctx.projections?.[player.id] || null;
     const ownPpg = own ? projectedPpg(own, ctx.cfg.scoring) : null;
-    // Blend in actuals the same way the curve does, so a player's projected
-    // rank is measured on the same scale as the curve he is ranked against.
 
     return {
         player,
@@ -492,12 +507,22 @@ export function valuePlayer(player, posRank, ctx) {
         projection: own,
         projectedPpg: ownPpg,
         projectedRank: ownPpg !== null ? projectedRankOf(ctx, pos, ownPpg) : null,
+        // Where this player sat on the board before a game was played, which
+        // is a different question from the one above: that one asks where his
+        // preseason number would rank TODAY, this one asks where it ranked
+        // THEN. Only the second can be compared with his rank now.
+        preseasonRank:
+            ownPpg !== null ? rankOnCurve(ctx.preseasonCurves?.[pos], ownPpg) : null,
     };
 }
 
 /** Where a per-game number would land on the position's projected curve. */
 function projectedRankOf(ctx, pos, ppg) {
-    const curve = ctx.curves?.[pos];
+    return rankOnCurve(ctx.curves?.[pos], ppg);
+}
+
+/** Where a per-game number falls in a descending curve, as a 1-based rank. */
+function rankOnCurve(curve, ppg) {
     if (!curve) return null;
     let lo = 0;
     let hi = curve.length;

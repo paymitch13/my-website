@@ -5,7 +5,7 @@
 // moment's opinion and the merge on each later load preserved it -- an app that
 // silently stopped incorporating results from the day you first touched it.
 
-import { RANKABLE, autoTiers, toCsv } from '../rankings.js';
+import { RANKABLE, autoTiers, boardVintage, toCsv } from '../rankings.js';
 import { valuePlayer } from '../valuation.js';
 import { scoringLabel } from '../league.js';
 import { banner, download, el, emptyState, playerCell, toast } from '../ui.js';
@@ -47,6 +47,7 @@ export default function renderRankings(app) {
                 `Ranked for ${app.league.cfg.name} — ${app.league.cfg.teams} teams, ${scoringLabel(app.league.cfg.scoring)}${app.league.cfg.superflex ? ', superflex' : ''}. Scoring and roster slots both move these numbers, so the order here is specific to this league.`
             )
         );
+        root.append(vintageNote(app));
     } else {
         root.append(
             banner('Not connected to a league yet — values assume a standard 12-team, half-PPR setup. Connect a Sleeper league to make them exact.', 'warn')
@@ -154,7 +155,11 @@ export default function renderRankings(app) {
             el('span', { class: 'grow' }, 'PLAYER'),
             el('span', { class: 'val' }, 'TRADE'),
             el('span', { class: 'val' }, 'LINEUP'),
-            el('span', { style: 'min-width:68px' }, '')
+            el(
+                'span',
+                { class: 'move', title: 'Change in positional rank since the preseason projection.' },
+                'SINCE AUG'
+            )
         )
     );
     root.append(listHost);
@@ -279,16 +284,82 @@ export default function renderRankings(app) {
                 },
                 lineup !== null ? formatValue(lineup) : '—'
             ),
-            // Where the projection disagrees with where he is ranked, which is
-            // the whole buy-low signal and worth surfacing rather than hiding.
-            el(
-                'span',
-                { class: 'tiny dim', style: 'min-width:68px;text-align:right' },
-                val?.projectedRank && Math.abs(val.projectedRank - (index + 1)) >= 8
-                    ? `proj ${POS_LABEL[pos]}${val.projectedRank}`
-                    : ''
-            )
+            moveCell(val, index + 1)
         );
+    }
+
+    /**
+     * How far this season has moved him, as a signed number of ranks.
+     *
+     * The board has always been rebuilt from the evidence, and it does move:
+     * on week-5 data four fifths of players shift the way their production
+     * says, by a median of seven ranks. None of that was visible. The old cell
+     * printed a bare "proj RB11" and only when the gap reached eight, so most
+     * rows showed nothing at all and the board looked frozen -- which is
+     * exactly the complaint it should have been answering.
+     */
+    function moveCell(val, rank) {
+        const was = val?.preseasonRank ?? null;
+        const moved = was === null ? null : was - rank;
+        const cell = el('span', { class: 'move' });
+        if (moved === null) {
+            cell.textContent = '';
+            cell.title = 'No preseason projection for this player, so there is nothing to compare.';
+            return cell;
+        }
+        // Two ranks is inside the noise of a curve lookup and not worth a
+        // reader's attention; anything more is real.
+        if (Math.abs(moved) < 3) {
+            cell.textContent = '–';
+            cell.classList.add('dim');
+            cell.title = `Preseason ${POS_LABEL[pos]}${was}, now ${POS_LABEL[pos]}${rank} — essentially where he started.`;
+            return cell;
+        }
+        cell.classList.add(moved > 0 ? 'good' : 'bad');
+        cell.textContent = `${moved > 0 ? '▲' : '▼'}${Math.abs(moved)}`;
+        cell.title =
+            `Preseason ${POS_LABEL[pos]}${was}, now ${POS_LABEL[pos]}${rank} — ` +
+            `${moved > 0 ? 'up' : 'down'} ${Math.abs(moved)} on this season's results and the market's price.`;
+        return cell;
+    }
+
+    /**
+     * What this board has read, stated where the board is.
+     *
+     * Typical games played rather than the week number: a manager reading
+     * "through week 4" next to a player who has played twice is owed the
+     * difference, and the weight the results carry is derived from the games,
+     * not the date.
+     */
+    function vintageNote(app) {
+        const games = typicalGames(app);
+        return el(
+            'p',
+            { class: 'tiny dim', style: 'margin:8px 0 0' },
+            boardVintage({
+                lastPlayed: app.league?.lastPlayed ?? 0,
+                season: app.league?.raw?.season ?? app.season,
+                games,
+                market: !!app.ctx?.market,
+                projected: !!app.ctx?.projected,
+            })
+        );
+    }
+
+    /** Median games played among ranked players, which is what the weight uses. */
+    function typicalGames(app) {
+        if (!app.actuals) return null;
+        const counts = [];
+        for (const p of RANKABLE) {
+            const top = (app.order?.[p] || []).slice(0, 36);
+            for (const id of top) {
+                const g = app.actuals[id]?.games;
+                if (g > 0) counts.push(g);
+            }
+        }
+        if (!counts.length) return null;
+        counts.sort((a, b) => a - b);
+        return counts[Math.floor(counts.length / 2)];
     }
 
     // ---- Export -----------------------------------------------------------

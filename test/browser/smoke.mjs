@@ -1057,9 +1057,23 @@ await page.waitForTimeout(4000);
     );
     if (nameWidth < 40) errors.push(`rankings: the player name is ${Math.round(nameWidth)}px wide`);
 
+    // What the board has read, and how far this season has moved people. The
+    // board was always rebuilt from the evidence and always moved; none of it
+    // was stated anywhere, which is why it was reported as not updating.
+    const head = (await page.textContent('#view')) || '';
+    if (!/[Tt]hrough week \d+|[Nn]othing has been played/.test(head)) {
+        errors.push('rankings: the board does not say what data it has read');
+    }
+    const moves = await page.$$eval('#view .prow-static .move', (els) =>
+        els.map((e) => e.textContent.trim()).filter((t) => /^[▲▼]\d+$/.test(t)).length
+    );
+    if (!moves) errors.push('rankings: no player shows a move since the preseason projection');
+
     const o = await overflowOf();
     if (o.scrolled > 0) errors.push(`rankings: scrolls horizontally by ${o.scrolled}px`);
-    console.log(`  rankings: read-only model board, ${rows} rows, ${cols} value columns`);
+    console.log(
+        `  rankings: read-only model board, ${rows} rows, ${cols} value columns, ${moves} movers, vintage stated`
+    );
 }
 
 // --- Three boards on one card ----------------------------------------------

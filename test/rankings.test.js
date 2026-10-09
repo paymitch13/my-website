@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { seedOrder, toRankMap, toCsv, autoTiers, normalizeName } from '../js/rankings.js';
+import { seedOrder, toRankMap, toCsv, autoTiers, normalizeName, boardVintage } from '../js/rankings.js';
 
 const players = {
     a: { id: 'a', name: 'Aaron Ace', pos: 'RB', team: 'KC', searchRank: 1 },
@@ -65,4 +65,38 @@ test('csv export writes the model ranking, quoting awkward names', () => {
     assert.match(csv, /Aaron Ace/);
     // One header plus one line per ranked player.
     assert.equal(csv.trim().split('\n').length, 4);
+});
+
+// --- What the board says it knows -----------------------------------------
+
+test('the vintage line states the week, the games and both weights', () => {
+    const line = boardVintage({ lastPlayed: 4, season: 2026, games: 4, market: true });
+    assert.match(line, /through week 4 of 2026/i);
+    // actualsWeight(4) = 4/9 = 44%.
+    assert.match(line, /4 games/);
+    assert.match(line, /44%/);
+    // MARKET_WEIGHT = 0.65, stated as the split it actually is.
+    assert.match(line, /35\/65/);
+});
+
+test('the vintage line does not claim results before any are played', () => {
+    const line = boardVintage({ lastPlayed: 0, season: 2026, market: true });
+    assert.match(line, /nothing has been played/i);
+    assert.doesNotMatch(line, /through week/i);
+});
+
+test('the vintage line says so when the market could not be reached', () => {
+    const line = boardVintage({ lastPlayed: 4, season: 2026, games: 4, market: false });
+    assert.match(line, /projection and results only/i);
+    assert.doesNotMatch(line, /35\/65/);
+});
+
+test('the vintage line never passes off the fallback model as projections', () => {
+    const line = boardVintage({ lastPlayed: 4, season: 2026, games: 4, market: true, projected: false });
+    assert.match(line, /fallback rank model/i);
+    assert.doesNotMatch(line, /44%/);
+});
+
+test('one game is described as one game, not "1 games"', () => {
+    assert.match(boardVintage({ lastPlayed: 1, season: 2026, games: 1, market: true }), /one game/);
 });

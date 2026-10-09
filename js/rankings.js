@@ -17,7 +17,7 @@
 // express once and then cannot see is worse than no opinion at all.
 
 import { sortBy } from './util.js';
-import { blendedPpg, projectedPpg, scoreStats } from './projections.js';
+import { actualsWeight, blendedPpg, projectedPpg, scoreStats } from './projections.js';
 
 export const RANKABLE = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 
@@ -77,6 +77,50 @@ const DEPTH = { QB: 72, RB: 130, WR: 160, TE: 72, K: 40, DEF: 40 };
  * sample is small is the ordinary discipline.
  */
 export const MARKET_WEIGHT = 0.65;
+
+/**
+ * What the board currently knows, in one sentence.
+ *
+ * "It doesn't feel like the calc reflects week 4" was a reasonable thing to
+ * think about a product that never said what it had read. The board is rebuilt
+ * from scratch on every load and it does move -- measured on week-5 data, four
+ * fifths of players shift the way their production says, by a median of seven
+ * positional ranks -- but nothing anywhere stated the vintage of the inputs,
+ * so there was no way to tell a fresh number from a stale one. State it.
+ *
+ * @param {object} input
+ * @param {number} input.lastPlayed  last completed week, 0 before kickoff
+ * @param {number|string} input.season
+ * @param {number} [input.games]     games of results the average starter has
+ * @param {boolean} [input.market]   whether a market price was reached
+ * @param {boolean} [input.projected] whether real projections loaded
+ */
+export function boardVintage({ lastPlayed = 0, season, games = null, market = false, projected = true }) {
+    if (!projected) {
+        return 'Projections could not be loaded, so this ordering comes from the fallback rank model rather than real projected stat lines.';
+    }
+    if (!lastPlayed) {
+        return (
+            `Nothing has been played yet in ${season}, so every value here is the preseason projection` +
+            `${market ? ' blended with what the market is paying' : ''}. They will start moving after week 1.`
+        );
+    }
+
+    const n = games ?? lastPlayed;
+    const weight = Math.round(actualsWeight(n) * 100);
+    const parts = [
+        `Through week ${lastPlayed} of ${season}.`,
+        `Each player's ${n === 1 ? 'one game' : `${n} games`} of real production carries ${weight}% against his preseason projection, rising as the season goes.`,
+    ];
+    if (market) {
+        parts.push(
+            `That estimate is then blended ${Math.round((1 - MARKET_WEIGHT) * 100)}/${Math.round(MARKET_WEIGHT * 100)} with what leagues are actually paying, which predicted next week better than our own blend did in backtesting.`
+        );
+    } else {
+        parts.push('Market prices could not be reached this load, so the ordering is projection and results only.');
+    }
+    return parts.join(' ');
+}
 
 export function buildSeedKeys(players, {
     projections = null,
