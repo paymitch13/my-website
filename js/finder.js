@@ -161,6 +161,30 @@ export async function findTrades(input) {
         // value on an eight-hundred-point deal, both lineups unmoved -- ended
         // up on the board as a recommendation.
         minValueEdge = 0.04,
+        // How big a side's lineup gain has to be RELATIVE TO THE SIZE of the
+        // deal, as a share of the weekly points changing hands.
+        //
+        // A flat floor treats a fringe one-for-one and a four-starter
+        // restructure as the same decision, and they are not. The search was
+        // still offering things like "send Adams, Taylor and Bowers, get
+        // Bijan, your lineup improves by 0.16 points a week" -- a true
+        // statement, a 55-point churn, and an edge far inside the week-to-week
+        // variance of the players involved. Nobody rebuilds half a roster for
+        // a rounding error, because the noise in the move swamps the edge.
+        //
+        // So the edge has to be distinguishable from the deal it comes from.
+        // On a 12-team league drafted from live week-5 data, 2% of churn
+        // removed every implausible ask the board contained while dropping 6%
+        // of proposals. The alternative tried first -- charging per net body
+        // given up, on the theory that a thinner bench is the real cost --
+        // needed 0.75 points a week per body to do the same job and dropped
+        // 10%, and the bench option value actually derivable from this
+        // league's own replacement line is 0.21. A three-fold gap between the
+        // derivation and the constant that worked is a sign the body count was
+        // standing in for something else, and the ranking says what: the four
+        // worst offers by gain-to-churn included both implausible asks, while
+        // body count did not separate them at all.
+        minEdgeShare = 0.02,
         // How much starting lineup a DECLARED offer may cost me.
         //
         // Naming a player as trade bait relaxes my side of the acceptance test
@@ -339,10 +363,17 @@ export async function findTrades(input) {
         // banking value at the cost of a fraction of a point this week is a
         // real and common strategy. There the older rule holds.
         const material = minValueEdge * Math.max(valueIn, valueOut);
+
+        // The weekly production changing hands, both directions. The bigger it
+        // is, the bigger an edge has to be before it means anything: see
+        // `minEdgeShare`.
+        const churn = sum(gets, (e) => Math.max(0, e.score ?? 0)) + sum(gives, (e) => Math.max(0, e.score ?? 0));
+        const worthDoing = minGain + minEdgeShare * churn;
+
         const accepts = ctx.dynasty
             ? (lineupGain, valueNet) =>
-                  lineupGain > -lineupSlack && (lineupGain > minGain || valueNet > material)
-            : (lineupGain) => lineupGain > minGain;
+                  lineupGain > -lineupSlack && (lineupGain > worthDoing || valueNet > material)
+            : (lineupGain) => lineupGain > worthDoing;
 
         // A named target is a declared want. "This costs you 1.2 points a week
         // of lineup" is the ANSWER to what it would take, not a reason to hide

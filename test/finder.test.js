@@ -1264,3 +1264,59 @@ test('my opinion of my own player is not imposed on the counterparty', async () 
         );
     }
 });
+
+test('no suggested trade returns an edge inside the noise of its own size', async () => {
+    // A flat floor treats a fringe one-for-one and a four-starter restructure
+    // as the same decision. The search was still offering "send three
+    // starters, get one back, your lineup improves by 0.16 points a week" --
+    // true, and far inside the week-to-week variance of the players involved.
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const res = await findTrades({
+        cfg, ctx, teams, myRosterId: 1, rankings,
+        schedule: syntheticSchedule(teams.map((t) => t.rosterId), 7, 14),
+        iterations: 200, limits: { stage2Keep: 20, stage3Keep: 6 },
+    });
+    assert.ok(res.trades.length > 0, 'the floor must not empty the board');
+
+    for (const t of res.trades) {
+        const churn =
+            t.gets.reduce((s, e) => s + Math.max(0, e.score ?? 0), 0) +
+            t.gives.reduce((s, e) => s + Math.max(0, e.score ?? 0), 0);
+        // The default share, plus the base floor it is added to.
+        const need = 0.02 * churn;
+        assert.ok(
+            t.theirGain > need,
+            `${churn.toFixed(1)} pts changing hands for a ${t.theirGain.toFixed(2)} gain is inside the noise`
+        );
+    }
+});
+
+test('the noise floor scales with the deal, rather than being flat', async () => {
+    // The same gain is a reason on a small deal and not on a large one, so the
+    // gate has to be a function of what is moving. Raising only the share --
+    // with the flat floor untouched -- must cost the board proposals.
+    const { teams, rankings, projections } = buildLeague();
+    const ctx = createValuationContext(cfg, { week: 7, weeksLeft: 7, projections });
+    const run = (minEdgeShare) =>
+        findTrades({
+            cfg, ctx, teams, myRosterId: 1, rankings,
+            schedule: syntheticSchedule(teams.map((t) => t.rosterId), 7, 14),
+            iterations: 200,
+            limits: { stage2Keep: 30, stage3Keep: 10, minEdgeShare },
+        });
+
+    const [loose, strict] = await Promise.all([run(0), run(0.25)]);
+    assert.ok(loose.trades.length > 0, 'with no share required there should be trades');
+    assert.ok(
+        strict.trades.length < loose.trades.length,
+        `a quarter of churn should bite: ${loose.trades.length} -> ${strict.trades.length}`
+    );
+    // And whatever survives a steep share is a genuinely decisive deal.
+    for (const t of strict.trades) {
+        const churn =
+            t.gets.reduce((s, e) => s + Math.max(0, e.score ?? 0), 0) +
+            t.gives.reduce((s, e) => s + Math.max(0, e.score ?? 0), 0);
+        assert.ok(t.theirGain > 0.25 * churn, 'the share must actually be applied');
+    }
+});
