@@ -87,25 +87,12 @@ export const app = {
         if (!this.players) return;
         const cfg = this.league?.cfg || normalizeLeague(null, { rosterPositions: defaultRosterPositions() });
 
-        // The seed order depends on league scoring, so it has to be rebuilt
-        // whenever the league changes -- a player's projected rank is not the
-        // same in half PPR as it is in superflex.
-        const seedKeys = buildSeedKeys(this.players, {
-            projections: this.projections,
-            scoring: cfg.scoring,
-            // The board has to know what has happened this season, not just
-            // what August predicted, and it has to have somewhere to put a
-            // productive waiver add that Sleeper never projected.
-            actuals: this.actuals,
-            week: this.league?.currentWeek || 1,
-            marketRanks: this.market?.ranks || null,
-        });
-        // Re-derived every load, with nothing persisted to merge in. That is
-        // the whole point: a saved ordering froze the board at the moment it
-        // was saved and quietly stopped the app incorporating results.
-        this.order = seedOrder(this.players, { seedKeys });
-        this.rankings = toRankMap(this.order);
-
+        // The context comes FIRST, before the ordering.
+        //
+        // It depends only on projections, results and the market -- never on
+        // the board -- while the ordering now wants the context's rank curve,
+        // which is what turns a market rank into points per game in this
+        // league's own terms.
         this.ctx = createValuationContext(cfg, {
             week: this.league?.currentWeek || 1,
             weeksLeft: Math.max(1, this.league?.weeksLeft ?? 14),
@@ -119,6 +106,29 @@ export const app = {
             market: this.market,
         });
         this.cfg = cfg;
+
+        // The ordering depends on league scoring, so it has to be rebuilt
+        // whenever the league changes -- a player's projected rank is not the
+        // same in half PPR as it is in superflex.
+        const seedKeys = buildSeedKeys(this.players, {
+            projections: this.projections,
+            scoring: cfg.scoring,
+            // It has to know what has happened this season, not just what
+            // August predicted, and it has to have somewhere to put a
+            // productive waiver add that Sleeper never projected.
+            actuals: this.actuals,
+            week: this.league?.currentWeek || 1,
+            marketRanks: this.market?.ranks || null,
+            // And the market's opinion as a third input rather than only a
+            // fallback: measured, it predicts next week better than our own
+            // blend does. See MARKET_WEIGHT.
+            marketPpg: (pos, rank) => this.ctx.ppgAtRank(pos, rank),
+        });
+        // Re-derived every load, with nothing persisted to merge in. That is
+        // the whole point: a saved ordering froze the board at the moment it
+        // was saved and quietly stopped the app incorporating results.
+        this.order = seedOrder(this.players, { seedKeys });
+        this.rankings = toRankMap(this.order);
 
         // One market scale for the whole league, anchored to the most valuable
         // player on the board, so every view quotes the same numbers.

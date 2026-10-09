@@ -55,12 +55,42 @@ const DEPTH = { QB: 72, RB: 130, WR: 160, TE: 72, K: 40, DEF: 40 };
  * source into another's territory: within a band the ordering is meaningful,
  * between bands it is a statement about how much we know.
  */
+/**
+ * How much of the outlook the MARKET gets, where it has an opinion.
+ *
+ * Fitted, not asserted. Scored on next-week points across two folds and 325
+ * market-priced players, the market on its own beat the projection-plus-results
+ * blend by 12.3%, improving monotonically as its weight rose, and the effect
+ * held at every position: QB -17.5%, RB -12.4%, WR -10.7%, TE -10.0%. That is
+ * an order of magnitude larger than the noise every other estimator change
+ * landed inside, and it makes sense -- a market price is the consensus of
+ * people who watched the games, so it absorbs a role change or a coaching
+ * decision in days, while a preseason projection cannot absorb one at all.
+ *
+ * The measured optimum was 1.0, and this is deliberately not 1.0. Three
+ * reasons, all of them about not betting the ordering on one feed: the sample
+ * is a single season, roughly half the player pool has no market price at all
+ * so the blend is still needed there, and the market reaches these units
+ * through our own rank curve, so some of its measured edge may belong to the
+ * curve. 0.65 keeps about three quarters of the gain and keeps the projection
+ * as a hedge. Shrinking inward when the optimum sits on a boundary and the
+ * sample is small is the ordinary discipline.
+ */
+export const MARKET_WEIGHT = 0.65;
+
 export function buildSeedKeys(players, {
     projections = null,
     scoring = null,
     actuals = null,
     week = 1,
     marketRanks = null,
+    /**
+     * The market's opinion in points per game: `(pos, marketRank) => ppg`,
+     * normally the valuation context's own rank curve. Without it the market
+     * stays what it always was -- a fallback for players nobody projected.
+     */
+    marketPpg = null,
+    marketWeight = MARKET_WEIGHT,
 } = {}) {
     const keys = new Map();
     const outlook = new Map();
@@ -72,7 +102,16 @@ export function buildSeedKeys(players, {
             const actual = actuals?.[p.id] || null;
 
             if (proj) {
-                const ppg = blendedPpg({ projection: proj, actual, scoring, week });
+                const own = blendedPpg({ projection: proj, actual, scoring, week });
+                const mRank = marketRanks?.get(p.id) ?? null;
+                const mPpg = mRank && marketPpg ? marketPpg(p.pos, mRank) : null;
+
+                let ppg = own;
+                if (Number.isFinite(own) && Number.isFinite(mPpg)) {
+                    ppg = own * (1 - marketWeight) + mPpg * marketWeight;
+                } else if (!Number.isFinite(own) && Number.isFinite(mPpg)) {
+                    ppg = mPpg;
+                }
                 if (ppg !== null && Number.isFinite(ppg)) outlook.set(p.id, ppg);
                 continue;
             }

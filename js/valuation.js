@@ -304,7 +304,9 @@ function curveLookup(curve, rank, fallback) {
  * and asymptotically equal to points-above-replacement for players who are
  * actually starters.
  */
-export function softplusPar(par, k = 1.25) {
+export const PAR_SOFTNESS = 1.25;
+
+export function softplusPar(par, k = PAR_SOFTNESS) {
     const x = par / k;
     // log1p(exp(x)) computed stably for large |x|.
     return k * (x > 30 ? x : Math.log1p(Math.exp(x)));
@@ -360,6 +362,7 @@ export function createValuationContext(cfg, {
     actuals = null,
     scheduleStrength = null,
     market = null,
+    parSoftness = PAR_SOFTNESS,
 } = {}) {
     const replacement = replacementRanks(cfg);
     const curves = buildCurves({ cfg, projections, actuals, week });
@@ -396,6 +399,7 @@ export function createValuationContext(cfg, {
         // answered at the price a real manager would name. Null when the
         // market could not be reached, and everything falls back to the
         // projected board exactly as it did before.
+        parSoftness,
         market: market?.byId ?? null,
         marketRanks: market?.ranks ?? null,
         priced: market ? 'market' : curves ? 'projection' : 'model',
@@ -429,7 +433,7 @@ export function valuePlayer(player, posRank, ctx) {
 
     const parPerGame = ppg - repl;
     // Depth still counts for something; see softplusPar.
-    const effectivePar = softplusPar(parPerGame);
+    const effectivePar = softplusPar(parPerGame, ctx.parSoftness ?? PAR_SOFTNESS);
 
     // The schedule ahead of him, not just the talent. A back on the offense
     // with the league's best remaining implied totals is worth more than an

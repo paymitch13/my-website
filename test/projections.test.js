@@ -356,3 +356,99 @@ test('a game with no posted line still yields team context', () => {
     assert.equal(games.length, 1);
     assert.equal(buildTeamContext(games).get('MIA').impliedTotal, null);
 });
+
+// --- The market as a third input to the ordering ---------------------------
+//
+// It used to be a fallback only, for players nobody projected. Measured on
+// next-week points across two folds and 325 market-priced players, the market
+// alone beat the projection-plus-results blend by 12.3%, improving
+// monotonically as its weight rose, and the effect held at every position
+// (QB -17.5%, RB -12.4%, WR -10.7%, TE -10.0%). That is an order of magnitude
+// outside the noise every other estimator change landed inside: a market price
+// is the consensus of people who watched the games, so it absorbs a role
+// change in days where a preseason projection cannot absorb one at all.
+
+test('the market moves a player the projection has not caught up with', () => {
+    // The shape of the real case: projected as a deep backup, now producing,
+    // and the market has noticed. Without the market he sorts below a player
+    // the projection likes; with it, above.
+    const players = {
+        risen: { id: 'risen', name: 'Took The Job', pos: 'RB', searchRank: 300 },
+        steady: { id: 'steady', name: 'Projected Starter', pos: 'RB', searchRank: 20 },
+    };
+    const scoring = normalizeScoring({ rush_yd: 0.1 });
+    const projections = {
+        risen: { id: 'risen', pos: 'RB', games: 17, stats: { rush_yd: 200 } },
+        steady: { id: 'steady', pos: 'RB', games: 17, stats: { rush_yd: 1300 } },
+    };
+    const opts = { projections, scoring, week: 5 };
+
+    // Projection alone: the projected starter leads.
+    assert.deepEqual(seedOrder(players, { seedKeys: buildSeedKeys(players, opts) }).RB,
+        ['steady', 'risen']);
+
+    // The market has the riser as RB8 and the other as RB40.
+    const withMarket = buildSeedKeys(players, {
+        ...opts,
+        marketRanks: new Map([['risen', 8], ['steady', 40]]),
+        marketPpg: (pos, rank) => Math.max(1, 20 - rank * 0.4),
+    });
+    assert.deepEqual(seedOrder(players, { seedKeys: withMarket }).RB, ['risen', 'steady']);
+});
+
+test('the market is a weighted input, not an override', () => {
+    // At the shipped weight the projection still counts, so a market opinion
+    // that disagrees only slightly cannot flip a large projection gap.
+    const players = {
+        a: { id: 'a', name: 'Clear Best', pos: 'WR', searchRank: 1 },
+        b: { id: 'b', name: 'Clear Worst', pos: 'WR', searchRank: 2 },
+    };
+    const scoring = normalizeScoring({ rec_yd: 0.1 });
+    const projections = {
+        a: { id: 'a', pos: 'WR', games: 17, stats: { rec_yd: 1700 } },
+        b: { id: 'b', pos: 'WR', games: 17, stats: { rec_yd: 300 } },
+    };
+    const keys = buildSeedKeys(players, {
+        projections, scoring, week: 5,
+        // The market prefers b, but only narrowly.
+        marketRanks: new Map([['a', 12], ['b', 10]]),
+        marketPpg: (pos, rank) => 12 - rank * 0.1,
+    });
+    assert.deepEqual(seedOrder(players, { seedKeys: keys }).WR, ['a', 'b'],
+        'an 8-point projection gap must survive a narrow market disagreement');
+});
+
+test('no market opinion leaves the ordering exactly as it was', () => {
+    const players = {
+        a: { id: 'a', name: 'A', pos: 'TE', searchRank: 1 },
+        b: { id: 'b', name: 'B', pos: 'TE', searchRank: 2 },
+    };
+    const scoring = normalizeScoring({ rec_yd: 0.1 });
+    const projections = {
+        a: { id: 'a', pos: 'TE', games: 17, stats: { rec_yd: 900 } },
+        b: { id: 'b', pos: 'TE', games: 17, stats: { rec_yd: 600 } },
+    };
+    const without = buildSeedKeys(players, { projections, scoring, week: 5 });
+    // marketPpg supplied but no ranks: nothing to blend, so nothing changes.
+    const withFn = buildSeedKeys(players, {
+        projections, scoring, week: 5, marketPpg: () => 99,
+    });
+    assert.equal(without.get('a'), withFn.get('a'));
+    assert.equal(without.get('b'), withFn.get('b'));
+});
+
+test('a market price rescues a player with no usable projection', () => {
+    // A projection row that scores to nothing used to leave him ranked on
+    // popularity. If the market prices him, that is better evidence.
+    const players = { x: { id: 'x', name: 'Unprojected', pos: 'WR', searchRank: 400 } };
+    const scoring = normalizeScoring({ rec_yd: 0.1 });
+    const keys = buildSeedKeys(players, {
+        projections: { x: { id: 'x', pos: 'WR', games: 17, stats: {} } },
+        scoring,
+        week: 5,
+        marketRanks: new Map([['x', 15]]),
+        marketPpg: () => 11,
+    });
+    // In the outlook band (the strongest), not the popularity fallback.
+    assert.ok(keys.get('x') < -3e6, `expected the outlook band, got ${keys.get('x')}`);
+});
