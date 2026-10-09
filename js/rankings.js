@@ -122,6 +122,48 @@ export function boardVintage({ lastPlayed = 0, season, games = null, market = fa
     return parts.join(' ');
 }
 
+/**
+ * Where each of these players sat on the board before a game was played.
+ *
+ * The board shows how far this season has moved somebody, and that needs the
+ * August ordering of the SAME players -- not a lookup of his old projection
+ * against today's curve. Two things go wrong with the lookup. Results lift the
+ * top of a curve, because four games of variance always produce somebody hot,
+ * so an untouched projection slides down it: measured on week-5 data, a median
+ * of four ranks at quarterback. And a curve lookup cannot separate equal
+ * projections, so ten players projected alike all come back with the rank of
+ * the first of them and the ones below read as having fallen past each other.
+ *
+ * Re-sorting the board's own ids is exact, costs one sort per repaint, and a
+ * tie keeps today's order -- so players the projection cannot tell apart are
+ * never reported as having moved.
+ *
+ * @param {string[]} ids    today's board order for one position
+ * @returns {Map<string, number>} id -> August rank, absent if never projected
+ */
+export function preseasonRanks(ids, { projections, scoring }) {
+    const rows = ids.map((id, i) => {
+        const proj = projections?.[id] || null;
+        const ppg = proj ? projectedPpg(proj, scoring) : null;
+        return { id, i, ppg: Number.isFinite(ppg) ? ppg : null };
+    });
+
+    // Everyone is ranked, so the scale matches the board's own, but a player
+    // August never projected has no position on it to report.
+    const ordered = [...rows].sort((a, b) => {
+        if (a.ppg === null && b.ppg === null) return a.i - b.i;
+        if (a.ppg === null) return 1;
+        if (b.ppg === null) return -1;
+        return b.ppg - a.ppg || a.i - b.i;
+    });
+
+    const out = new Map();
+    ordered.forEach((row, idx) => {
+        if (row.ppg !== null) out.set(row.id, idx + 1);
+    });
+    return out;
+}
+
 export function buildSeedKeys(players, {
     projections = null,
     scoring = null,

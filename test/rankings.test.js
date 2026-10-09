@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { seedOrder, toRankMap, toCsv, autoTiers, normalizeName, boardVintage } from '../js/rankings.js';
+import { seedOrder, toRankMap, toCsv, autoTiers, normalizeName, boardVintage, preseasonRanks } from '../js/rankings.js';
+import { normalizeScoring } from '../js/league.js';
 
 const players = {
     a: { id: 'a', name: 'Aaron Ace', pos: 'RB', team: 'KC', searchRank: 1 },
@@ -99,4 +100,59 @@ test('the vintage line never passes off the fallback model as projections', () =
 
 test('one game is described as one game, not "1 games"', () => {
     assert.match(boardVintage({ lastPlayed: 1, season: 2026, games: 1, market: true }), /one game/);
+});
+
+// --- Where the board had them in August -----------------------------------
+
+const scoring = normalizeScoring({ rush_yd: 0.1 });
+const ladder = (yards) => {
+    const projections = {};
+    yards.forEach((y, i) => {
+        projections[`rb${i}`] = { id: `rb${i}`, pos: 'RB', games: 17, stats: { rush_yd: y } };
+    });
+    return projections;
+};
+
+test('preseason ranks follow the preseason projection, not today’s order', () => {
+    // Today's board has them backwards against their projections.
+    const ids = ['rb2', 'rb1', 'rb0'];
+    const was = preseasonRanks(ids, { projections: ladder([1700, 1200, 600]), scoring });
+    assert.equal(was.get('rb0'), 1, 'the best projection was first in August');
+    assert.equal(was.get('rb1'), 2);
+    assert.equal(was.get('rb2'), 3);
+});
+
+test('players the projection cannot separate are not reported as moving', () => {
+    // This is what broke the curve-lookup version: six identical projections
+    // all came back with the rank of the first of them, so the five below read
+    // as having fallen past each other on a week where nobody played.
+    const yards = [1700, 1600, 900, 900, 900, 900, 900, 900, 400, 300];
+    const ids = yards.map((_, i) => `rb${i}`);
+    const was = preseasonRanks(ids, { projections: ladder(yards), scoring });
+    for (const [i, id] of ids.entries()) {
+        assert.equal(was.get(id) - (i + 1), 0, `${id} must show no move`);
+    }
+});
+
+test('a player August never projected has no preseason position', () => {
+    const projections = ladder([1700, 1200]);
+    const was = preseasonRanks(['rb0', 'unknown', 'rb1'], { projections, scoring });
+    assert.equal(was.has('unknown'), false, 'nothing to compare, so nothing is claimed');
+    // And he does not displace anybody: the ranks stay on the board's scale.
+    assert.equal(was.get('rb0'), 1);
+    assert.equal(was.get('rb1'), 2);
+});
+
+test('the unprojected sit at the bottom, where the board already has them', () => {
+    const was = preseasonRanks(['rb0', 'ghost', 'rb1'], { projections: ladder([600, 1700]), scoring });
+    // rb1 outprojects rb0, so August had rb1 first and rb0 second; the ghost
+    // takes the remaining place rather than one in the middle.
+    assert.equal(was.get('rb1'), 1);
+    assert.equal(was.get('rb0'), 2);
+    assert.equal(was.size, 2);
+});
+
+test('an empty board is not an error', () => {
+    assert.equal(preseasonRanks([], { projections: {}, scoring }).size, 0);
+    assert.equal(preseasonRanks(['x'], { projections: null, scoring }).size, 0);
 });

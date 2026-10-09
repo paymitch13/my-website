@@ -5,7 +5,7 @@
 // moment's opinion and the merge on each later load preserved it -- an app that
 // silently stopped incorporating results from the day you first touched it.
 
-import { RANKABLE, autoTiers, boardVintage, toCsv } from '../rankings.js';
+import { RANKABLE, autoTiers, boardVintage, preseasonRanks, toCsv } from '../rankings.js';
 import { valuePlayer } from '../valuation.js';
 import { scoringLabel } from '../league.js';
 import { banner, download, el, emptyState, playerCell, toast } from '../ui.js';
@@ -47,12 +47,15 @@ export default function renderRankings(app) {
                 `Ranked for ${app.league.cfg.name} — ${app.league.cfg.teams} teams, ${scoringLabel(app.league.cfg.scoring)}${app.league.cfg.superflex ? ', superflex' : ''}. Scoring and roster slots both move these numbers, so the order here is specific to this league.`
             )
         );
-        root.append(vintageNote(app));
     } else {
         root.append(
             banner('Not connected to a league yet — values assume a standard 12-team, half-PPR setup. Connect a Sleeper league to make them exact.', 'warn')
         );
     }
+    // Stated with or without a league. The disconnected board reads this
+    // season's results and the market too, and that is exactly the case where
+    // a reader has most reason to wonder whether it does.
+    root.append(vintageNote(app));
 
     // Nothing below can run without a valuation context. That only happens when
     // the player database never downloaded, and the boot screen already says so
@@ -179,6 +182,12 @@ export default function renderRankings(app) {
     function paint() {
         const ids = app.order[pos] || [];
         const values = valuesFor(ids);
+        // The August ordering of exactly these players, so the movement column
+        // compares the same board with itself.
+        const wasRanked = preseasonRanks(ids, {
+            projections: app.projections,
+            scoring: app.ctx.cfg.scoring,
+        });
         // Tiers break on the number the rows actually show, or the gaps the
         // reader sees and the gaps the tiers mark are measuring different
         // things and the dividers land in arbitrary places.
@@ -232,7 +241,7 @@ export default function renderRankings(app) {
                 lastTier = tierOf[i];
                 listHost.append(el('div', { class: 'tier-break' }, `Tier ${lastTier}`));
             }
-            listHost.append(row(app.players[id], i, values.get(id)));
+            listHost.append(row(app.players[id], i, values.get(id), wasRanked.get(id) ?? null));
         }
     }
 
@@ -255,7 +264,7 @@ export default function renderRankings(app) {
         return priceOf({ player, value: val.value }, app.ctx, app.tradeValue);
     };
 
-    function row(player, index, val) {
+    function row(player, index, val, wasRank) {
         const cost = priceFor(player, val);
         const lineup = val ? app.tradeValue(val.value) : null;
         // Shown side by side rather than one in a tooltip. They answer
@@ -284,7 +293,7 @@ export default function renderRankings(app) {
                 },
                 lineup !== null ? formatValue(lineup) : '—'
             ),
-            moveCell(val, index + 1)
+            moveCell(wasRank, index + 1)
         );
     }
 
@@ -298,8 +307,7 @@ export default function renderRankings(app) {
      * rows showed nothing at all and the board looked frozen -- which is
      * exactly the complaint it should have been answering.
      */
-    function moveCell(val, rank) {
-        const was = val?.preseasonRank ?? null;
+    function moveCell(was, rank) {
         const moved = was === null ? null : was - rank;
         const cell = el('span', { class: 'move' });
         if (moved === null) {
@@ -337,7 +345,12 @@ export default function renderRankings(app) {
             'p',
             { class: 'tiny dim', style: 'margin:8px 0 0' },
             boardVintage({
-                lastPlayed: app.league?.lastPlayed ?? 0,
+                // Without a league there is no `lastPlayed`, but the live NFL
+                // week knows the same thing: the last completed week is the
+                // one before the current one.
+                lastPlayed:
+                    app.league?.lastPlayed ??
+                    Math.max(0, (Number(app.nflState?.week) || 1) - 1),
                 season: app.league?.raw?.season ?? app.season,
                 games,
                 market: !!app.ctx?.market,

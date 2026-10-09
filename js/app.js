@@ -3,7 +3,7 @@
 import * as store from './store.js';
 import * as data from './data.js';
 import * as api from './sleeper.js';
-import { normalizeLeague, defaultRosterPositions, scoringLabel } from './league.js';
+import { normalizeLeague, defaultRosterPositions, scoringLabel, weeksRemaining } from './league.js';
 import { createValuationContext } from './valuation.js';
 import { buildSeedKeys, seedOrder, toRankMap } from './rankings.js';
 import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, onPlayerClick } from './ui.js';
@@ -93,9 +93,18 @@ export const app = {
         // the board -- while the ordering now wants the context's rank curve,
         // which is what turns a market rank into points per game in this
         // league's own terms.
+        // The week comes from the league where there is one and from the live
+        // NFL state otherwise.
+        //
+        // It used to default to 1 without a league, and `blendedPpg` returns
+        // the bare projection at week 1 by design -- so a visitor who had not
+        // connected a league was shown August's numbers in October and nothing
+        // said so. The default experience of the app was its least accurate
+        // one.
+        const week = this.league?.currentWeek || Number(this.nflState?.week) || 1;
         this.ctx = createValuationContext(cfg, {
-            week: this.league?.currentWeek || 1,
-            weeksLeft: Math.max(1, this.league?.weeksLeft ?? 14),
+            week,
+            weeksLeft: Math.max(1, this.league?.weeksLeft ?? weeksRemaining(cfg, week)),
             projections: this.projections,
             actuals: this.actuals,
             // Rest-of-season value should reflect the rest of the season's
@@ -117,7 +126,7 @@ export const app = {
             // August predicted, and it has to have somewhere to put a
             // productive waiver add that Sleeper never projected.
             actuals: this.actuals,
-            week: this.league?.currentWeek || 1,
+            week,
             marketRanks: this.market?.ranks || null,
             // And the market's opinion as a third input rather than only a
             // fallback: measured, it predicts next week better than our own
@@ -638,21 +647,49 @@ async function boot() {
         return;
     }
 
-    // Projections drive every value in the app; load them before first paint so
-    // nothing is ever rendered from the fallback model and then silently
+    // Everything the first paint's numbers depend on, loaded before it so
+    // nothing is ever rendered from a weaker estimate and then silently
     // replaced a second later.
+    //
+    // The projection is only one of the three. This season's results and the
+    // market price used to be fetched inside `connectLeague` alone, so the
+    // app's front door showed August with no results and no market price in
+    // it -- and those two carry most of the in-season signal: four games weigh
+    // 44% against the projection, and the market weighs 65% of the ordering.
+    // Without a league there is no roster to value, but there is still a
+    // board, a player card and a players-only trade calculator, and all three
+    // were quoting the preseason in October.
+    //
+    // In parallel, because they are independent feeds and the season stats are
+    // another five megabytes on top of the projections' eight; run in sequence
+    // that is a visibly slower front door. A failure in either costs its own
+    // contribution and never the boot. Skipped when a league is stored, since
+    // `connectLeague` is about to fetch both at that league's real shape --
+    // this standard 12-team half-PPR assumption is only for a visitor who has
+    // not connected one, which is what the disconnected app assumes anyway.
     const season = String(app.season || new Date().getFullYear());
-    const projResult = await data.loadProjections(season, {
-        onProgress: (msg) => {
-            const h = host.querySelector('h1');
-            if (h) h.textContent = msg;
-        },
-        week: nflWeek(),
-    });
+    const inSeason = nflWeek() > 1 && !store.state.leagueId;
+    const [projResult, actuals, market] = await Promise.all([
+        data.loadProjections(season, {
+            onProgress: (msg) => {
+                const h = host.querySelector('h1');
+                if (h) h.textContent = msg;
+            },
+            week: nflWeek(),
+        }),
+        inSeason ? data.loadSeasonStats(season).catch(() => null) : Promise.resolve(null),
+        inSeason
+            ? fetchMarketValues(normalizeLeague(null, { rosterPositions: defaultRosterPositions() }), {
+                  store: { load: store.loadCachedMarket, save: store.cacheMarket },
+              }).catch(() => null)
+            : Promise.resolve(null),
+    ]);
     app.projections = projResult.projections;
     if (!app.projections) {
         console.warn('Projections unavailable, falling back to the modeled curve', projResult.error);
     }
+    app.actuals = actuals;
+    app.market = market;
 
     app.rebuild();
     updateChip();

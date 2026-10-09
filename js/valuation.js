@@ -380,19 +380,6 @@ export function createValuationContext(cfg, {
     const replacement = replacementRanks(cfg);
     const curves = buildCurves({ cfg, projections, actuals, week });
 
-    // The board as it stood in August, kept so "how far has he moved this
-    // season" can be answered against the right baseline.
-    //
-    // Ranking a preseason projection against the CURRENT curve does not answer
-    // it: this season's results lift the top of every curve (the week-5 QB
-    // curve peaks at 23.9 points a game against the preseason 20.7, because
-    // four games of variance always produce somebody hot), so the same
-    // untouched projection slides a couple of ranks down it. Measured on real
-    // week-5 data that drift is a median of 4 ranks at quarterback and 2 at
-    // running back -- against a median true move of 7, enough to show movement
-    // for a player who has not moved at all.
-    const preseasonCurves = actuals ? buildCurves({ cfg, projections, actuals: null, week }) : curves;
-
     const ppgAtRank = (pos, rank) =>
         curveLookup(curves?.[pos], rank, () => ppgFor(pos, rank, cfg.scoring));
 
@@ -414,7 +401,6 @@ export function createValuationContext(cfg, {
         // Which board each replacement line was read off, and at what depth.
         replacementBasis,
         curves,
-        preseasonCurves,
         projections,
         actuals,
         ppgAtRank,
@@ -507,12 +493,6 @@ export function valuePlayer(player, posRank, ctx) {
         projection: own,
         projectedPpg: ownPpg,
         projectedRank: ownPpg !== null ? projectedRankOf(ctx, pos, ownPpg) : null,
-        // Where this player sat on the board before a game was played, which
-        // is a different question from the one above: that one asks where his
-        // preseason number would rank TODAY, this one asks where it ranked
-        // THEN. Only the second can be compared with his rank now.
-        preseasonRank:
-            ownPpg !== null ? rankOnCurve(ctx.preseasonCurves?.[pos], ownPpg) : null,
     };
 }
 

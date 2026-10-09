@@ -145,8 +145,11 @@ const weeklyProjections = projections.map((row, i) => ({
 // A ramp across the weeks on purpose, so "rising" and "falling" have something
 // real to find: the first player at each position grows into his role while
 // the second shrinks out of his.
+// The fixture's NFL state is week 7, so weeks 1-6 are in the books.
+const LAST_PLAYED = 6;
+
 const weeklyStatsByWeek = new Map();
-for (let w = 1; w <= 6; w++) {
+for (let w = 1; w <= LAST_PLAYED; w++) {
     const rows = [];
     for (const [id, p] of Object.entries(players)) {
         const idx = Number(p.last_name.replace('Player ', '')) || 1;
@@ -201,6 +204,32 @@ for (let w = 1; w <= 6; w++) {
     }
     weeklyStatsByWeek.set(w, rows);
 }
+
+// Season totals, summed from the weekly rows rather than invented separately.
+//
+// This route used to serve an empty array, so every scenario ran with no
+// results at all: the blend had nothing to weigh against the projection, and
+// the board's movement came entirely from the market. One source of truth
+// means a change to the weekly ramp above cannot leave the two disagreeing.
+const seasonStats = (() => {
+    const totals = new Map();
+    for (let w = 1; w <= LAST_PLAYED; w++) {
+        for (const row of weeklyStatsByWeek.get(w) || []) {
+            let acc = totals.get(row.player_id);
+            if (!acc) {
+                acc = { player_id: row.player_id, team: row.team, player: row.player, stats: {} };
+                totals.set(row.player_id, acc);
+            }
+            for (const [k, val] of Object.entries(row.stats)) {
+                // A rate is not additive. None of the fixture's rate stats
+                // feed scoring, so carrying the last one is honest enough and
+                // summing them would not be.
+                acc.stats[k] = k === 'pass_rtg' ? val : (acc.stats[k] || 0) + val;
+            }
+        }
+    }
+    return [...totals.values()];
+})();
 
 // Market values for the fixture league. Reversed against the projections on
 // purpose -- see the route above.
@@ -274,7 +303,7 @@ const fixtures = [
         const w = Number(url.match(/stats\/nfl\/\d+\/(\d+)/)[1]);
         return json(weeklyStatsByWeek.get(w) || []);
     }],
-    [/stats\/nfl/, () => json([])],
+    [/stats\/nfl/, () => json(seasonStats)],
     [/\/state\/nfl/, () => json(state)],
     [/\/league\/L1\/rosters/, () => json(rosters)],
     [/\/league\/L1\/users/, () => json(users)],
@@ -871,6 +900,55 @@ if (await addPlayerToSide(0)) {
     }
     console.log(`  private mode (localStorage throws): booted, ${enabled}/${total} tabs, ${painted}/4 views render, warns`);
     await hostile.close();
+}
+
+// --- The front door, with no league connected ------------------------------
+//
+// This is the app's default experience, and it was its least accurate one.
+// Season results and market prices were fetched inside connectLeague alone, so
+// a visitor who had not connected a Sleeper league was shown the preseason
+// projection and nothing else -- in October, with no indication that was what
+// they were looking at. Those two feeds carry most of the in-season signal.
+{
+    const stranger = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const strangerErrors = [];
+    stranger.on('pageerror', (e) => strangerErrors.push(`pageerror: ${e.message}`));
+    // Which upstreams it actually asked for, so "it loaded results" is checked
+    // rather than inferred from the rendering.
+    const asked = [];
+    await stranger.route('**', (route) => {
+        const u = route.request().url();
+        if (u.includes(`localhost:${port}`) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+        asked.push(u);
+        for (const [re, make] of fixtures) if (re.test(u)) return route.fulfill(make(u));
+        return route.fulfill(json({}));
+    });
+    // No addInitScript seeding a leagueId: a genuinely first-time visitor.
+    await stranger.goto(`http://localhost:${port}/`, { waitUntil: 'load' });
+    await stranger.waitForTimeout(6000);
+
+    if (strangerErrors.length) {
+        errors.push(`no league: page threw — ${[...new Set(strangerErrors)].slice(0, 2).join(' | ')}`);
+    }
+    if (!asked.some((u) => /stats\/nfl\/\d+(\?|$)/.test(u))) {
+        errors.push('no league: never asked for this season’s results');
+    }
+    if (!asked.some((u) => /fantasycalc/i.test(u))) {
+        errors.push('no league: never asked for market prices');
+    }
+
+    await stranger.click('#tabs .tab[data-view="rankings"]');
+    await stranger.waitForTimeout(1200);
+    const strangerBoard = (await stranger.textContent('#view')) || '';
+    if (!/[Tt]hrough week \d+/.test(strangerBoard)) {
+        errors.push('no league: the board does not say which week its numbers are through');
+    }
+    const strangerMoves = await stranger.$$eval('#view .prow-static .move', (els) =>
+        els.map((e) => e.textContent.trim()).filter((t) => /^[▲▼]\d+$/.test(t)).length
+    );
+    if (!strangerMoves) errors.push('no league: the board shows no movement since the preseason');
+    console.log(`  no league: results + market loaded, vintage stated, ${strangerMoves} movers`);
+    await stranger.close();
 }
 
 // --- The shell a stranger lands on -----------------------------------------
