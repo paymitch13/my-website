@@ -17,7 +17,7 @@ import { sortBy, sum } from './util.js';
  * could never be filled by anybody and the roster quietly started a man short
  * every week, with nothing on screen to say why.
  */
-const positionsFor = (slot) => SLOT_ELIGIBILITY[slot] || inferSlotEligibility(slot) || [];
+export const positionsFor = (slot) => SLOT_ELIGIBILITY[slot] || inferSlotEligibility(slot) || [];
 
 const eligible = (slot, pos) => positionsFor(slot).includes(pos);
 

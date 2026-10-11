@@ -5,6 +5,11 @@ import {
     lineupChanges, slateAverage,
 } from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
+import {
+    contrarianSwaps, describePosture, matchupPosture, opponentFor, playerSigma,
+    winProbSwaps,
+} from '../winprob.js';
+import { indexWeeklyStats, playerUsageSeries } from '../usage.js';
 import { fetchWeatherForGames } from '../weather.js';
 import { loadSlateProps } from '../props.js';
 import * as store from '../store.js';
@@ -162,6 +167,13 @@ async function build(app, team) {
     const report = buildStartSitReport({ team, cfg, evaluations });
     const changes = lineupChanges(report, team.starterIds);
 
+    // --- Who you actually play this week -----------------------------------
+    //
+    // Every recommendation above this line maximizes expected points, which is
+    // the wrong objective in a large minority of weeks: you are not paid for
+    // points, you are paid for beating one specific opponent. See js/winprob.js.
+    const matchup = buildMatchup({ app, team, cfg, currentWeek, weekCtx, evaluateOne, report });
+
     const wrap = el('div', {});
 
     // --- Data availability, stated plainly ---------------------------------
@@ -180,6 +192,12 @@ async function build(app, team) {
 
     const idp = idpNotice(cfg);
     if (idp) wrap.append(idp);
+
+    // --- Who you play, above the lineup it should change -------------------
+    // Deliberately before the headline tiles: the posture decides how to read
+    // every number below it.
+    const mc = matchupCard(matchup);
+    if (mc) wrap.append(mc);
 
     // --- Headline ----------------------------------------------------------
     wrap.append(
@@ -555,6 +573,144 @@ async function build(app, team) {
     );
 
     return wrap;
+}
+
+/**
+ * This week's opponent, both teams' score distributions, and the swaps that
+ * raise the chance of winning.
+ *
+ * The lineup solver maximizes points because that is the right objective most
+ * weeks. It is the wrong one when the week is already won or already lost on
+ * average: a heavy underdog who plays the highest-projected lineup is
+ * maximizing the chance of losing by twelve instead of buying a chance of
+ * winning. Nothing in the app knew who you played, so it could never say that.
+ *
+ * Returns null when there is no opponent to find -- a bye, an unpublished
+ * week, or a league the schedule could not be read from -- and every caller
+ * treats that as "rank on points", which is what the app did before.
+ */
+function buildMatchup({ app, team, cfg, currentWeek, weekCtx, evaluateOne, report }) {
+    const oppRosterId = opponentFor(app.league.schedule, currentWeek, team.rosterId);
+    const opponentTeam = oppRosterId
+        ? (app.league.teams || []).find((t) => t.rosterId === oppRosterId)
+        : null;
+    if (!opponentTeam) return null;
+
+    // A player's own week-to-week swing where the season has enough of it,
+    // shrunk toward his position's measured spread where it does not.
+    const index = indexWeeklyStats(weekCtx.weeklyStats);
+    const sigmaFor = (entry) => {
+        const series = playerUsageSeries(weekCtx.weeklyStats, entry.player.id, cfg.scoring, index);
+        return playerSigma({
+            pos: entry.player.pos,
+            mu: entry.score ?? 0,
+            scores: series.map((r) => r.points),
+        });
+    };
+
+    const withSigma = (entries) => entries.map((e) => ({ ...e, sigma: sigmaFor(e) }));
+
+    // The opponent is scored through exactly the same week model -- same
+    // Vegas lines, same weather, same defensive matchups -- so the comparison
+    // is like for like rather than one side getting a better projection.
+    const oppEvaluations = opponentTeam.players.map(evaluateOne);
+    const oppReport = buildStartSitReport({ team: opponentTeam, cfg, evaluations: oppEvaluations });
+    // Their BEST lineup, not whatever they have set. Assuming they leave points
+    // on their bench is how you talk yourself into a lineup you should not set.
+    const oppResult = winProbSwaps({
+        entries: withSigma([
+            ...oppReport.lineup.starters.map((s) => s.entry),
+            ...oppReport.bench,
+        ]),
+        slots: cfg.starterSlots,
+        opponent: null,
+    });
+
+    const mine = winProbSwaps({
+        entries: withSigma([...report.lineup.starters.map((s) => s.entry), ...report.bench]),
+        slots: cfg.starterSlots,
+        opponent: oppResult.base,
+    });
+
+    const posture = matchupPosture(mine.baseWin);
+    return {
+        opponent: opponentTeam,
+        them: oppResult.base,
+        me: mine.base,
+        winProb: mine.baseWin,
+        posture,
+        swaps: contrarianSwaps(mine),
+    };
+}
+
+/** The matchup card: who you play, the odds, and what the odds imply. */
+function matchupCard(matchup) {
+    if (!matchup) return null;
+    const { opponent, me, them, winProb, posture, swaps } = matchup;
+    const pct = Number.isFinite(winProb) ? Math.round(winProb * 100) : null;
+    const tone =
+        posture.wants === 'ceiling' ? 'bad' : posture.wants === 'floor' ? 'good' : '';
+
+    const card = el(
+        'div',
+        { class: 'card', style: 'margin-bottom:16px' },
+        el(
+            'div',
+            { class: 'row' },
+            el('h3', { style: 'margin:0' }, `This week: vs ${opponent.name}`),
+            el('div', { class: 'grow' }),
+            pct === null ? null : tag(`${pct}% to win`, tone)
+        ),
+        el(
+            'div',
+            { class: 'tiles', style: 'margin-top:12px' },
+            tile('Your projection', round(me.mu, 1), `give or take ${round(me.sigma, 0)}`),
+            tile('Theirs', round(them.mu, 1), `give or take ${round(them.sigma, 0)}`),
+            tile(
+                'Margin',
+                `${me.mu - them.mu >= 0 ? '+' : ''}${round(me.mu - them.mu, 1)}`,
+                'on projected points',
+                me.mu - them.mu >= 0 ? 'good' : 'bad'
+            ),
+            tile('Play for', posture.wants === 'points' ? 'Points' : posture.wants === 'ceiling' ? 'Ceiling' : 'Floor', posture.kind.replace('-', ' '), tone)
+        ),
+        el('p', { class: 'small', style: 'margin:12px 0 0' }, describePosture(posture, winProb))
+    );
+
+    // The advice no projection-ranked list can give: a swap that costs points
+    // and wins the week more often anyway.
+    if (swaps.length && posture.wants === 'ceiling') {
+        card.append(
+            el('div', { class: 'section-head', style: 'margin-top:16px' },
+                el('h4', { style: 'margin:0' }, 'Worth the gamble'),
+                el('span', { class: 'hint' }, 'costs projected points, raises your chance of winning')),
+            el(
+                'div',
+                { class: 'board' },
+                ...swaps.slice(0, 4).map((s) =>
+                    el(
+                        'div',
+                        { class: 'edge-row' },
+                        el('span', { class: 'tiny dim', style: 'min-width:46px' }, slotLabel(s.slot)),
+                        el('span', { class: 'grow' },
+                            playerLink(s.in.player), ' over ', playerLink(s.out.player)),
+                        el('span', { class: 'tiny bad', style: 'min-width:62px;text-align:right' },
+                            `${round(s.pointsDelta, 1)} pts`),
+                        el('span', { class: 'tiny good', style: 'min-width:62px;text-align:right' },
+                            `+${Math.round(s.winDelta * 100)}% win`)
+                    )
+                )
+            ),
+            el(
+                'p',
+                { class: 'tiny dim', style: 'margin:8px 0 0' },
+                'These are not upgrades. They are deliberately worse on average and more likely to win this ' +
+                    'particular matchup, because a narrow loss and a blowout loss pay exactly the same.'
+            )
+        );
+    }
+
+    return card;
 }
 
 function swapSide(label, tone, entry) {

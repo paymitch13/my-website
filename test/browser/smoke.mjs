@@ -1140,10 +1140,25 @@ await page.waitForTimeout(4000);
     const qbCount = (text.match(/QB/g) || []).length;
     if (qbCount < 2) errors.push('start/sit: only one QB surfaced on a two-QB roster');
 
+    // Who you actually play. Every recommendation above this maximizes points,
+    // which is the wrong objective when the week is already won or lost on
+    // average -- and the app had no idea who the opponent was.
+    let matchupSeen = 'no';
+    if (/This week: vs /.test(text)) {
+        matchupSeen = 'yes';
+        if (!/% to win/.test(text)) errors.push('start/sit: the matchup card shows no win probability');
+        if (!/Play for/.test(text)) errors.push('start/sit: the matchup card does not say ceiling, floor or points');
+        if (!/give or take/.test(text)) errors.push('start/sit: the matchup card shows no spread on either projection');
+    } else {
+        errors.push('start/sit: no matchup card — the fixture league publishes this week’s pairings');
+    }
+
     const o = await overflowOf();
     if (o.scrolled > 0) errors.push(`start/sit: scrolls horizontally by ${o.scrolled}px`);
     if (o.wide.length) errors.push(`start/sit: overflows — ${o.wide.join(', ')}`);
-    console.log(`  start/sit: one roster table (${bodies} rows, ${benchRows} bench, ${margins.length} margins)`);
+    console.log(
+        `  start/sit: one roster table (${bodies} rows, ${benchRows} bench, ${margins.length} margins), matchup card ${matchupSeen}`
+    );
 
     // --- Comparing players, including ones off the roster -------------------
     // The card opens on two. It has to reach four, and the picker has to offer
