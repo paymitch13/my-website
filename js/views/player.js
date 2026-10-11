@@ -2,7 +2,7 @@
 //
 // Opens from any player name in the app. The job is to answer, in one glance:
 // who is this, what is he projected to do, what is he worth here, where do YOU
-// have him ranked versus where the projection has him, and what does this week
+// have him ranked versus where August had him, and what does this week
 // look like for him.
 
 import { describeEnvironment } from '../odds.js';
@@ -10,8 +10,8 @@ import { slateAverage, vegasImpact } from '../startsit.js';
 import { describeSchedule } from '../outlook.js';
 import { valuePlayer } from '../valuation.js';
 import { projectedPpg } from '../projections.js';
+import { preseasonRanks } from '../rankings.js';
 import { formatValue } from '../tradevalue.js';
-import { marketEdge, describeEdge } from '../market.js';
 import { getTrending } from '../sleeper.js';
 import { playerHistory } from '../transactions.js';
 import {
@@ -50,12 +50,22 @@ export function openPlayerCard(app, player) {
     const v = posRank ? valuePlayer(player, posRank, app.ctx) : null;
     const proj = app.projections?.[player.id] || null;
     const projPpg = proj ? projectedPpg(proj, app.cfg.scoring) : null;
-    const projRank = v?.projectedRank ?? null;
+    // Where he sat on the board before a game was played. Computed over the
+    // same board the Rankings tab shows, so the two cannot disagree, and
+    // measured against the PRESEASON curve -- the old `projectedRank` ranked a
+    // preseason number against today's curve, which is neither thing and
+    // drifted a median of four ranks at quarterback as results lifted the
+    // curve's top.
+    const projRank = player.pos
+        ? preseasonRanks(app.order?.[player.pos] || [], {
+              projections: app.projections,
+              scoring: app.cfg.scoring,
+          }).get(player.id) ?? null
+        : null;
     // What the rest of the world pays for him, which is a different question
     // from what he will score and from what you think of him.
     const mkt = app.ctx?.market?.get(player.id) ?? null;
     const mktRank = app.ctx?.marketRanks?.get(player.id) ?? null;
-    const edge = marketEdge({ marketRank: mktRank, projectedRank: projRank, pos: player.pos });
 
     const owner = findOwner(app, player.id);
     const oddsCtx = app.odds?.byTeam?.get(player.team) || null;
@@ -121,19 +131,29 @@ export function openPlayerCard(app, player) {
         tiles.append(tile('Projected', round(projPpg, 1), 'pts/game in this league'));
     }
     if (projRank) {
-        tiles.append(tile('Projected rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'the preseason projection alone'));
+        tiles.append(tile('Preseason rank', `${POS_LABEL[player.pos] || player.pos}${projRank}`, 'where August had him'));
     }
     // The third board. The model rank decides what he is worth to a lineup,
     // the preseason projection alone estimates what he will SCORE, and this is
     // what he COSTS -- the only one of the three that predicts whether his
     // manager says yes.
+    //
+    // Deliberately uncoloured. This tile used to be tinted green or amber
+    // according to whether the market ranked him below or above the preseason
+    // projection, as a buy-low or sell-high call. Backtested out of sample
+    // across three folds, the buy-low half of that call landed on 36.8% of 76
+    // attempts against a 48.6% base rate -- worse than picking at random --
+    // and no version of it beat the base rate. The reason is not subtle: the
+    // market already out-predicts our projection by 12.3% (see MARKET_WEIGHT),
+    // so a signal that fires when our projection disagrees with the price is
+    // detecting our own error, not a mispricing. The two ranks are still worth
+    // showing side by side; the verdict was not.
     if (mktRank) {
         tiles.append(
             tile(
                 'Market rank',
                 `${POS_LABEL[player.pos] || player.pos}${mktRank}`,
-                'what the league pays for him',
-                edge?.kind === 'buy-low' ? 'good' : edge?.kind === 'sell-high' ? 'warn' : ''
+                'what the league pays for him'
             )
         );
     }
@@ -192,27 +212,40 @@ export function openPlayerCard(app, player) {
         );
     }
 
-    // --- Where the price and the projection disagree ------------------------
+    // --- Where the price and the preseason projection disagree --------------
     //
-    // The most useful sentence on this card. Neither number can produce it
-    // alone: the projection has no idea what he costs, and the price has no
-    // idea what he will do. The difference is the trade.
-    if (edge && edge.kind !== 'fair') {
-        const buy = edge.kind === 'buy-low';
+    // Stated, not acted on. This card used to turn the gap into a Buy low or
+    // Sell high verdict, with the claim that it was "the cheapest edge in
+    // fantasy". Backtested out of sample over three folds, scoring each call
+    // against the positional rank the player went on to earn: the buy-low half
+    // hit 36.8% of 76 attempts against a 48.6% base rate, so a manager
+    // following it did worse than one picking at random, and removing a
+    // separate curve-drift bug in the comparison did not rescue it (43.3%
+    // overall). The mechanism is that the market already out-predicts our
+    // projection by 12.3%, so the gap is mostly our own error.
+    //
+    // The disagreement is still worth seeing -- it says how contested the
+    // player is -- so it is reported as a fact, with the better predictor
+    // named.
+    if (mktRank && projRank && Math.abs(mktRank - projRank) >= 6) {
+        const cheaper = mktRank > projRank;
         body.append(
             el(
                 'div',
-                { class: `verdict tone-${buy ? 'good' : 'warn'}`, style: 'margin-bottom:14px' },
-                el('div', { class: 'label' }, buy ? 'Buy low' : 'Sell high'),
-                el('div', { class: 'headline' }, describeEdge(edge, player.name)),
+                { class: 'card card-tight', style: 'margin-bottom:14px' },
+                el(
+                    'div',
+                    { class: 'small' },
+                    `The league prices him as ${POS_LABEL[player.pos] || player.pos}${mktRank} ` +
+                        `while August projected ${POS_LABEL[player.pos] || player.pos}${projRank} — ` +
+                        `${Math.abs(mktRank - projRank)} ranks ${cheaper ? 'cheaper than the projection' : 'dearer than the projection'}.`
+                ),
                 el(
                     'p',
-                    { class: 'small muted', style: 'margin:8px 0 0' },
-                    buy
-                        ? 'His manager is likely to let him go for less than he is projected to be worth. ' +
-                          'That gap is the cheapest edge in fantasy, and it closes as soon as he scores.'
-                        : 'The league is paying more for him than the projection supports. If you are going ' +
-                          'to move him, this is the window.'
+                    { class: 'tiny dim', style: 'margin:6px 0 0' },
+                    'Where the two disagree the price has been the better guide: it absorbs role changes in days, ' +
+                        'and a preseason projection cannot absorb one at all. Treat this as a measure of how ' +
+                        'contested he is rather than as an edge to trade on.'
                 )
             )
         );
@@ -220,9 +253,9 @@ export function openPlayerCard(app, player) {
 
     // --- Where the ranking disagrees with the raw projection ---------------
     //
-    // The two can differ because the ranking blends this season's results into
-    // the preseason number while `projectedRank` is the preseason projection
-    // alone. A gap is therefore a statement about how much the season has
+    // The two can differ because the ranking blends this season's results and
+    // the market into the preseason number, while the preseason rank is August
+    // on its own. A gap is therefore a statement about how much the season has
     // changed the picture for this player, which is worth saying out loud.
     if (posRank && projRank) {
         const gap = projRank - posRank;

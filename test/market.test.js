@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     marketQuery, marketUrl, marketKey, parseMarketValues, marketRanks,
-    marketEdge, divergences, describeEdge, fetchMarketValues,
+    fetchMarketValues,
 } from '../js/market.js';
 import { normalizeLeague, defaultRosterPositions } from '../js/league.js';
 import { createValuationContext } from '../js/valuation.js';
@@ -109,48 +109,11 @@ test('ranks are dense within a position', () => {
     assert.equal(ranks.get('d'), 2);
 });
 
-// --- The edge --------------------------------------------------------------
-
-test('a rank gap deep on the board is noise, the same gap at the top is not', () => {
-    // Three spots apart either way. Only one of them is an opinion.
-    const top = marketEdge({ marketRank: 6, projectedRank: 3, pos: 'RB' });
-    const deep = marketEdge({ marketRank: 66, projectedRank: 63, pos: 'WR' });
-    assert.equal(top.kind, 'buy-low');
-    assert.equal(deep.kind, 'fair', 'WR63 against WR66 is not a disagreement');
-});
-
-test('the market ranking a player WORSE than his projection is a buy-low', () => {
-    const e = marketEdge({ marketRank: 51, projectedRank: 16, pos: 'RB' });
-    assert.equal(e.kind, 'buy-low');
-    assert.ok(e.gap > 0);
-    assert.match(describeEdge(e, 'Alvin Kamara'), /charging less/);
-});
-
-test('the market ranking a player BETTER than his projection is a sell-high', () => {
-    const e = marketEdge({ marketRank: 3, projectedRank: 22, pos: 'WR' });
-    assert.equal(e.kind, 'sell-high');
-    assert.ok(e.gap < 0);
-    assert.match(describeEdge(e, 'Someone'), /paying more/);
-});
-
-test('an edge needs both numbers', () => {
-    assert.equal(marketEdge({ marketRank: 3, projectedRank: null, pos: 'WR' }), null);
-    assert.equal(marketEdge({ marketRank: null, projectedRank: 3, pos: 'WR' }), null);
-    assert.equal(describeEdge(null, 'X'), null);
-    assert.equal(describeEdge(marketEdge({ marketRank: 4, projectedRank: 4, pos: 'WR' }), 'X'), null);
-});
-
-test('divergences are ranked by how loud the disagreement is', () => {
-    const byId = parseMarketValues([
-        row('quiet', 'WR', 500, { positionRank: 10 }),
-        row('loud', 'RB', 400, { positionRank: 40 }),
-    ]);
-    const projected = { quiet: 11, loud: 5 };
-    const out = divergences(byId, (id) => projected[id]);
-    assert.equal(out[0].id, 'loud');
-    assert.equal(out[0].kind, 'buy-low');
-    assert.ok(!out.some((d) => d.id === 'quiet'), 'a one-spot gap is not a signal');
-});
+// The buy-low / sell-high edge used to be tested here. It is gone from the
+// product: backtested out of sample over three folds, its buy side hit 36.8%
+// of 76 attempts against a 48.6% base rate, so the list it produced was worse
+// than picking at random. See the note in js/market.js for why that is
+// structural rather than a threshold to retune.
 
 // --- Fetching is best-effort ------------------------------------------------
 

@@ -532,13 +532,12 @@ await page.waitForTimeout(2500);
             await page.waitForTimeout(3500);
             const back = (await page.textContent('#view')) || '';
             if (/What it takes to get/.test(back)) errors.push('finder: removing the target did not restore the open search');
-            // The price-vs-projection sections work from week one, unlike the
-            // usage ones, so they must be on the open board in every fixture.
-            if (!/Priced below their projection/.test(back)) {
-                errors.push('finder: the buy-low board is missing the price signal');
-            }
-            if (!/Priced above their projection/.test(back)) {
-                errors.push('finder: the sell-high board is missing the price signal');
+            // The two price-vs-projection boards were removed, so they must
+            // NOT come back: backtesting put the buy side at 36.8% against a
+            // 48.6% base rate, which is worse than picking at random, and both
+            // carried a Trade for / Shop him button.
+            if (/Priced (below|above) their projection/.test(back)) {
+                errors.push('finder: the price-vs-projection board is back, and acting on it beat random');
             }
         } else {
             errors.push('finder: the named target cannot be removed');
@@ -1155,10 +1154,12 @@ await page.waitForTimeout(4000);
 }
 
 // --- Three boards on one card ----------------------------------------------
-// The model's rank, the preseason projection and the market price are three
+// The model's rank, where August had him and what the league pays are three
 // different questions and the card has to answer all three. The market fixture
-// is reversed against the projections, so a buy-low or sell-high verdict must
-// appear too.
+// is reversed against the projections, so the card must report that
+// disagreement -- as a fact. It must NOT turn it into a buy-low or sell-high
+// call: that verdict was removed after backtesting put its buy side at 36.8%
+// against a 48.6% base rate.
 await page.click('#tabs .tab[data-view="rankings"]');
 await page.waitForTimeout(600);
 const nameLink = await page.$('#view button.plink');
@@ -1169,9 +1170,13 @@ if (nameLink) {
     const card = (await page.textContent('.modal-backdrop .modal')) || '';
     if (!/Model rank/.test(card)) errors.push('player card: no model rank');
     if (!/Market rank/.test(card)) errors.push('player card: the market board is missing');
-    if (!/Projected rank/.test(card)) errors.push('player card: the projection board is missing');
-    if (!/(Buy low|Sell high)/.test(card)) {
-        errors.push('player card: market and projection disagree in the fixture but no edge was surfaced');
+    if (!/Preseason rank/.test(card)) errors.push('player card: the August board is missing');
+    if (/(Buy low|Sell high)/.test(card)) {
+        errors.push('player card: the buy-low verdict is back, and it predicts worse than chance');
+    }
+    // The disagreement is still reported, just without the imperative.
+    if (!/prices him as .* while August projected/.test(card)) {
+        errors.push('player card: market and preseason disagree in the fixture but the card does not say so');
     }
     // The replacement line has to be labelled with the board it was read off.
     // It used to say "TE7" beside a number pooled from the whole RB/WR/TE

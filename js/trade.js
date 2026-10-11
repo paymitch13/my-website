@@ -90,8 +90,8 @@ export function neutralEntry(player, ctx) {
         detail: price,
         neutral: true,
         // Which board priced him, so a card never implies a market number it
-        // did not have. Both ranks are carried whether or not they were used --
-        // the gap between them is the whole buy-low signal.
+        // did not have. Both ranks are carried whether or not they were used,
+        // so a card can report the one it actually quoted.
         priced: market ? 'market' : projected ? 'projection' : 'unranked',
         marketRank: market,
         projectedRank: projected,

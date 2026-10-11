@@ -158,39 +158,23 @@ export function marketRanks(byId) {
     return ranks;
 }
 
-/**
- * Where the market and the projection disagree about one player.
- *
- * This difference is the whole reason for importing a market at all. A player
- * the market ranks well below his projection is cheap to acquire relative to
- * what he is likely to score; one ranked well above is expensive, and the time
- * to sell. Neither number alone can tell you that -- the projection has no idea
- * what he costs, and the price has no idea what he will do.
- *
- * Reported in ranks rather than in value because ranks are what a person
- * negotiates in, and because the two scales are not the same unit.
- */
-export function marketEdge({ marketRank, projectedRank, pos }) {
-    if (!Number.isFinite(marketRank) || !Number.isFinite(projectedRank)) return null;
-    const gap = marketRank - projectedRank;
-
-    // A rank is a coarser instrument deep on the board than at the top: QB3
-    // against QB6 is a real disagreement, WR63 against WR66 is noise. Scaling
-    // by where on the board the argument is happening keeps one threshold
-    // honest across the whole range.
-    const depth = Math.max(4, Math.min(marketRank, projectedRank));
-    const strength = gap / depth;
-
-    return {
-        marketRank,
-        projectedRank,
-        pos,
-        gap,
-        strength,
-        // Positive gap = the market ranks him WORSE than the projection does.
-        kind: strength >= 0.25 ? 'buy-low' : strength <= -0.25 ? 'sell-high' : 'fair',
-    };
-}
+// The market/projection disagreement used to be turned into a buy-low or
+// sell-high verdict here, exported as `marketEdge`, `describeEdge` and
+// `divergences`. All three are gone.
+//
+// Backtested out of sample over three folds, scoring each call against the
+// positional rank the player went on to earn: the buy-low side hit 36.8% of 76
+// attempts against a 48.6% base rate, so the list was worse than picking at
+// random, and the sell side sat on the base rate. Nothing rescued it -- not
+// removing a curve-drift bug in the comparison (43.3%), not substituting the
+// model's current rank (14.0%, and 0 for 22 on the buy side).
+//
+// The reason is structural rather than a bad threshold. The market
+// out-predicts our own projection by 12.3% (see MARKET_WEIGHT), so a signal
+// that fires when the two disagree is detecting our projection's error, not a
+// mispricing in the market. The ranks are still shown side by side on the
+// player card as a measure of how contested a player is; the verdict and the
+// Trade for / Shop him buttons it drove are not.
 
 /**
  * The observed price distribution for this league shape, best first.
@@ -206,32 +190,6 @@ export function marketPriceCurve(snapshot) {
     if (!byId?.size) return null;
     return [...byId.values()].map((r) => r.value).sort((a, b) => b - a);
 }
-
-/** Every player the market and the projections disagree about, loudest first. */
-export function divergences(byId, projectedRankOf, { minStrength = 0.25, limit = 40 } = {}) {
-    const out = [];
-    for (const row of byId.values()) {
-        const projectedRank = projectedRankOf(row.id);
-        const edge = marketEdge({ marketRank: row.posRank, projectedRank, pos: row.pos });
-        if (!edge || Math.abs(edge.strength) < minStrength) continue;
-        out.push({ ...edge, id: row.id, name: row.name, marketValue: row.value, trend30: row.trend30 });
-    }
-    out.sort((a, b) => Math.abs(b.strength) - Math.abs(a.strength));
-    return out.slice(0, limit);
-}
-
-/** One sentence a person can act on. */
-export function describeEdge(edge, name) {
-    if (!edge || edge.kind === 'fair') return null;
-    const who = name || 'He';
-    const posRank = (n) => `${edge.pos}${n}`;
-    if (edge.kind === 'buy-low') {
-        return `${who} is priced as ${posRank(edge.marketRank)} but projects as ${posRank(edge.projectedRank)} — ` +
-            `the league is charging less than he is likely to score.`;
-    }
-    return `${who} is priced as ${posRank(edge.marketRank)} but projects as ${posRank(edge.projectedRank)} — ` +
-        `the league is paying more than he is likely to score.`;
-};
 
 /**
  * Fetch the market for this league shape.

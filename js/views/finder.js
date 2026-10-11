@@ -9,7 +9,6 @@ import * as store from '../store.js';
 import { encodeOffer, offerUrl } from '../share.js';
 import { valuePlayer } from '../valuation.js';
 import { formatValue } from '../tradevalue.js';
-import { marketEdge, describeEdge } from '../market.js';
 import {
     banner, el, emptyState, fmtDelta, fmtPctDelta, pickPlayer, playerLink, posBadge,
     sortBy, spinnerRow, tag, tile, toast,
@@ -334,62 +333,25 @@ async function build(app, me, named = { want: [], offer: [] }) {
         wrap.append(card);
     }
 
-    // --- Buy low / sell high ------------------------------------------------
-    // --- Priced wrong -------------------------------------------------------
+    // The two sections that used to sit here -- "Priced below their
+    // projection" and "Priced above their projection", each with a Trade for
+    // or Shop him button -- are gone.
     //
-    // Where the market and the projection disagree about the same player. This
-    // is a different signal from the usage sections below and a stronger one:
-    // usage tells you a role is changing, price tells you nobody has charged
-    // for it yet. It also works from week one, where usage needs a month of
-    // box scores before it can say anything.
-    if (app.ctx?.marketRanks?.size) {
-        const rostered = new Map();
-        for (const t of teams) for (const p of t.players) rostered.set(p.id, t);
-        const mineIds = new Set(me.players.map((p) => p.id));
-
-        const edges = [];
-        for (const t of teams) {
-            for (const p of t.players) {
-                const edge = marketEdge({
-                    marketRank: app.ctx.marketRanks.get(p.id) ?? null,
-                    projectedRank: app.projections?.[p.id]
-                        ? valuePlayer(p, 1, app.ctx).projectedRank
-                        : null,
-                    pos: p.pos,
-                });
-                if (edge && edge.kind !== 'fair') edges.push({ player: p, edge, mine: mineIds.has(p.id) });
-            }
-        }
-
-        const cheap = sortBy(edges.filter((r) => !r.mine && r.edge.kind === 'buy-low'), (r) => r.edge.strength, -1);
-        const dear = sortBy(edges.filter((r) => r.mine && r.edge.kind === 'sell-high'), (r) => -r.edge.strength, -1);
-
-        wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Priced below their projection'),
-            el('span', { class: 'hint' }, 'the league is charging less than they should score')));
-        wrap.append(usageCard(cheap.slice(0, 6), rostered, (r) => describeEdge(r.edge, r.player.name), 'good',
-            'Nothing on another roster is trading meaningfully below what it projects for.',
-            (r) => {
-                const owner = rostered.get(r.player.id);
-                if (!owner || owner.rosterId === me.rosterId) return null;
-                return {
-                    label: 'Trade for',
-                    hash: encodeOffer({ leagueId: cfg.id, aRoster: me.rosterId, aSend: [], bRoster: owner.rosterId, bSend: [r.player.id] }),
-                };
-            }));
-
-        wrap.append(el('div', { class: 'section-head' }, el('h2', {}, 'Priced above their projection'),
-            el('span', { class: 'hint' }, 'your players the league is paying a premium for')));
-        wrap.append(usageCard(dear.slice(0, 6), rostered, (r) => describeEdge(r.edge, r.player.name), 'warn',
-            'None of your players are carrying a premium over what they project for.',
-            (r) => {
-                const other = teams.find((t) => t.rosterId !== me.rosterId);
-                if (!other) return null;
-                return {
-                    label: 'Shop him',
-                    hash: encodeOffer({ leagueId: cfg.id, aRoster: me.rosterId, aSend: [r.player.id], bRoster: other.rosterId, bSend: [] }),
-                };
-            }));
-    }
+    // They ranked players by how far the market's price diverged from the
+    // preseason projection. Backtested out of sample over three folds, scoring
+    // each call against the positional rank the player went on to earn, the
+    // buy-low side hit 36.8% of 76 attempts against a 48.6% base rate: a
+    // manager acting on that list did worse than one picking at random. The
+    // sell side was at the base rate, and no variant beat it, including one
+    // with a curve-drift bug in the comparison removed.
+    //
+    // It is not a tuning problem. The market out-predicts our own projection
+    // by 12.3% (see MARKET_WEIGHT), so "the price disagrees with our
+    // projection" is a detector for our own error, and the comment that used
+    // to sit here -- claiming this was a stronger signal than usage -- had it
+    // exactly backwards. The usage sections below are a different and
+    // better-founded thing: an expanding role and touchdown regression are
+    // measured from box scores, not from a disagreement with a price.
 
     if (lastPlayed >= 4) {
         const { weeklyStats } = await loadWeekContext(raw.season, currentWeek, lastPlayed);
