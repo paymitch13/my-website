@@ -347,3 +347,63 @@ test('the premium pushes receivers down the same board it lifts tight ends up', 
         'so a marginal receiver is worth less, not the same'
     );
 });
+
+// --- Counterparty rosters are scored on now, not on August -----------------
+
+test('a counterparty is scored on the projection UPDATED BY RESULTS', () => {
+    // The lineup solve is meant to model what happens on Sunday. Scoring used
+    // to go through `projectedRank`, which ranks a PRESEASON points-per-game,
+    // and the rank mapped back to almost exactly that preseason number -- so
+    // every opposing lineup in the app was solved on August with four weeks of
+    // evidence discarded.
+    const cfg = normalizeLeague({
+        settings: { num_teams: 12, playoff_week_start: 15 },
+        scoring_settings: { rush_yd: 0.1, rec: 0.5, rec_yd: 0.1 },
+        roster_positions: defaultRosterPositions(),
+    });
+
+    // A full curve so the rank lookups are well defined, plus one back whose
+    // season has gone far better than August expected.
+    const projections = {};
+    for (let i = 0; i < 40; i++) {
+        projections[`rb${i}`] = { id: `rb${i}`, pos: 'RB', games: 17, stats: { rush_yd: 1700 - i * 35 } };
+    }
+    const breakout = { id: 'rb30', name: 'Breakout', pos: 'RB', age: 25 };
+    // August had him 31st of 40; four games say he is a top-of-the-board back.
+    const actuals = { rb30: { id: 'rb30', pos: 'RB', games: 4, stats: { rush_yd: 600 } } };
+
+    const stale = createValuationContext(cfg, { week: 5, weeksLeft: 10, projections });
+    const current = createValuationContext(cfg, { week: 5, weeksLeft: 10, projections, actuals });
+
+    const withoutResults = neutralEntry(breakout, stale);
+    const withResults = neutralEntry(breakout, current);
+
+    assert.ok(
+        withResults.score > withoutResults.score,
+        `four good games must raise what he is worth to a lineup: ${withoutResults.score} -> ${withResults.score}`
+    );
+    // And it must land near what the app itself believes, not near August.
+    const august = stale.curves.RB[30];
+    assert.ok(
+        withResults.score > august * 1.15,
+        `scored at ${withResults.score.toFixed(2)}, which is still August's ${august.toFixed(2)}`
+    );
+});
+
+test('a counterparty with no results is unchanged', () => {
+    // The blend returns the bare projection when there is nothing to blend, so
+    // preseason and week-one behaviour must be identical to before.
+    const cfg = normalizeLeague({
+        settings: { num_teams: 12, playoff_week_start: 15 },
+        scoring_settings: { rush_yd: 0.1 },
+        roster_positions: defaultRosterPositions(),
+    });
+    const projections = {};
+    for (let i = 0; i < 40; i++) {
+        projections[`rb${i}`] = { id: `rb${i}`, pos: 'RB', games: 17, stats: { rush_yd: 1700 - i * 35 } };
+    }
+    const ctx = createValuationContext(cfg, { week: 1, weeksLeft: 14, projections });
+    const e = neutralEntry({ id: 'rb10', name: 'X', pos: 'RB', age: 25 }, ctx);
+    assert.ok(e.score > 0 && Number.isFinite(e.score));
+    assert.equal(e.priced, 'projection', 'with no market it still falls back to the projection');
+});

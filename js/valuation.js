@@ -496,9 +496,21 @@ export function valuePlayer(player, posRank, ctx) {
     };
 }
 
+/**
+ * Where a per-game number lands on this league's own curve.
+ *
+ * Exported because scoring a roster needs it too: a lineup solve wants the
+ * rank of what a player is expected to do NOW, and `valuePlayer` only takes a
+ * rank. Feeding it a preseason number is what made every counterparty lineup
+ * in the app solve on August.
+ */
+export function rankForPpg(ctx, pos, ppg) {
+    return rankOnCurve(ctx.curves?.[pos], ppg);
+}
+
 /** Where a per-game number would land on the position's projected curve. */
 function projectedRankOf(ctx, pos, ppg) {
-    return rankOnCurve(ctx.curves?.[pos], ppg);
+    return rankForPpg(ctx, pos, ppg);
 }
 
 /** Where a per-game number falls in a descending curve, as a 1-based rank. */

@@ -19,7 +19,8 @@
 // between them.
 
 import { optimizeLineup, positionalReport, teamScoringProfile } from './lineup.js';
-import { valuePlayer } from './valuation.js';
+import { blendedPpg } from './projections.js';
+import { valuePlayer, rankForPpg } from './valuation.js';
 import { DEFAULT_SIM_SEED } from './sim.js';
 import { runSimulation } from './simclient.js';
 import { clamp, round, sortBy, sum } from './util.js';
@@ -77,7 +78,32 @@ export function neutralEntry(player, ctx) {
     // simulated season; price the ask at projection and the app decides a
     // manager will hand over the guy everyone wants for what a spreadsheet
     // says he is worth.
-    const scoringRank = projected ?? market ?? 999;
+    //
+    // "The projection" means the projection UPDATED BY RESULTS, which is not
+    // what this used to do. Scoring went through `projectedRank`, which ranks a
+    // player's PRESEASON points per game, and the rank then mapped back to
+    // almost exactly that preseason number -- measured on week-5 data, the
+    // figure handed to the lineup solver sat 0.448 points per game from the
+    // August projection and 1.749 from the app's own blend. So every opposing
+    // lineup in the trade engine, the finder and the season simulator was
+    // solved on August, with four weeks of evidence discarded on the other
+    // side of every deal: Kenneth Walker went in at 12.7 points a game while
+    // the app believed 18.9 and he was averaging 26.0, Chuba Hubbard at 7.5
+    // against 12.7 believed. Median error 1.15 points per game per player,
+    // 90th percentile 3.13, across nine starters.
+    //
+    // The blend is not sentiment -- it is the same projection with the season
+    // folded in at the weight backtesting supported, and it beats the
+    // projection alone at predicting what a player does next. Using August
+    // for a lineup solve was using a known-worse estimator.
+    const ownPpg = blendedPpg({
+        projection: proj,
+        actual: ctx.actuals?.[player.id] || null,
+        scoring: ctx.cfg.scoring,
+        week: ctx.week,
+    });
+    const scoringRank =
+        (Number.isFinite(ownPpg) ? rankForPpg(ctx, player.pos, ownPpg) : null) ?? projected ?? market ?? 999;
     const priceRank = market ?? projected ?? 999;
     const scoring = valuePlayer(player, scoringRank, ctx);
     const price = priceRank === scoringRank ? scoring : valuePlayer(player, priceRank, ctx);
