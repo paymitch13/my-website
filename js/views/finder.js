@@ -4,13 +4,14 @@ import { findTrades, acceptanceNote } from '../finder.js';
 import { scanUsage, indexWeeklyStats, describeBuyLow, describeSellHigh } from '../usage.js';
 import { loadWeekContext } from '../data.js';
 import { byeConflicts } from '../schedule.js';
+import { tradeWindow } from '../league.js';
 import { openSyncModal } from '../app.js';
 import * as store from '../store.js';
 import { encodeOffer, offerUrl } from '../share.js';
 import { valuePlayer } from '../valuation.js';
 import { formatValue } from '../tradevalue.js';
 import {
-    banner, el, emptyState, fmtDelta, fmtPctDelta, pickPlayer, playerLink, posBadge,
+    banner, deadlineNotice, el, emptyState, fmtDelta, fmtPctDelta, pickPlayer, playerLink, posBadge,
     sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
@@ -32,6 +33,11 @@ export default function renderFinder(app) {
             )
         )
     );
+
+    if (app.league) {
+        const notice = deadlineNotice(tradeWindow(app.league.cfg, app.league.currentWeek));
+        if (notice) root.append(notice);
+    }
 
     if (!app.league) {
         root.append(

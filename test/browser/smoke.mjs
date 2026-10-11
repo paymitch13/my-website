@@ -901,6 +901,59 @@ if (await addPlayerToSide(0)) {
     await hostile.close();
 }
 
+// --- A league whose trade deadline has passed -------------------------------
+//
+// The worst kind of wrong answer is a correct valuation of a trade the league
+// will not process. `trade_deadline` was read off Sleeper and used by nothing,
+// so every trade surface said nothing. They have to say it before the user
+// spends ten minutes building a deal.
+{
+    const late = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const lateErrors = [];
+    late.on('pageerror', (e) => lateErrors.push(`pageerror: ${e.message}`));
+    await late.addInitScript(() => {
+        localStorage.setItem('ffc:state:v1', JSON.stringify({ leagueId: 'L1', userId: 'u1', settings: {} }));
+    });
+    await late.route('**', (route) => {
+        const u = route.request().url();
+        if (u.includes(`localhost:${port}`) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+        // The same fixture league, with the deadline already behind us.
+        if (/\/league\/L1$/.test(u)) {
+            return route.fulfill(json({ ...league, settings: { ...league.settings, trade_deadline: 4 } }));
+        }
+        for (const [re, make] of fixtures) if (re.test(u)) return route.fulfill(make(u));
+        return route.fulfill(json({}));
+    });
+    await late.goto(`http://localhost:${port}/`, { waitUntil: 'load' });
+    await late.waitForTimeout(9000);
+
+    if (lateErrors.length) {
+        errors.push(`passed deadline: page threw — ${[...new Set(lateErrors)].slice(0, 2).join(' | ')}`);
+    }
+
+    let warned = 0;
+    for (const view of ['trade', 'finder', 'league']) {
+        await late.click(`#tabs .tab[data-view="${view}"]`);
+        await late.waitForTimeout(1800);
+        const body = (await late.textContent('#view')) || '';
+        if (/deadline was week 4|Closed/.test(body)) warned += 1;
+        else errors.push(`passed deadline: ${view} does not say trades are closed`);
+    }
+
+    // The players-only calculator is deliberately NOT gated: it exists for
+    // deals that already happened and for other people's leagues, and a
+    // deadline in this league says nothing about either.
+    await late.click('#tabs .tab[data-view="trade"]');
+    await late.waitForTimeout(1200);
+    const vac = await late.$('[data-mode="vacuum"], button[data-vacuum]');
+    if (vac) {
+        await vac.click();
+        await late.waitForTimeout(1200);
+    }
+    console.log(`  passed deadline: ${warned}/3 trade surfaces say so`);
+    await late.close();
+}
+
 // --- The front door, with no league connected ------------------------------
 //
 // This is the app's default experience, and it was its least accurate one.
@@ -1215,7 +1268,13 @@ if (details) {
     if (!/required/.test(panel)) errors.push('league: no position is marked required');
     const badges = await page.$$eval('#view .slot-read td .pos', (els) => els.length);
     if (badges < 9) errors.push(`league: only ${badges} eligibility badges across the slot table`);
-    console.log(`  league slots: ${badges} eligibility badges, grouped waiver line shown`);
+    // The trade deadline was read off Sleeper and used by nothing at all. The
+    // fixture's is week 12 at week 7, so it must report five weeks left.
+    const leagueText = (await page.textContent('#view')) || '';
+    if (!/5 wk left/.test(leagueText) || !/deadline week 12/.test(leagueText)) {
+        errors.push('league: the trade deadline is not reported');
+    }
+    console.log(`  league slots: ${badges} badges, grouped waiver line, deadline reported`);
 } else {
     errors.push('league: the slot-reading panel is missing');
 }

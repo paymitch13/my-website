@@ -446,6 +446,43 @@ export function flexGroups(cfg) {
     return [...groups.values()];
 }
 
+/**
+ * Whether this league is still taking trades, and for how much longer.
+ *
+ * `trade_deadline` was read off Sleeper and then used by nothing at all. Once
+ * it passes, the trade calculator, the finder and every acceptance verdict in
+ * the app are answering a question the league will not let the user act on,
+ * and none of them said so -- the single worst kind of wrong answer, because
+ * it looks exactly like a right one.
+ *
+ * Sleeper stores it as the last week trades may be processed. Leagues that
+ * never close trading set it past the end of the season, so anything at or
+ * beyond the first playoff week is treated as no deadline rather than as a
+ * deadline nobody reaches.
+ *
+ * @returns {{deadline: number|null, unlimited: boolean, passed: boolean,
+ *            closesThisWeek: boolean, weeksLeft: number|null}}
+ */
+export function tradeWindow(cfg, currentWeek) {
+    const deadline = Number(cfg?.tradeDeadline);
+    const week = Number(currentWeek);
+    const playoffs = cfg?.playoffWeekStart || 15;
+
+    if (!Number.isFinite(deadline) || deadline <= 0 || deadline >= playoffs) {
+        return { deadline: null, unlimited: true, passed: false, closesThisWeek: false, weeksLeft: null };
+    }
+    if (!Number.isFinite(week) || week <= 0) {
+        return { deadline, unlimited: false, passed: false, closesThisWeek: false, weeksLeft: null };
+    }
+    return {
+        deadline,
+        unlimited: false,
+        passed: week > deadline,
+        closesThisWeek: week === deadline,
+        weeksLeft: Math.max(0, deadline - week),
+    };
+}
+
 /** Weeks of fantasy regular season left to play, inclusive of the current week. */
 export function weeksRemaining(cfg, currentWeek) {
     const lastRegular = (cfg.playoffWeekStart || 15) - 1;

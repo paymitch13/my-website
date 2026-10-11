@@ -2,7 +2,7 @@
 
 import { optimizeLineup, positionalReport } from '../lineup.js';
 import { buildEntries } from '../trade.js';
-import { ALL_POS, hasDedicatedSlot, scoringLabel, slotLabel } from '../league.js';
+import { ALL_POS, hasDedicatedSlot, scoringLabel, slotLabel, tradeWindow } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
     banner, el, emptyState, fmtDelta, modal, playerCell, posBadge, round, sortBy, tag, tile,
@@ -43,7 +43,8 @@ export default function renderLeague(app) {
             tile('League', cfg.name, `${cfg.teams} teams · ${cfg.format}`),
             tile('Scoring', scoringLabel(cfg.scoring), cfg.superflex ? 'Superflex' : 'Single QB'),
             tile('Week', currentWeek, `${weeksLeft} regular-season week${weeksLeft === 1 ? '' : 's'} left`),
-            tile('Playoffs', `${cfg.playoffTeams} teams`, `start week ${cfg.playoffWeekStart}`)
+            tile('Playoffs', `${cfg.playoffTeams} teams`, `start week ${cfg.playoffWeekStart}`),
+            tradeDeadlineTile(cfg, currentWeek)
         )
     );
 
@@ -163,6 +164,26 @@ export default function renderLeague(app) {
     );
 
     return root;
+}
+
+/**
+ * When this league stops taking trades.
+ *
+ * It sits with the other settings because that is what it is -- but it is the
+ * one setting that can make half the app inapplicable, so it is also called
+ * out on the Trade and Finder tabs rather than left here to be found.
+ */
+function tradeDeadlineTile(cfg, currentWeek) {
+    const w = tradeWindow(cfg, currentWeek);
+    if (w.unlimited) return tile('Trades', 'Open', 'no deadline set');
+    if (w.passed) return tile('Trades', 'Closed', `deadline was week ${w.deadline}`, 'bad');
+    if (w.closesThisWeek) return tile('Trades', 'Final week', `deadline is week ${w.deadline}`, 'warn');
+    return tile(
+        'Trades',
+        `${w.weeksLeft} wk left`,
+        `deadline week ${w.deadline}`,
+        w.weeksLeft <= 2 ? 'warn' : ''
+    );
 }
 
 /**

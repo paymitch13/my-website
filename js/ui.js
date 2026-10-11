@@ -97,6 +97,42 @@ export function idpNotice(cfg) {
     );
 }
 
+/**
+ * Whether the league will still process a trade, said before the user spends
+ * ten minutes building one.
+ *
+ * Returns null when there is nothing to say -- no deadline, or one still
+ * comfortably ahead -- so a caller can append it unconditionally.
+ *
+ * @param {object} window the result of `tradeWindow(cfg, currentWeek)`
+ */
+export function deadlineNotice(window) {
+    if (!window || window.unlimited || window.deadline === null) return null;
+    if (window.passed) {
+        return banner(
+            `This league's trade deadline was week ${window.deadline}, so no trade can be processed for the ` +
+                'rest of the season. Everything below still works as a valuation — it is just not something ' +
+                'you can act on in this league any more.',
+            'bad'
+        );
+    }
+    if (window.closesThisWeek) {
+        return banner(
+            `Last week for trades: this league's deadline is week ${window.deadline}, which is this week. ` +
+                'Anything you want to do has to be accepted before it closes.',
+            'warn'
+        );
+    }
+    if (window.weeksLeft !== null && window.weeksLeft <= 2) {
+        return banner(
+            `${window.weeksLeft} week${window.weeksLeft === 1 ? '' : 's'} left to trade — this league's ` +
+                `deadline is week ${window.deadline}.`,
+            'warn'
+        );
+    }
+    return null;
+}
+
 export function skeleton(count = 4, height = 42) {
     return el(
         'div',

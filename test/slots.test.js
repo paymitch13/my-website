@@ -17,6 +17,7 @@ import {
     flexGroups,
     replacementRanks,
     SLOT_ELIGIBILITY,
+    tradeWindow,
 } from '../js/league.js';
 import { optimizeLineup, positionalReport } from '../js/lineup.js';
 import {
@@ -272,4 +273,59 @@ test('a concatenated flex name still decomposes', () => {
     assert.deepEqual(inferSlotEligibility('TEWRFLEX'), ['WR', 'TE']);
     assert.deepEqual(inferSlotEligibility('WR/TE'), ['WR', 'TE']);
     assert.deepEqual(inferSlotEligibility('FLEX_RB_WR_TE'), ['RB', 'WR', 'TE']);
+});
+
+// --- When the league stops taking trades ----------------------------------
+// `trade_deadline` was read off Sleeper and used by nothing. Past it, the
+// calculator and the finder answer a question the league will not let the user
+// act on, which looks exactly like a right answer.
+
+const deadlineLeague = (deadline, playoffWeekStart = 15) =>
+    normalizeLeague({
+        settings: { num_teams: 12, playoff_teams: 6, playoff_week_start: playoffWeekStart, trade_deadline: deadline },
+        scoring_settings: { rec: 0.5 },
+        roster_positions: STANDARD,
+    });
+
+test('the window is open before the deadline and shut after it', () => {
+    const cfg = deadlineLeague(11);
+    assert.equal(tradeWindow(cfg, 8).passed, false);
+    assert.equal(tradeWindow(cfg, 8).weeksLeft, 3);
+    // The deadline week itself still counts: Sleeper processes trades through it.
+    assert.equal(tradeWindow(cfg, 11).passed, false);
+    assert.equal(tradeWindow(cfg, 11).closesThisWeek, true);
+    assert.equal(tradeWindow(cfg, 12).passed, true);
+    assert.equal(tradeWindow(cfg, 12).weeksLeft, 0);
+});
+
+test('a deadline at or past the playoffs is no deadline at all', () => {
+    // Leagues that never close trading park the setting past the season's end;
+    // counting down to a week nobody reaches would be noise.
+    for (const deadline of [15, 17, 18, 99]) {
+        const w = tradeWindow(deadlineLeague(deadline), 5);
+        assert.equal(w.unlimited, true, `week ${deadline} should read as no deadline`);
+        assert.equal(w.passed, false);
+        assert.equal(w.deadline, null);
+    }
+});
+
+test('a league with no deadline setting says nothing rather than guessing', () => {
+    const cfg = deadlineLeague(undefined);
+    const w = tradeWindow(cfg, 5);
+    assert.equal(w.unlimited, true);
+    assert.equal(w.deadline, null);
+});
+
+test('an unknown week does not claim the deadline has passed', () => {
+    // Before the season, or when the NFL state could not be reached.
+    const w = tradeWindow(deadlineLeague(11), null);
+    assert.equal(w.passed, false);
+    assert.equal(w.deadline, 11, 'the deadline is still worth reporting');
+    assert.equal(w.weeksLeft, null);
+});
+
+test('the deadline respects a league with early playoffs', () => {
+    // A 14-week regular season makes week 14 a deadline nobody reaches.
+    assert.equal(tradeWindow(deadlineLeague(14, 14), 5).unlimited, true);
+    assert.equal(tradeWindow(deadlineLeague(12, 14), 5).unlimited, false);
 });

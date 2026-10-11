@@ -7,7 +7,7 @@
 
 import { evaluateTrade, suggestAddOns, suggestPackages, suggestFaab } from '../trade.js';
 import { valuePlayer } from '../valuation.js';
-import { slotLabel, scoringLabel } from '../league.js';
+import { slotLabel, scoringLabel, tradeWindow } from '../league.js';
 import { openSyncModal, connectLeague } from '../app.js';
 import * as store from '../store.js';
 import { byeConflicts } from '../schedule.js';
@@ -16,7 +16,7 @@ import { offerUrl } from '../share.js';
 import { bidHistory, waiverTargets, estimateBid } from '../faab.js';
 import vacuumMode from './vacuum.js';
 import {
-    banner, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, idpNotice, pickPlayer,
+    banner, deadlineNotice, el, fmtDelta, fmtPct, fmtPctDelta, gradeClass, idpNotice, pickPlayer,
     playerCell, playerLink, posBadge, round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
@@ -37,6 +37,16 @@ export default function renderTrade(app) {
             )
         )
     );
+
+    // Said before a trade is built rather than after. The league-mode tools
+    // below are answering "should I do this", and once the deadline is gone
+    // the honest answer is that it is not available -- the valuation is still
+    // correct and still useless. The players-only mode is deliberately not
+    // gated: it is for deals that already happened and for hypotheticals.
+    if (connected) {
+        const notice = deadlineNotice(tradeWindow(app.league.cfg, app.league.currentWeek));
+        if (notice) root.append(notice);
+    }
 
     // Two questions, two modes.
     //
