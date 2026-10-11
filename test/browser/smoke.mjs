@@ -901,6 +901,64 @@ if (await addPlayerToSide(0)) {
     await hostile.close();
 }
 
+// --- Switching between leagues ---------------------------------------------
+//
+// The header chip went straight to the username search, which is the right
+// screen exactly once: after that, moving between leagues meant retyping a
+// username, and connecting a second league silently replaced the first.
+{
+    const multi = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const multiErrors = [];
+    multi.on('pageerror', (e) => multiErrors.push(`pageerror: ${e.message}`));
+    // Two leagues already remembered, as a returning user would have.
+    await multi.addInitScript(() => {
+        localStorage.setItem('ffc:state:v1', JSON.stringify({
+            leagueId: 'L1',
+            userId: 'u1',
+            username: 'manager1',
+            leagues: [
+                { id: 'L1', name: 'Fixture League', teams: 12, season: '2025', format: 'redraft', scoring: 'half PPR' },
+                { id: 'L2', name: 'The Other One', teams: 10, season: '2025', format: 'dynasty', scoring: 'full PPR' },
+            ],
+            settings: {},
+        }));
+    });
+    await multi.route('**', (route) => {
+        const u = route.request().url();
+        if (u.includes(`localhost:${port}`) || u.startsWith('data:') || u.startsWith('blob:')) return route.continue();
+        for (const [re, make] of fixtures) if (re.test(u)) return route.fulfill(make(u));
+        return route.fulfill(json({}));
+    });
+    await multi.goto(`http://localhost:${port}/`, { waitUntil: 'load' });
+    await multi.waitForTimeout(9000);
+
+    if (multiErrors.length) {
+        errors.push(`switcher: page threw — ${[...new Set(multiErrors)].slice(0, 2).join(' | ')}`);
+    }
+
+    await multi.click('#league-chip');
+    await multi.waitForSelector('.modal-backdrop .modal', { timeout: 5000 });
+    await multi.waitForTimeout(500);
+    const sheet = (await multi.textContent('.modal-backdrop .modal')) || '';
+
+    // Both leagues listed, the active one marked, and a way to add a third.
+    if (!/Fixture League/.test(sheet)) errors.push('switcher: the active league is not listed');
+    if (!/The Other One/.test(sheet)) errors.push('switcher: the second league is not listed');
+    if (!/current/.test(sheet)) errors.push('switcher: nothing marks which league is active');
+    if (!/Connect another league/.test(sheet)) {
+        errors.push('switcher: no way to add a league from the switcher');
+    }
+    const rows = await multi.$$eval('.modal-backdrop .modal .pick', (els) => els.length);
+    if (rows < 2) errors.push(`switcher: ${rows} rows rendered, expected both leagues`);
+    const current = await multi.$$eval('.modal-backdrop .modal .pick.is-active', (els) => els.length);
+    if (current !== 1) errors.push(`switcher: ${current} rows marked current, expected exactly one`);
+
+    console.log(`  league switcher: ${rows} leagues listed, ${current} marked current`);
+    await multi.keyboard.press('Escape');
+    await multi.waitForTimeout(300);
+    await multi.close();
+}
+
 // --- A league whose trade deadline has passed -------------------------------
 //
 // The worst kind of wrong answer is a correct valuation of a trade the league

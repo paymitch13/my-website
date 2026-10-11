@@ -521,6 +521,9 @@ input::placeholder { color: var(--text-3); }
     cursor: pointer; text-align: left; width: 100%;
 }
 .pick:hover { border-color: var(--accent-dim); background: var(--surface-2); }
+/* The league you are already in, in the switcher. Marked rather than hidden:
+   seeing which one is current is the point of the list. */
+.pick.is-active { border-color: var(--accent-dim); background: var(--surface-2); cursor: default; }
 
 /* ---------- Toast ---------- */
 

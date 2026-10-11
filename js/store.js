@@ -18,6 +18,12 @@ const DEFAULTS = {
     username: '',
     userId: null,
     leagueId: null,
+    // Every league this browser has connected, most recently used first, so a
+    // manager with three of them can switch instead of re-running the username
+    // search and losing the one they were in. `leagueId` stays the active one,
+    // which means nothing has to be migrated for an existing user: their
+    // current league simply joins the list the first time they load this.
+    leagues: [],
     season: null,
     settings: {
         simIterations: 2000,
@@ -87,6 +93,36 @@ export function save() {
 export function update(patch) {
     Object.assign(state, patch);
     save();
+}
+
+/** How many leagues to remember. Beyond this they are stale, not useful. */
+const MAX_LEAGUES = 12;
+
+/**
+ * Remember a league the user has actually connected, and make it the active
+ * one.
+ *
+ * Keyed by id and moved to the front on each use, so the list is ordered by
+ * recency without storing a timestamp per entry. The stored fields are only
+ * what a switcher needs to label a row -- the real config is refetched on
+ * every connect, because scoring and roster slots change mid-season and a
+ * remembered copy would quietly go wrong.
+ */
+export function rememberLeague({ id, name, teams, season, format, scoring }) {
+    if (!id) return;
+    const rest = (state.leagues || []).filter((l) => l && l.id !== id);
+    state.leagues = [{ id, name: name || id, teams: teams ?? null, season: season ?? null, format: format ?? null, scoring: scoring ?? null }, ...rest]
+        .slice(0, MAX_LEAGUES);
+    state.leagueId = id;
+    save();
+}
+
+/** Forget one league. Does not touch the active one unless it IS the active one. */
+export function forgetLeague(id) {
+    const before = (state.leagues || []).length;
+    state.leagues = (state.leagues || []).filter((l) => l && l.id !== id);
+    if (state.leagueId === id) state.leagueId = state.leagues[0]?.id ?? null;
+    if (state.leagues.length !== before) save();
 }
 
 /**

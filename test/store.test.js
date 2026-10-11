@@ -125,3 +125,83 @@ test('cached shapes are capped, evicting the oldest first', () => {
     assert.ok(newest, 'the newest shape must survive');
     assert.equal(newest.byId.get('a').value, 8);
 });
+
+// --- More than one league --------------------------------------------------
+// The store held exactly one leagueId, so connecting a second league silently
+// replaced the first and switching back meant retyping a username.
+
+test('a connected league is remembered and becomes the active one', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'L1', name: 'Dynasty', teams: 12, season: '2026', format: 'dynasty', scoring: 'half PPR' });
+    assert.equal(store.state.leagueId, 'L1');
+    assert.equal(store.state.leagues.length, 1);
+    assert.equal(store.state.leagues[0].name, 'Dynasty');
+});
+
+test('the most recently used league sits at the front', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'A', name: 'A' });
+    store.rememberLeague({ id: 'B', name: 'B' });
+    assert.deepEqual(store.state.leagues.map((l) => l.id), ['B', 'A']);
+    // Going back to A moves it, rather than adding it twice.
+    store.rememberLeague({ id: 'A', name: 'A' });
+    assert.deepEqual(store.state.leagues.map((l) => l.id), ['A', 'B']);
+    assert.equal(store.state.leagueId, 'A');
+});
+
+test('a re-connect refreshes the stored label rather than duplicating it', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'A', name: 'Old Name', teams: 10 });
+    store.rememberLeague({ id: 'A', name: 'Renamed', teams: 12 });
+    assert.equal(store.state.leagues.length, 1);
+    assert.equal(store.state.leagues[0].name, 'Renamed');
+    assert.equal(store.state.leagues[0].teams, 12);
+});
+
+test('forgetting a league you are not in leaves the active one alone', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'A', name: 'A' });
+    store.rememberLeague({ id: 'B', name: 'B' });
+    store.forgetLeague('A');
+    assert.deepEqual(store.state.leagues.map((l) => l.id), ['B']);
+    assert.equal(store.state.leagueId, 'B');
+});
+
+test('forgetting the league you are in falls back to the next one', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'A', name: 'A' });
+    store.rememberLeague({ id: 'B', name: 'B' });
+    assert.equal(store.state.leagueId, 'B');
+    store.forgetLeague('B');
+    assert.equal(store.state.leagueId, 'A', 'the app must not be left pointed at nothing');
+});
+
+test('forgetting the only league leaves no active league', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'A', name: 'A' });
+    store.forgetLeague('A');
+    assert.equal(store.state.leagueId, null);
+    assert.deepEqual(store.state.leagues, []);
+});
+
+test('the remembered list is bounded', () => {
+    store.state.leagues = [];
+    for (let i = 0; i < 30; i++) store.rememberLeague({ id: `L${i}`, name: `L${i}` });
+    assert.ok(store.state.leagues.length <= 12, `kept ${store.state.leagues.length}`);
+    assert.equal(store.state.leagues[0].id, 'L29', 'the newest is still first');
+});
+
+test('a league with no id is not remembered', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: null, name: 'Nope' });
+    store.rememberLeague({});
+    assert.deepEqual(store.state.leagues, []);
+});
+
+test('forgetting something that was never there is a no-op', () => {
+    store.state.leagues = [];
+    store.rememberLeague({ id: 'A', name: 'A' });
+    store.forgetLeague('ZZZ');
+    assert.deepEqual(store.state.leagues.map((l) => l.id), ['A']);
+    assert.equal(store.state.leagueId, 'A');
+});

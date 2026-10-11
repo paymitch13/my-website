@@ -6,7 +6,7 @@ import * as api from './sleeper.js';
 import { normalizeLeague, defaultRosterPositions, scoringLabel, weeksRemaining } from './league.js';
 import { createValuationContext } from './valuation.js';
 import { buildSeedKeys, seedOrder, toRankMap } from './rankings.js';
-import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, onPlayerClick } from './ui.js';
+import { el, toast, modal, emptyState, skeleton, banner, spinnerRow, tag, onPlayerClick } from './ui.js';
 import { openPlayerCard } from './views/player.js';
 import { loadSeasonTransactions, tradesOnly, newTradesSince } from './transactions.js';
 import { trendingAdds } from './news.js';
@@ -272,7 +272,17 @@ export async function connectLeague(leagueId, { silent = false } = {}) {
         app.league = await data.loadLeague(leagueId, app.players, {
             onProgress: (msg) => !silent && host.querySelector('h1') && (host.querySelector('h1').textContent = msg),
         });
-        store.update({ leagueId, season: app.league.raw.season });
+        // Recorded only once the league has actually loaded, so a mistyped or
+        // dead id never lands in the switcher.
+        store.rememberLeague({
+            id: leagueId,
+            name: app.league.cfg.name,
+            teams: app.league.cfg.teams,
+            season: app.league.raw.season,
+            format: app.league.cfg.format,
+            scoring: scoringLabel(app.league.cfg.scoring),
+        });
+        store.update({ season: app.league.raw.season });
 
         // Once a real league is attached we know the season and the week, so we
         // can blend in what players have actually done and pull this week's
@@ -450,6 +460,120 @@ export function disconnectLeague() {
     app.render();
 }
 
+/**
+ * The leagues this browser already knows, so switching is a click.
+ *
+ * The header chip used to go straight to the username search, which is the
+ * right screen exactly once. After that it is the wrong one: a manager with
+ * three leagues had to retype a username and re-pick from a list to move
+ * between them, and connecting the second one silently replaced the first.
+ *
+ * Opens the search directly when there is nothing remembered, so a first-time
+ * visitor sees no extra step.
+ */
+export function openLeagueSwitcher() {
+    const known = (store.state.leagues || []).filter((l) => l && l.id);
+    if (!known.length) return openSyncModal();
+
+    const body = el('div', {});
+    const list = el('div', { class: 'pick-list' });
+    const m = modal({
+        title: 'Your leagues',
+        body,
+        footer: el(
+            'div',
+            { class: 'row' },
+            el('div', { class: 'grow' }),
+            el(
+                'button',
+                { class: 'btn btn-primary', onclick: () => { m.close(); openSyncModal(); } },
+                'Connect another league'
+            )
+        ),
+    });
+
+    const paint = () => {
+        list.replaceChildren();
+        const rows = (store.state.leagues || []).filter((l) => l && l.id);
+        if (!rows.length) {
+            m.close();
+            openSyncModal();
+            return;
+        }
+        for (const lg of rows) {
+            const active = lg.id === store.state.leagueId;
+            list.append(
+                el(
+                    'div',
+                    { class: 'row', style: 'gap:6px' },
+                    el(
+                        'button',
+                        {
+                            class: `pick grow${active ? ' is-active' : ''}`,
+                            type: 'button',
+                            'aria-current': active ? 'true' : null,
+                            onclick: () => {
+                                m.close();
+                                if (!active) connectLeague(lg.id);
+                            },
+                        },
+                        el(
+                            'div',
+                            { style: 'min-width:0' },
+                            el('div', { style: 'font-weight:600' }, lg.name || lg.id),
+                            el(
+                                'div',
+                                { class: 'pmeta' },
+                                [
+                                    lg.teams ? `${lg.teams} teams` : null,
+                                    lg.scoring || null,
+                                    lg.format || null,
+                                    lg.season || null,
+                                ].filter(Boolean).join(' · ')
+                            )
+                        ),
+                        active ? tag('current', 'accent') : null
+                    ),
+                    el(
+                        'button',
+                        {
+                            class: 'btn btn-sm',
+                            type: 'button',
+                            title: `Forget ${lg.name || lg.id}`,
+                            'aria-label': `Forget ${lg.name || lg.id}`,
+                            onclick: () => {
+                                store.forgetLeague(lg.id);
+                                // Forgetting the one you are in leaves the app
+                                // pointed at nothing, so it switches rather
+                                // than sitting on a league it no longer knows.
+                                if (!store.state.leagueId) {
+                                    m.close();
+                                    disconnectLeague();
+                                    return;
+                                }
+                                if (app.league && app.league.cfg.id === lg.id) {
+                                    m.close();
+                                    connectLeague(store.state.leagueId);
+                                    return;
+                                }
+                                paint();
+                            },
+                        },
+                        '✕'
+                    )
+                )
+            );
+        }
+    };
+
+    paint();
+    body.append(
+        el('p', { class: 'small muted', style: 'margin:0 0 10px' },
+            'Scoring and roster slots are refetched every time you switch, so a mid-season settings change is never served from memory.'),
+        list
+    );
+}
+
 /** Username -> season -> league picker. */
 export async function openSyncModal() {
     const state = await api.getState().catch(() => ({ season: new Date().getFullYear() }));
@@ -574,7 +698,7 @@ async function boot() {
         if (!btn) return;
         location.hash = `#/${btn.dataset.view}`;
     });
-    document.getElementById('league-chip').addEventListener('click', openSyncModal);
+    document.getElementById('league-chip').addEventListener('click', openLeagueSwitcher);
     onPlayerClick((player) => openPlayerCard(app, player));
     window.addEventListener('hashchange', () => renderView(currentViewFromHash()));
 
