@@ -2,7 +2,7 @@
 
 import {
     buildStartSitReport, compareField, describeField, evaluatePlayerWeek,
-    lineupChanges, slateAverage,
+    lineupChanges, marketLevel, slateAverage,
 } from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
 import {
@@ -10,6 +10,7 @@ import {
     winProbSwaps,
 } from '../winprob.js';
 import { indexWeeklyStats, playerUsageSeries } from '../usage.js';
+import { logSummary, logToCsv, recordPredictions } from '../predlog.js';
 import { fetchWeatherForGames } from '../weather.js';
 import { loadSlateProps } from '../props.js';
 import * as store from '../store.js';
@@ -18,8 +19,8 @@ import { isOnBye } from '../schedule.js';
 import { slotLabel } from '../league.js';
 import { openSyncModal } from '../app.js';
 import {
-    banner, el, emptyState, fmtDelta, idpNotice, pickPlayer, playerLink, posBadge,
-    round, sortBy, spinnerRow, tag, tile,
+    banner, download, el, emptyState, fmtDelta, idpNotice, pickPlayer, playerLink,
+    posBadge, round, sortBy, spinnerRow, tag, tile, toast,
 } from '../ui.js';
 
 /** Readable names for the market keys, for the movement line. */
@@ -160,12 +161,21 @@ async function build(app, team) {
             weeksLeft: Math.max(1, app.league.weeksLeft),
             onBye: isOnBye(app.byeWeeks, player.team, currentWeek),
             marketRow: marketProps.get(player.id) || null,
+            // What the trade market says he is worth per game in this league.
+            // Blended into the weekly level; see WEEKLY_MARKET_WEIGHT.
+            marketPpg: marketLevel(app.ctx, player),
         });
 
     const evaluations = team.players.map(evaluateOne);
 
     const report = buildStartSitReport({ team, cfg, evaluations });
     const changes = lineupChanges(report, team.starterIds);
+
+    // Banked the first time this week is opened, and never rewritten. Six of
+    // the adjustments above cannot be checked after the fact -- the odds, the
+    // props, the weather and the injury report are all gone within days -- so
+    // this is the only moment at which they can be recorded. See js/predlog.js.
+    recordPredictions({ season, week: currentWeek, evaluations });
 
     // --- Who you actually play this week -----------------------------------
     //
@@ -572,7 +582,51 @@ async function build(app, team) {
         )
     );
 
+    // --- What we have promised, and how it is going -----------------------
+    //
+    // Last, because it is about the tool rather than about Sunday. It is here
+    // at all because an app that cannot check its own adjustments has no way
+    // to improve them, and six of ours could not be checked until this
+    // existed.
+    wrap.append(predictionLogCard());
+
     return wrap;
+}
+
+/** One line on what the log has banked, and a way to get it out. */
+function predictionLogCard() {
+    const s = logSummary();
+    const body = el('div', { class: 'row' });
+
+    if (!s.rows) {
+        body.append(
+            el('span', { class: 'tiny dim' },
+                'This week’s predictions have just been recorded. Once a few weeks are banked they can be ' +
+                'scored against what actually happened, which is how the adjustments above get checked.')
+        );
+    } else {
+        body.append(
+            el('span', { class: 'tiny dim' },
+                `${s.rows} prediction${s.rows === 1 ? '' : 's'} banked across ${s.weeks} week` +
+                `${s.weeks === 1 ? '' : 's'}${s.first && s.last && s.first !== s.last ? ` (${s.first} to ${s.last})` : ''}. ` +
+                'Every projection is stored with the multipliers that produced it, because the odds, the props, ' +
+                'the weather and the injury report are all gone within days — this is the only moment they exist.'),
+            el('div', { class: 'grow' }),
+            el(
+                'button',
+                {
+                    class: 'btn btn-sm',
+                    onclick: () => {
+                        download(`payton-predictions-${new Date().toISOString().slice(0, 10)}.csv`, logToCsv());
+                        toast('Prediction log exported.', 'good');
+                    },
+                },
+                'Export log'
+            )
+        );
+    }
+
+    return el('div', { class: 'card card-tight', style: 'margin-top:18px' }, body);
 }
 
 /**

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
     vegasImpact, defenseVegasImpact, evaluatePlayerWeek, buildStartSitReport,
     lineupChanges, slateAverage, comparePlayers, describeComparison,
-    compareField, describeField,
+    compareField, describeField, marketLevel,
 } from '../js/startsit.js';
 import { buildDefenseProfiles, matchupImpact, rankDefenses, describeMatchup } from '../js/matchup.js';
 import { weatherImpact, pickHour, STADIUMS } from '../js/weather.js';
@@ -615,4 +615,88 @@ test('a factor both players share is not offered as the reason', () => {
     ]);
     assert.ok(!cmp.swings.some((s) => s.kind === 'weather'), 'a shared factor must not be a swing');
     assert.equal(cmp.swings[0].kind, 'vegas');
+});
+
+// --- What the week's number is built from ----------------------------------
+// Both of these were decided by backtesting weeks 1-5 of 2026; see the notes
+// in js/startsit.js and tools/accuracy.mjs.
+
+test('the matchup is reported but no longer moves the projection', () => {
+    // It used to multiply every projection by a damped defensive ratio, and
+    // measurement said that made predictions worse at every damping tried.
+    const profiles = new Map([
+        ['BUF', { WR: { ratio: 1.45, samples: 6, rank: 1 } }],
+    ]);
+    const player = { id: 'wr1', name: 'WR One', pos: 'WR', team: 'KC' };
+    const weekly = { stats: { rec: 6, rec_yd: 90 }, opponent: 'BUF' };
+    const scoring = normalizeScoring({ rec: 0.5, rec_yd: 0.1 });
+
+    const withProfile = evaluatePlayerWeek({
+        player, weekly, scoring, defenseProfiles: profiles, oddsByTeam: new Map(),
+    });
+    const withoutProfile = evaluatePlayerWeek({
+        player, weekly, scoring, defenseProfiles: new Map(), oddsByTeam: new Map(),
+    });
+
+    assert.equal(
+        withProfile.adjusted,
+        withoutProfile.adjusted,
+        'a 1.45 defensive ratio must not change the number any more'
+    );
+    // But it is still surfaced, because the rank is worth reading.
+    const factor = withProfile.factors.find((f) => f.kind === 'matchup');
+    assert.ok(factor, 'the matchup should still appear as a factor');
+    assert.equal(factor.multiplier, 1, 'and must report that it moved nothing');
+    assert.equal(factor.informational, true);
+});
+
+test('the market pulls the weekly level halfway', () => {
+    const player = { id: 'rb1', name: 'RB One', pos: 'RB', team: 'KC' };
+    const weekly = { stats: { rush_yd: 100 }, opponent: 'BUF' };
+    const scoring = normalizeScoring({ rush_yd: 0.1 });
+    // Projection says 10; the market says he is a 20-a-game player.
+    const out = evaluatePlayerWeek({
+        player, weekly, scoring, defenseProfiles: new Map(), oddsByTeam: new Map(),
+        marketPpg: 20,
+    });
+    assert.equal(out.rawProjection, 10, 'the consensus projection is reported untouched');
+    assert.equal(out.marketLevel, 20);
+    assert.equal(out.adjusted, 15, 'and the level used is halfway between');
+});
+
+test('no market price leaves the projection exactly as it was', () => {
+    const player = { id: 'rb2', name: 'RB Two', pos: 'RB', team: 'KC' };
+    const weekly = { stats: { rush_yd: 100 }, opponent: 'BUF' };
+    const scoring = normalizeScoring({ rush_yd: 0.1 });
+    for (const marketPpg of [null, undefined, NaN]) {
+        const out = evaluatePlayerWeek({
+            player, weekly, scoring, defenseProfiles: new Map(), oddsByTeam: new Map(), marketPpg,
+        });
+        assert.equal(out.adjusted, 10, `marketPpg ${marketPpg} must fall back to the projection`);
+        assert.equal(out.marketLevel, null);
+    }
+});
+
+test('the market level is read through this league’s own rank curve', () => {
+    // So a market value respects the scoring and roster slots here rather than
+    // importing the shape of whatever league it was measured in.
+    const ctx = {
+        marketRanks: new Map([['x', 12]]),
+        ppgAtRank: (pos, rank) => (pos === 'RB' ? 100 - rank : 0),
+    };
+    assert.equal(marketLevel(ctx, { id: 'x', pos: 'RB' }), 88);
+    assert.equal(marketLevel(ctx, { id: 'unpriced', pos: 'RB' }), null);
+    assert.equal(marketLevel(null, { id: 'x', pos: 'RB' }), null);
+    assert.equal(marketLevel(ctx, null), null);
+});
+
+test('a ruled-out player is still unstartable however the market rates him', () => {
+    const player = { id: 'rb3', name: 'RB Three', pos: 'RB', team: 'KC', injury: 'Out' };
+    const weekly = { stats: { rush_yd: 100 }, opponent: 'BUF' };
+    const out = evaluatePlayerWeek({
+        player, weekly, scoring: normalizeScoring({ rush_yd: 0.1 }),
+        defenseProfiles: new Map(), oddsByTeam: new Map(), marketPpg: 30,
+    });
+    assert.equal(out.adjusted, null);
+    assert.equal(out.hasGame, false);
 });

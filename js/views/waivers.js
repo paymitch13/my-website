@@ -11,7 +11,7 @@
 // useless -- they sit next to each other with no way to tell them apart.
 
 import { buildWaiverBoard, ROLE_LABEL, ROLE_BLURB } from '../waivers.js';
-import { evaluatePlayerWeek, slateAverage } from '../startsit.js';
+import { evaluatePlayerWeek, marketLevel, slateAverage } from '../startsit.js';
 import { buildDefenseProfiles, rankDefenses } from '../matchup.js';
 import { fetchWeatherForGames } from '../weather.js';
 import { bidHistory } from '../faab.js';
@@ -117,6 +117,10 @@ async function build(app) {
                 weeksLeft: Math.max(1, app.league.weeksLeft),
                 onBye: isOnBye(app.byeWeeks, fa.player.team, currentWeek),
                 marketRow: null,
+                // Usually null for a free agent, which is the point: the
+                // blend falls back to the projection alone where the market
+                // has no opinion.
+                marketPpg: marketLevel(app.ctx, fa.player),
             })
         );
     }

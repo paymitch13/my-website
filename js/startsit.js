@@ -67,6 +67,31 @@ export function defenseVegasImpact(opponentImplied, neutral = FALLBACK_IMPLIED) 
 }
 
 /**
+ * How much the trade market's view of a player pulls on his WEEKLY number.
+ *
+ * Fitted, not chosen: see the note inside `evaluatePlayerWeek`. 0.5, against a
+ * measured optimum nearer 0.8, because the sample is one season and the
+ * weekly projection knows this week's news.
+ */
+export const WEEKLY_MARKET_WEIGHT = 0.5;
+
+/**
+ * What the trade market says this player is worth per game in this league.
+ *
+ * The market arrives as a positional rank, and this league's own rank curve is
+ * what turns a rank into points -- so the figure already respects the scoring
+ * and the roster slots here rather than importing another league's shape.
+ * Null when the market could not be reached or does not price him, which is
+ * most free agents.
+ */
+export function marketLevel(ctx, player) {
+    const rank = ctx?.marketRanks?.get(player?.id) ?? null;
+    if (!rank || !ctx?.ppgAtRank || !player?.pos) return null;
+    const ppg = ctx.ppgAtRank(player.pos, rank);
+    return Number.isFinite(ppg) ? ppg : null;
+}
+
+/**
  * Evaluate one player for one week.
  *
  * @param {object} input
@@ -82,11 +107,41 @@ export function evaluatePlayerWeek(input) {
     const {
         player, weekly, scoring, oddsByTeam, weatherByHome, defenseProfiles,
         defenseRanks, weeksLeft = 1, neutralImplied = null, onBye = false,
-        marketRow = null,
+        marketRow = null, marketPpg = null,
     } = input;
     const neutral = neutralImplied ?? slateAverage(oddsByTeam);
 
-    const base = weekly ? scoreStats(weekly.stats, scoring) : null;
+    const projected = weekly ? scoreStats(weekly.stats, scoring) : null;
+
+    // --- The level, before any of this week's situation is applied ---------
+    //
+    // The weekly projection, pulled toward what the trade market says the
+    // player is worth per game in this league.
+    //
+    // Measured over weeks 1-5 of 2026 on 791 startable, market-priced
+    // player-weeks: blending the market in improves mean absolute error by up
+    // to 6.1% and -- the part that matters -- improves ROOT MEAN SQUARED error
+    // too, from 6.977 to 6.78. Both metrics moving together is the test,
+    // because weekly fantasy scores are right-skewed: their median sits 1.69
+    // points below their mean, so anything that predicts low picks up an MAE
+    // win it has not earned. The controls prove the point. Shifting the
+    // projection down a point improves MAE by 0.091 and makes RMSE WORSE
+    // (7.070); scaling it by 0.95 improves MAE by 0.054 and makes RMSE worse
+    // (7.017). Those are the arithmetic. The market improves both, so it is
+    // carrying information.
+    //
+    // The weight is 0.5 against an RMSE optimum nearer 0.8, for the same
+    // reason MARKET_WEIGHT is not 1.0: the sample is a single season, the
+    // reliability of the gain falls as the weight rises (z on squared error
+    // 6.5 at 0.1, 4.8 at 0.5, 3.5 at 0.8), and the weekly projection knows
+    // things the market structurally cannot -- this week's opponent, this
+    // week's injury report, who was activated on Saturday. 0.5 keeps about
+    // 85% of the squared-error improvement with the projection as an equal
+    // partner.
+    const base =
+        projected !== null && Number.isFinite(marketPpg)
+            ? projected * (1 - WEEKLY_MARKET_WEIGHT) + marketPpg * WEEKLY_MARKET_WEIGHT
+            : projected;
     const opponent = weekly?.opponent || null;
     const odds = oddsByTeam?.get(player.team) || null;
 
@@ -156,15 +211,37 @@ export function evaluatePlayerWeek(input) {
     }
 
     // --- Matchup ----------------------------------------------------------
+    //
+    // Shown, no longer applied. This used to multiply every projection by a
+    // damped version of how the opponent's defence had performed against the
+    // position, and measuring it says that was making predictions worse.
+    //
+    // Backtested over weeks 1-5 of 2026 on 313 startable player-weeks with a
+    // profile for the opponent, the multiplier cost 0.120 points of mean
+    // absolute error and 3.11 of mean squared error -- both metrics agreeing,
+    // which is how you tell information from arithmetic. On its own that is
+    // z 1.2 and 1.7, suggestive rather than conclusive. What settles it is the
+    // dose-response: pushing the damping up makes it monotonically worse,
+    // 0.55 -> z -1.2, 0.8 -> -2.0, 1.0 -> -2.7, 1.5 -> -3.9, and restricting
+    // to the matchups it shouts loudest about makes it worse again. Meanwhile
+    // requiring more games behind each defensive profile drives the effect to
+    // exactly zero, which says the damage comes from profiles built on four
+    // games of noise.
+    //
+    // It was moving numbers by up to 29% at the tails. An adjustment that
+    // large has to earn its place, and a sweep that can detect a 4% effect
+    // found nothing but harm.
     const matchup = matchupImpact(defenseProfiles, opponent, player.pos);
     if (matchup.known) {
-        multiplier *= matchup.multiplier;
         const rankInfo = defenseRanks?.[player.pos]?.find((d) => d.def === opponent) || null;
         const desc = describeMatchup(rankInfo, player.pos);
         factors.push({
             kind: 'matchup',
             label: 'Matchup',
-            multiplier: matchup.multiplier,
+            // Reported as 1 because that is what it now does to the number.
+            // The rank and the sentence are still worth reading.
+            multiplier: 1,
+            informational: true,
             detail: desc?.text || `vs ${opponent}.`,
             tone: desc?.tone || 'neutral',
         });
@@ -238,6 +315,10 @@ export function evaluatePlayerWeek(input) {
         onBye,
         playProbability,
         baseProjection: base,
+        // The consensus weekly projection on its own, before the market was
+        // blended in, so a card can show where the two disagreed.
+        rawProjection: projected,
+        marketLevel: Number.isFinite(marketPpg) ? marketPpg : null,
         marketProjection: market,
         marketDisagreement: gap,
         marketMovement: marketRow?.movement ?? null,

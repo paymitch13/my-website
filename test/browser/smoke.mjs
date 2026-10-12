@@ -1143,6 +1143,12 @@ await page.waitForTimeout(4000);
     // Who you actually play. Every recommendation above this maximizes points,
     // which is the wrong objective when the week is already won or lost on
     // average -- and the app had no idea who the opponent was.
+    // The prediction log, which is what makes the app's own adjustments
+    // checkable: six of them cannot be reconstructed after the week ends.
+    if (!/prediction(s)? banked|predictions have just been recorded/.test(text)) {
+        errors.push('start/sit: nothing says the week’s predictions were recorded');
+    }
+
     let matchupSeen = 'no';
     if (/This week: vs /.test(text)) {
         matchupSeen = 'yes';
